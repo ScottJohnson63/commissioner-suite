@@ -1,0 +1,55 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model League {
+  id              String     @id @default(cuid())
+  sleeperLeagueId String     @unique
+  season          Int
+  divisionCount   Int        @default(2)
+  createdAt       DateTime   @default(now())
+  teams           Team[]
+  schedules       Schedule[]
+}
+
+model Team {
+  id              String    @id @default(cuid())
+  leagueId        String
+  sleeperRosterId String
+  name            String
+  divisionId      Int
+  league          League    @relation(fields: [leagueId], references: [id])
+  homeMatchups    Matchup[] @relation("HomeTeam")
+  awayMatchups    Matchup[] @relation("AwayTeam")
+
+  @@unique([leagueId, sleeperRosterId])
+}
+
+model Schedule {
+  id          String    @id @default(cuid())
+  leagueId    String
+  season      Int
+  seed        Int
+  generatedAt DateTime  @default(now())
+  league      League    @relation(fields: [leagueId], references: [id])
+  matchups    Matchup[]
+}
+
+model Matchup {
+  id         String   @id @default(cuid())
+  scheduleId String
+  week       Int
+  homeTeamId String
+  awayTeamId String
+  type       String   // 'division' | 'cross-division'
+  schedule   Schedule @relation(fields: [scheduleId], references: [id])
+  homeTeam   Team     @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  awayTeam   Team     @relation("AwayTeam", fields: [awayTeamId], references: [id])
+}

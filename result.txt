@@ -1,0 +1,210 @@
+Fetching league 1242735765360738304...
+
+League ID : 1242735765360738304
+Season    : 2025
+Teams     : 10
+
+Division 1 (5 teams):
+  [2] Suck My Chubb
+  [4] Gaylor Kelce 123123
+  [7] The Tribal Thief
+  [9] The Claudites
+  [10] Kyler The Creator
+
+Division 2 (5 teams):
+  [1] Show me your TDs
+  [3] Tom Deflaty
+  [5] Perc Caserio 
+  [6] Dem Men A Der Wicked 
+  [8] The Brockfest Club
+
+✓ League data valid — generating schedule...
+
+Generated 13 weeks
+
+Week  1:
+  [div]   Suck My Chubb vs Kyler The Creator
+  [cross] The Claudites vs Perc Caserio 
+  [div]   Show me your TDs vs Tom Deflaty
+  [div]   Gaylor Kelce 123123 vs The Tribal Thief
+  [div]   Dem Men A Der Wicked  vs The Brockfest Club
+Week  2:
+  [div]   Gaylor Kelce 123123 vs The Claudites
+  [div]   Suck My Chubb vs The Tribal Thief
+  [div]   Tom Deflaty vs The Brockfest Club
+  [div]   Perc Caserio  vs Dem Men A Der Wicked 
+  [cross] Kyler The Creator vs Show me your TDs
+Week  3:
+  [div]   Suck My Chubb vs Kyler The Creator
+  [div]   The Tribal Thief vs The Claudites
+  [div]   Perc Caserio  vs The Brockfest Club
+  [div]   Show me your TDs vs Dem Men A Der Wicked 
+  [cross] Gaylor Kelce 123123 vs Tom Deflaty
+Week  4:
+  [div]   The Claudites vs Kyler The Creator
+  [div]   Suck My Chubb vs The Tribal Thief
+  [div]   Tom Deflaty vs The Brockfest Club
+  [cross] Gaylor Kelce 123123 vs Dem Men A Der Wicked 
+  [div]   Show me your TDs vs Perc Caserio 
+Week  5:
+  [div]   The Tribal Thief vs Kyler The Creator
+  [div]   Suck My Chubb vs Gaylor Kelce 123123
+  [div]   Show me your TDs vs The Brockfest Club
+  [cross] The Claudites vs Tom Deflaty
+  [div]   Perc Caserio  vs Dem Men A Der Wicked 
+Week  6:
+  [cross] The Tribal Thief vs Tom Deflaty
+  [cross] Suck My Chubb vs Perc Caserio 
+  [div]   The Claudites vs Kyler The Creator
+  [div]   Dem Men A Der Wicked  vs The Brockfest Club
+  [cross] Gaylor Kelce 123123 vs Show me your TDs
+Week  7:
+  [cross] The Tribal Thief vs Perc Caserio 
+  [cross] Kyler The Creator vs The Brockfest Club
+  [cross] The Claudites vs Show me your TDs
+  [div]   Tom Deflaty vs Dem Men A Der Wicked 
+  [div]   Suck My Chubb vs Gaylor Kelce 123123
+Week  8:
+  [cross] The Tribal Thief vs Dem Men A Der Wicked 
+  [div]   Gaylor Kelce 123123 vs Kyler The Creator
+  [cross] Suck My Chubb vs Show me your TDs
+  [div]   Tom Deflaty vs Perc Caserio 
+  [cross] The Claudites vs The Brockfest Club
+Week  9:
+  [cross] Kyler The Creator vs Dem Men A Der Wicked 
+  [div]   Gaylor Kelce 123123 vs The Tribal Thief
+  [div]   Suck My Chubb vs The Claudites
+  [div]   Show me your TDs vs Tom Deflaty
+  [div]   Perc Caserio  vs The Brockfest Club
+Week 10:
+  [div]   Gaylor Kelce 123123 vs The Claudites
+  [div]   Tom Deflaty vs Dem Men A Der Wicked 
+  [div]   The Tribal Thief vs Kyler The Creator
+  [div]   Show me your TDs vs Perc Caserio 
+  [cross] Suck My Chubb vs The Brockfest Club
+Week 11:
+  [div]   Gaylor Kelce 123123 vs Kyler The Creator
+  [cross] The Tribal Thief vs The Brockfest Club
+  [div]   Show me your TDs vs Dem Men A Der Wicked 
+  [div]   Tom Deflaty vs Perc Caserio 
+  [div]   Suck My Chubb vs The Claudites
+Week 12:
+  [cross] Kyler The Creator vs Tom Deflaty
+  [div]   The Tribal Thief vs The Claudites
+  [cross] Gaylor Kelce 123123 vs Perc Caserio 
+  [div]   Show me your TDs vs The Brockfest Club
+  [cross] Suck My Chubb vs Dem Men A Der Wicked 
+Week 13:
+  [cross] The Claudites vs Dem Men A Der Wicked 
+  [cross] The Tribal Thief vs Show me your TDs
+  [cross] Kyler The Creator vs Perc Caserio 
+  [cross] Suck My Chubb vs Tom Deflaty
+  [cross] Gaylor Kelce 123123 vs The Brockfest Club
+
+✓ No consecutive repeat matchups
+Fetching league 1242719304307187712...
+
+League ID : 1242719304307187712
+Season    : 2025
+Teams     : 10
+
+Division 1 (5 teams):
+  [3] P.K. Highsmith
+  [4] Rihanna’s Forehead
+  [6] MyYoungHoeKoo 
+  [7] Cracker Meets Barrel
+  [8] Wooden gun
+
+Division 2 (5 teams):
+  [1] Deshaunorable Discharge
+  [2] 2 Girls 1 Kupp
+  [5] Hit N Ruggs
+  [9] Racer Rashee
+  [10] 3rd and Stroud 
+
+✓ League data valid — generating schedule...
+
+Generated 13 weeks
+
+Week  1:
+  [div]   Hit N Ruggs vs 3rd and Stroud 
+  [div]   P.K. Highsmith vs Cracker Meets Barrel
+  [div]   Deshaunorable Discharge vs Racer Rashee
+  [div]   MyYoungHoeKoo  vs Wooden gun
+  [cross] Rihanna’s Forehead vs 2 Girls 1 Kupp
+Week  2:
+  [div]   2 Girls 1 Kupp vs Hit N Ruggs
+  [div]   P.K. Highsmith vs Wooden gun
+  [div]   Rihanna’s Forehead vs Cracker Meets Barrel
+  [cross] MyYoungHoeKoo  vs Racer Rashee
+  [div]   Deshaunorable Discharge vs 3rd and Stroud 
+Week  3:
+  [div]   Hit N Ruggs vs Racer Rashee
+  [div]   P.K. Highsmith vs Cracker Meets Barrel
+  [div]   Deshaunorable Discharge vs 2 Girls 1 Kupp
+  [div]   Rihanna’s Forehead vs Wooden gun
+  [cross] MyYoungHoeKoo  vs 3rd and Stroud 
+Week  4:
+  [div]   Deshaunorable Discharge vs Hit N Ruggs
+  [div]   P.K. Highsmith vs Rihanna’s Forehead
+  [div]   MyYoungHoeKoo  vs Cracker Meets Barrel
+  [div]   2 Girls 1 Kupp vs Racer Rashee
+  [cross] Wooden gun vs 3rd and Stroud 
+Week  5:
+  [div]   P.K. Highsmith vs MyYoungHoeKoo 
+  [div]   Rihanna’s Forehead vs Cracker Meets Barrel
+  [div]   Deshaunorable Discharge vs Racer Rashee
+  [div]   2 Girls 1 Kupp vs 3rd and Stroud 
+  [cross] Wooden gun vs Hit N Ruggs
+Week  6:
+  [cross] P.K. Highsmith vs Hit N Ruggs
+  [div]   Rihanna’s Forehead vs MyYoungHoeKoo 
+  [div]   Cracker Meets Barrel vs Wooden gun
+  [div]   2 Girls 1 Kupp vs Racer Rashee
+  [div]   Deshaunorable Discharge vs 3rd and Stroud 
+Week  7:
+  [div]   P.K. Highsmith vs MyYoungHoeKoo 
+  [div]   Deshaunorable Discharge vs Hit N Ruggs
+  [cross] Cracker Meets Barrel vs Racer Rashee
+  [div]   Rihanna’s Forehead vs Wooden gun
+  [div]   2 Girls 1 Kupp vs 3rd and Stroud 
+Week  8:
+  [div]   P.K. Highsmith vs Wooden gun
+  [div]   Hit N Ruggs vs 3rd and Stroud 
+  [cross] Cracker Meets Barrel vs Deshaunorable Discharge
+  [cross] Rihanna’s Forehead vs Racer Rashee
+  [cross] MyYoungHoeKoo  vs 2 Girls 1 Kupp
+Week  9:
+  [cross] Wooden gun vs Racer Rashee
+  [cross] Cracker Meets Barrel vs 2 Girls 1 Kupp
+  [cross] Rihanna’s Forehead vs Hit N Ruggs
+  [cross] P.K. Highsmith vs 3rd and Stroud 
+  [cross] MyYoungHoeKoo  vs Deshaunorable Discharge
+Week 10:
+  [div]   Racer Rashee vs 3rd and Stroud 
+  [div]   MyYoungHoeKoo  vs Wooden gun
+  [cross] Cracker Meets Barrel vs Hit N Ruggs
+  [cross] P.K. Highsmith vs 2 Girls 1 Kupp
+  [cross] Rihanna’s Forehead vs Deshaunorable Discharge
+Week 11:
+  [div]   MyYoungHoeKoo  vs Cracker Meets Barrel
+  [div]   2 Girls 1 Kupp vs Hit N Ruggs
+  [cross] Rihanna’s Forehead vs 3rd and Stroud 
+  [cross] Wooden gun vs Deshaunorable Discharge
+  [cross] P.K. Highsmith vs Racer Rashee
+Week 12:
+  [cross] P.K. Highsmith vs Deshaunorable Discharge
+  [div]   Rihanna’s Forehead vs MyYoungHoeKoo 
+  [cross] Wooden gun vs 2 Girls 1 Kupp
+  [div]   Hit N Ruggs vs Racer Rashee
+  [cross] Cracker Meets Barrel vs 3rd and Stroud 
+Week 13:
+  [cross] MyYoungHoeKoo  vs Hit N Ruggs
+  [div]   Cracker Meets Barrel vs Wooden gun
+  [div]   Racer Rashee vs 3rd and Stroud 
+  [div]   P.K. Highsmith vs Rihanna’s Forehead
+  [div]   Deshaunorable Discharge vs 2 Girls 1 Kupp
+
+✓ No consecutive repeat matchups
+
+✓ End-to-end test passed — ready to wire up the API
