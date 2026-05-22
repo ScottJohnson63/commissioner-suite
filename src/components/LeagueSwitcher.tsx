@@ -3,6 +3,7 @@
 interface League {
   id: string;
   sleeperLeagueId: string;
+  name: string;
   season: number;
 }
 
@@ -12,7 +13,7 @@ interface Props {
   onChange: (id: string) => void;
 }
 
-export function LeagueSwitcher({ leagues, activeId, onChange }: Props) {
+export function LeagueSwitcher({ leagues, activeId: activeId, onChange }: Props) {
   if (leagues.length === 0) return null;
 
   return (
@@ -23,7 +24,7 @@ export function LeagueSwitcher({ leagues, activeId, onChange }: Props) {
     >
       {leagues.map((league) => (
         <option key={league.id} value={league.id} className="bg-[#0e0e0f]">
-          {league.sleeperLeagueId} ({league.season})
+          {league.name} ({league.season})
         </option>
       ))}
     </select>

@@ -22,11 +22,11 @@ export function StatCards({ total, division, cross, generatedAt }: Props) {
         { label: 'Generated', value: formatted, sub: 'last run', isText: true },
       ].map(({ label, value, sub, isText }) => (
         <div key={label} className="bg-[#141415] border border-[#2a2a2c] rounded-lg p-4">
-          <p className="text-[10px] uppercase tracking-widest text-[#555] mb-2">{label}</p>
+          <p className="text-[10px] uppercase tracking-widest mb-2">{label}</p>
           <p className={`font-medium text-[#e8e6df] ${isText ? 'text-sm' : 'text-2xl'}`}>
             {value}
           </p>
-          <p className="text-[11px] text-[#555] mt-1">{sub}</p>
+          <p className="text-[11px] mt-1">{sub}</p>
         </div>
       ))}
     </div>
