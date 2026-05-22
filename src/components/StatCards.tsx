@@ -14,12 +14,12 @@ export function StatCards({ total, division, cross, generatedAt }: Props) {
   });
 
   return (
-    <div className="grid grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
       {[
-        { label: 'Total matchups', value: total, sub: '13 per team' },
-        { label: 'Division games', value: division, sub: '8 per team' },
-        { label: 'Cross-division', value: cross, sub: '5 per team' },
-        { label: 'Generated', value: formatted, sub: 'last run', isText: true },
+        { label: 'Total matchups', value: total,     sub: '13 per team' },
+        { label: 'Division games', value: division,  sub: '8 per team' },
+        { label: 'Cross-division', value: cross,     sub: '5 per team' },
+        { label: 'Generated',      value: formatted, sub: 'last run', isText: true },
       ].map(({ label, value, sub, isText }) => (
         <div key={label} className="bg-[#141415] border border-[#2a2a2c] rounded-lg p-4">
           <p className="text-[10px] uppercase tracking-widest mb-2">{label}</p>

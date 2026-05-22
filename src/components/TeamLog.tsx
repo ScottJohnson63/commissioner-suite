@@ -31,17 +31,21 @@ export function TeamLog({ matchups, teamId, teams }: Props) {
           Div {(team?.divisionId ?? 0) + 1} &middot; {matchups.length} games
         </p>
       </div>
-      <div className="divide-y divide-[#1e1e20] max-h-80 overflow-y-auto">
+      {/* Cap height on mobile too, but allow slightly more room */}
+      <div className="divide-y divide-[#1e1e20] max-h-60 sm:max-h-80 overflow-y-auto">
         {matchups.map((m) => {
           const opponent = m.homeTeamId === teamId ? m.awayTeam : m.homeTeam;
+          const isHome = m.homeTeamId === teamId;
           return (
             <div key={m.id} className="px-3 py-2 flex items-center gap-2">
               <span className="text-[10px] text-[#aaa] tabular-nums w-5 shrink-0">
-                {m.week}: 
+                {m.week}:
               </span>
               <span className="text-[11px] text-[#aaa] truncate flex-1">
                 {opponent.name}
               </span>
+              {/* H/A indicator — helpful on small screens */}
+              <span className="text-[9px] text-[#555] shrink-0">{isHome ? 'H' : 'A'}</span>
               <span
                 className="text-[9px] px-1 py-0.5 rounded border shrink-0"
                 style={

@@ -36,9 +36,15 @@ export function MatchupCell({ matchup, onSwap }: Props) {
       <span className="text-[10px] text-muted-foreground border border-border rounded px-1 py-0.5 ml-1">
         {matchup.type === 'cross-division' ? 'cross' : 'div'}
       </span>
+      {/*
+        On touch devices hover never fires, so we keep the button always visible
+        (opacity-100) and only use the group-hover fade on pointer devices.
+      */}
       <button
         onClick={() => onSwap(matchup.id, matchup.homeTeamId, matchup.awayTeamId)}
-        className="ml-auto opacity-0 group-hover:opacity-100 text-xs text-muted-foreground hover:text-foreground transition-opacity"
+        className="ml-auto text-xs text-muted-foreground hover:text-foreground transition-opacity
+                   touch-manipulation
+                   opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
         aria-label="Swap home and away"
         title="Swap home/away"
       >

@@ -13,14 +13,16 @@ interface Props {
   onChange: (id: string) => void;
 }
 
-export function LeagueSwitcher({ leagues, activeId: activeId, onChange }: Props) {
+export function LeagueSwitcher({ leagues, activeId, onChange }: Props) {
   if (leagues.length === 0) return null;
 
   return (
     <select
       value={activeId ?? ''}
       onChange={(e) => onChange(e.target.value)}
-      className="bg-transparent text-[#e8e6df] text-sm border-none outline-none cursor-pointer"
+      // min-h ensures a comfortable tap target (44px recommended by Apple/Google)
+      className="bg-transparent text-[#e8e6df] text-sm border-none outline-none cursor-pointer
+                 min-h-[44px] sm:min-h-0 touch-manipulation"
     >
       {leagues.map((league) => (
         <option key={league.id} value={league.id} className="bg-[#0e0e0f]">

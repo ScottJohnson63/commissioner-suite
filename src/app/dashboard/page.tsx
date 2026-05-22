@@ -55,9 +55,8 @@ export default function DashboardPage() {
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [syncInput, setSyncInput] = useState('');
 
-  // Add to your useState block at the top of DashboardPage:
   const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(
-    new Set(Array.from({ length: 13}, (_, i) => i + 1))
+    new Set(Array.from({ length: 13 }, (_, i) => i + 1))
   );
 
   function toggleWeek(week: number): void {
@@ -120,7 +119,6 @@ export default function DashboardPage() {
       });
       if (!res.ok) throw new Error('Sync failed');
       setLastSynced(new Date());
-      // Refresh leagues list
       const leaguesRes = await fetch('/api/leagues');
       if (leaguesRes.ok) {
         const data = await leaguesRes.json() as League[];
@@ -212,10 +210,15 @@ export default function DashboardPage() {
   return (
     <main className="min-h-screen bg-[#0e0e0f] text-[#e8e6df] font-mono">
 
-      {/* ── Top bar */}
-      <header className="border-b border-[#2a2a2c] px-8 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-6">
-          <span className="text-xs tracking-[0.2em] uppercase font-medium">
+      {/* ── Top bar ───────────────────────────────────────────────────────────
+          Mobile: two rows — branding/switcher on top, actions below.
+          Desktop: single row with space-between.
+      ── */}
+      <header className="border-b border-[#2a2a2c] px-4 sm:px-8 py-3 sm:py-4
+                         flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        {/* Row 1: logo + league switcher */}
+        <div className="flex items-center gap-4 sm:gap-6">
+          <span className="text-xs tracking-[0.2em] uppercase font-medium shrink-0">
             Commissioner
           </span>
           <LeagueSwitcher
@@ -225,38 +228,45 @@ export default function DashboardPage() {
           />
         </div>
 
-        <div className="flex items-center gap-3">
+        {/* Row 2 (mobile) / right side (desktop): action buttons */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          {/* "synced at" label — secondary info, only worth showing on wider screens */}
           {lastSynced && (
-            <span className="text-[11px]" style={{ color: '#80ff49' }}>
+            <span className="hidden sm:inline text-[11px]" style={{ color: '#80ff49' }}>
               synced {lastSynced.toLocaleTimeString()}
             </span>
           )}
-          {/* Sync button */}
           <button
             onClick={() => setShowSyncModal(true)}
             disabled={syncing}
-            className="px-3 py-1.5 text-xs border border-[#2a2a2c] rounded text-[#888] hover:text-[#e8e6df] hover:border-[#444] transition-colors disabled:opacity-40"
+            className="flex-1 sm:flex-none px-3 py-1.5 text-xs border border-[#2a2a2c] rounded
+                       text-[#888] hover:text-[#e8e6df] hover:border-[#444]
+                       transition-colors disabled:opacity-40 touch-manipulation"
           >
             {syncing ? 'Syncing…' : '↻ Sync Sleeper'}
           </button>
           <button
             onClick={handleExport}
             disabled={!schedule}
-            className="px-3 py-1.5 text-xs border border-[#2a2a2c] rounded hover:text-[#80ff49] hover:border-[#80ff49] transition-colors disabled:opacity-40"
+            className="flex-1 sm:flex-none px-3 py-1.5 text-xs border border-[#2a2a2c] rounded
+                       hover:text-[#80ff49] hover:border-[#80ff49]
+                       transition-colors disabled:opacity-40 touch-manipulation"
           >
             ↓ Export CSV
           </button>
           <button
             onClick={handleGenerate}
             disabled={generating || !activeLeagueId}
-            className="px-3 py-1.5 text-xs border border-[#2a2a2c] rounded hover:text-[#80ff49] hover:border-[#80ff49] transition-colors disabled:opacity-40"
+            className="flex-1 sm:flex-none px-3 py-1.5 text-xs border border-[#2a2a2c] rounded
+                       hover:text-[#80ff49] hover:border-[#80ff49]
+                       transition-colors disabled:opacity-40 touch-manipulation"
           >
-            {generating ? 'Generating…' : schedule ? '⟳ Regenerate' : '+ Generate Schedule'}
+            {generating ? 'Generating…' : schedule ? '⟳ Regenerate' : '+ Generate'}
           </button>
         </div>
       </header>
 
-      <div className="px-8 py-6">
+      <div className="px-4 sm:px-8 py-6">
 
         {/* ── Error banner */}
         {error && (
@@ -279,16 +289,16 @@ export default function DashboardPage() {
         )}
 
         {loading && (
-          <div className=" text-sm">Loading schedule…</div>
+          <div className="text-sm">Loading schedule…</div>
         )}
 
         {!loading && !schedule && activeLeagueId && (
           <div className="flex flex-col items-center justify-center py-24 text-center">
-            <p className=" mb-4">No schedule generated yet.</p>
+            <p className="mb-4">No schedule generated yet.</p>
             <button
               onClick={handleGenerate}
               disabled={generating}
-              className="px-4 py-2 rounded text-sm font-medium transition-colors disabled:opacity-40"
+              className="px-4 py-2 rounded text-sm font-medium transition-colors disabled:opacity-40 touch-manipulation"
               style={{ background: '#80ff49', color: '#0e0e0f' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#9fff6e')}
               onMouseLeave={e => (e.currentTarget.style.background = '#80ff49')}
@@ -308,93 +318,105 @@ export default function DashboardPage() {
               generatedAt={schedule.generatedAt}
             />
 
-            <div className="mt-8 flex gap-6 items-start">
+            {/* ── Schedule grid + sidebar
+                Mobile: single column, sidebar stacks below grid.
+                Desktop: grid flex-1, sidebar fixed w-64 beside it.
+            ── */}
+            <div className="mt-8 flex flex-col gap-6 sm:flex-row sm:items-start">
 
-            {/* ── Schedule grid */}
-            <div className="flex-1 min-w-0">
-              <div className="flex flex-col gap-1">
-                {byWeek.map((matchups, i) => {
-                  const week = i + 1;
-                  const isOpen = expandedWeeks.has(week);
+              {/* Schedule grid */}
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-col gap-1">
+                  {byWeek.map((matchups, i) => {
+                    const week = i + 1;
+                    const isOpen = expandedWeeks.has(week);
 
-                  return (
-                    <div key={week} className="border border-[#2a2a2c] rounded">
-                      {/* Week header / toggle */}
-                      <button
-                        onClick={() => toggleWeek(week)}
-                        className="w-full flex items-center justify-between px-4 py-2.5 text-xs hover:bg-[#1a1a1c] transition-colors"
-                      >
-                        <span className="tracking-widest uppercase" style={{ color: '#80ff49' }}>
-                          Week {week}
-                        </span>
-                        <div className="flex items-center gap-3" style={{ color: '#80ff49' }}>
-                          <span>{matchups.length} games</span>
-                          <span className="transition-transform duration-200" style={{ display: 'inline-block', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
-                            ▾
+                    return (
+                      <div key={week} className="border border-[#2a2a2c] rounded">
+                        {/* Week header / toggle */}
+                        <button
+                          onClick={() => toggleWeek(week)}
+                          className="w-full flex items-center justify-between px-4 py-2.5 text-xs
+                                     hover:bg-[#1a1a1c] transition-colors touch-manipulation"
+                        >
+                          <span className="tracking-widest uppercase" style={{ color: '#80ff49' }}>
+                            Week {week}
                           </span>
-                        </div>
-                      </button>
+                          <div className="flex items-center gap-3" style={{ color: '#80ff49' }}>
+                            <span>{matchups.length} games</span>
+                            <span
+                              className="transition-transform duration-200"
+                              style={{ display: 'inline-block', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                            >
+                              ▾
+                            </span>
+                          </div>
+                        </button>
 
-                      {/* Matchup rows */}
-                      {isOpen && (
-                        <div className="border-t border-[#2a2a2c] divide-y divide-[#1e1e20]">
-                          {matchups.length === 0 ? (
-                            <p className="px-4 py-3  text-xs">No games scheduled.</p>
-                          ) : (
-                            matchups.map((m, gameIdx) => (
-                              <div
-                                key={m.id}
-                                className="flex items-center justify-between px-4 py-2.5 text-xs group"
-                              >
-                                {/* Game number */}
-                                <span className=" w-6 shrink-0">
-                                  {gameIdx + 1}
-                                </span>
+                        {/* Matchup rows */}
+                        {isOpen && (
+                          <div className="border-t border-[#2a2a2c] divide-y divide-[#1e1e20]">
+                            {matchups.length === 0 ? (
+                              <p className="px-4 py-3 text-xs">No games scheduled.</p>
+                            ) : (
+                              matchups.map((m, gameIdx) => (
+                                <div
+                                  key={m.id}
+                                  className="flex items-center justify-between px-4 py-2.5 text-xs group"
+                                >
+                                  {/* Game number */}
+                                  <span className="w-6 shrink-0">
+                                    {gameIdx + 1}
+                                  </span>
 
-                                {/* Teams */}
-                                <div className="flex-1 flex items-center gap-2 min-w-0">
-                                  <span className="text-[#e8e6df] truncate">{m.homeTeam.name}</span>
-                                  <span className="shrink-0">vs</span>
-                                  <span className="text-[#e8e6df] truncate">{m.awayTeam.name}</span>
+                                  {/* Teams — truncate gracefully on narrow screens */}
+                                  <div className="flex-1 flex items-center gap-1.5 sm:gap-2 min-w-0">
+                                    <span className="text-[#e8e6df] truncate">{m.homeTeam.name}</span>
+                                    <span className="shrink-0 text-[#555]">vs</span>
+                                    <span className="text-[#e8e6df] truncate">{m.awayTeam.name}</span>
+                                  </div>
+
+                                  {/* Type badge */}
+                                  <span
+                                    className="shrink-0 px-1.5 py-0.5 rounded text-[10px] ml-2 sm:ml-3"
+                                    style={
+                                      m.type === 'division'
+                                        ? { background: 'rgba(200,73,255,0.15)', color: '#c849ff' }
+                                        : { background: 'rgba(255,109,73,0.15)', color: '#ff6d49' }
+                                    }
+                                  >
+                                    {m.type === 'division' ? 'DIV' : 'X-DIV'}
+                                  </span>
+
+                                  {/* Swap button — always visible on touch, hover-only on pointer devices */}
+                                  <button
+                                    onClick={() => handleSwap(m.id, m.homeTeamId, m.awayTeamId)}
+                                    className="ml-2 sm:ml-3 shrink-0 hover:text-[#e8e6df] transition-all
+                                               touch-manipulation
+                                               opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+                                    title="Swap home/away"
+                                    aria-label="Swap home and away teams"
+                                  >
+                                    ⇄
+                                  </button>
                                 </div>
-
-                                {/* Type badge */}
-                                <span
-                                  className="shrink-0 px-1.5 py-0.5 rounded text-[10px] ml-3"
-                                  style={
-                                    m.type === 'division'
-                                      ? { background: 'rgba(200,73,255,0.15)', color: '#c849ff' }
-                                      : { background: 'rgba(255,109,73,0.15)', color: '#ff6d49' }
-                                  }
-                                >
-                                  {m.type === 'division' ? 'DIV' : 'X-DIV'}
-                                </span>
-
-                                {/* Swap button */}
-                                <button
-                                  onClick={() => handleSwap(m.id, m.homeTeamId, m.awayTeamId)}
-                                  className="ml-3 shrink-0 opacity-0 group-hover:opacity-100  hover:text-[#e8e6df] transition-all"
-                                  title="Swap home/away"
-                                >
-                                  ⇄
-                                </button>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
 
               {/* ── Team log sidebar */}
-              <div className="w-64 shrink-0">
+              <div className="w-full sm:w-64 sm:shrink-0">
                 <p className="text-[10px] uppercase tracking-widest mb-3" style={{ color: '#80ff49' }}>
                   Team schedule
                 </p>
-                <div className="flex flex-col gap-1 mb-4">
+                {/* On mobile, team buttons wrap in a 2-col grid instead of a long list */}
+                <div className="grid grid-cols-2 gap-1 mb-4 sm:flex sm:flex-col">
                   {allTeams
                     .sort((a, b) => a.divisionId - b.divisionId || a.name.localeCompare(b.name))
                     .map((team) => (
@@ -403,7 +425,7 @@ export default function DashboardPage() {
                         onClick={() =>
                           setSelectedTeamId((prev) => (prev === team.id ? null : team.id))
                         }
-                        className={`text-left px-3 py-1.5 rounded text-xs transition-colors ${
+                        className={`text-left px-3 py-1.5 rounded text-xs transition-colors touch-manipulation ${
                           selectedTeamId === team.id
                             ? 'bg-[#e8e6df] text-[#0e0e0f]'
                             : team.divisionId === 0
@@ -433,9 +455,11 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* ── Sync modal */}
+      {/* ── Sync modal ────────────────────────────────────────────────────────
+          px-4 on the backdrop ensures the modal never bleeds to screen edges.
+      ── */}
       {showSyncModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
           <div className="bg-[#141415] border border-[#2a2a2c] rounded-lg p-6 w-full max-w-sm">
             <h2 className="text-sm font-medium mb-1">Sync Sleeper League</h2>
             <p className="text-[#555] text-xs mb-4">
@@ -448,19 +472,21 @@ export default function DashboardPage() {
               onKeyDown={(e) => e.key === 'Enter' && handleSync(syncInput)}
               placeholder="e.g. 123456789"
               autoFocus
-              className="w-full bg-[#0e0e0f] border border-[#2a2a2c] rounded px-3 py-2 text-xs text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444] mb-4"
+              className="w-full bg-[#0e0e0f] border border-[#2a2a2c] rounded px-3 py-2 text-xs
+                         text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444] mb-4"
             />
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => { setShowSyncModal(false); setSyncInput(''); }}
-                className="px-3 py-1.5 text-xs text-[#666] hover:text-[#e8e6df] transition-colors"
+                className="px-3 py-1.5 text-xs text-[#666] hover:text-[#e8e6df] transition-colors touch-manipulation"
               >
                 Cancel
               </button>
               <button
                 onClick={() => handleSync(syncInput)}
                 disabled={syncing || !syncInput.trim()}
-                className="px-3 py-1.5 text-xs bg-[#e8e6df] text-[#0e0e0f] rounded font-medium hover:bg-white transition-colors disabled:opacity-40"
+                className="px-3 py-1.5 text-xs bg-[#e8e6df] text-[#0e0e0f] rounded font-medium
+                           hover:bg-white transition-colors disabled:opacity-40 touch-manipulation"
               >
                 {syncing ? 'Syncing…' : 'Sync'}
               </button>
