@@ -6,7 +6,7 @@ export default function Home() {
       <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
         <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
           <p className="flex h-12 w-full items-center justify-center gap-2">
-            This is where the login page will be
+            This is where the login page will be 234365465476587698
           </p>
           <a
             className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
