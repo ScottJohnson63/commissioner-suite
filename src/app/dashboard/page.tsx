@@ -52,6 +52,8 @@ export default function DashboardPage() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const [syncInput, setSyncInput] = useState('');
 
   // Add to your useState block at the top of DashboardPage:
   const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(
@@ -106,20 +108,28 @@ export default function DashboardPage() {
     if (activeLeagueId) fetchSchedule(activeLeagueId);
   }, [activeLeagueId, fetchSchedule]);
 
-  // ── Actions
-  async function handleSync(): Promise<void> {
-    const leagueIds = leagues.map((l) => l.sleeperLeagueId);
+  async function handleSync(sleeperLeagueId: string): Promise<void> {
+    if (!sleeperLeagueId.trim()) return;
     setSyncing(true);
     setError(null);
     try {
       const res = await fetch('/api/leagues/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leagueIds }),
+        body: JSON.stringify({ leagueIds: [sleeperLeagueId.trim()] }),
       });
       if (!res.ok) throw new Error('Sync failed');
       setLastSynced(new Date());
+      // Refresh leagues list
+      const leaguesRes = await fetch('/api/leagues');
+      if (leaguesRes.ok) {
+        const data = await leaguesRes.json() as League[];
+        setLeagues(data);
+        if (!activeLeagueId && data.length > 0) setActiveLeagueId(data[0].id);
+      }
       if (activeLeagueId) await fetchSchedule(activeLeagueId);
+      setShowSyncModal(false);
+      setSyncInput('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync failed');
     } finally {
@@ -221,10 +231,11 @@ export default function DashboardPage() {
               synced {lastSynced.toLocaleTimeString()}
             </span>
           )}
+          {/* Sync button */}
           <button
-            onClick={handleSync}
+            onClick={() => setShowSyncModal(true)}
             disabled={syncing}
-            className="px-3 py-1.5 text-xs border border-[#2a2a2c] rounded hover:text-[#80ff49] hover:border-[#80ff49] transition-colors disabled:opacity-40"
+            className="px-3 py-1.5 text-xs border border-[#2a2a2c] rounded text-[#888] hover:text-[#e8e6df] hover:border-[#444] transition-colors disabled:opacity-40"
           >
             {syncing ? 'Syncing…' : '↻ Sync Sleeper'}
           </button>
@@ -421,6 +432,42 @@ export default function DashboardPage() {
           </>
         )}
       </div>
+
+      {/* ── Sync modal */}
+      {showSyncModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-[#141415] border border-[#2a2a2c] rounded-lg p-6 w-full max-w-sm">
+            <h2 className="text-sm font-medium mb-1">Sync Sleeper League</h2>
+            <p className="text-[#555] text-xs mb-4">
+              Paste your Sleeper league ID to add or update it.
+            </p>
+            <input
+              type="text"
+              value={syncInput}
+              onChange={(e) => setSyncInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSync(syncInput)}
+              placeholder="e.g. 123456789"
+              autoFocus
+              className="w-full bg-[#0e0e0f] border border-[#2a2a2c] rounded px-3 py-2 text-xs text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444] mb-4"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setShowSyncModal(false); setSyncInput(''); }}
+                className="px-3 py-1.5 text-xs text-[#666] hover:text-[#e8e6df] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleSync(syncInput)}
+                disabled={syncing || !syncInput.trim()}
+                className="px-3 py-1.5 text-xs bg-[#e8e6df] text-[#0e0e0f] rounded font-medium hover:bg-white transition-colors disabled:opacity-40"
+              >
+                {syncing ? 'Syncing…' : 'Sync'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

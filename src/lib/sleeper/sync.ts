@@ -6,6 +6,7 @@ const SLEEPER_BASE = 'https://api.sleeper.app/v1';
 
 interface SleeperLeague {
   league_id: string;
+  name: string;        // add this
   season: string;
   settings: {
     divisions: number;
@@ -38,6 +39,7 @@ async function sleeperFetch<T>(path: string): Promise<T> {
 
 export async function fetchLeagueData(leagueId: string): Promise<{
   leagueId: string;
+  name: string;        // add this
   season: number;
   teams: Team[];
 }> {
@@ -71,6 +73,7 @@ export async function fetchLeagueData(leagueId: string): Promise<{
 
   return {
     leagueId: league.league_id,
+    name: league.name,   // add this
     season: Number(league.season),
     teams,
   };
