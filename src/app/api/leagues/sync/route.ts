@@ -5,9 +5,9 @@ import { prisma } from '@/lib/prisma';
 import { fetchLeagueData } from '@/lib/sleeper/sync';
 
 export async function POST(
-  req: NextRequest, 
-  { params }: { params: Promise<{ id: string }> },
+  req: NextRequest
 ): Promise<NextResponse> {
+  
   const body = await req.json() as { leagueIds?: string[] };
 
   if (!Array.isArray(body.leagueIds) || body.leagueIds.length === 0) {

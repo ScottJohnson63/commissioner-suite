@@ -5,12 +5,12 @@ import { prisma } from '@/lib/prisma';
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const { id } = await params;
 
   const schedule = await prisma.schedule.findFirst({
-    where: { leagueId: params.id },
+    where: { leagueId: id },
     orderBy: { generatedAt: 'desc' },
     include: {
       matchups: {

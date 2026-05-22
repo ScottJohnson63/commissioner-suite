@@ -6,8 +6,10 @@ import { prisma } from '@/lib/prisma';
 // Commissioner can manually swap home/away or reassign a week
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  const { id } = await params;
+
   const body = await req.json() as {
     homeTeamId?: string;
     awayTeamId?: string;
@@ -16,7 +18,7 @@ export async function PATCH(
 
   try {
     const updated = await prisma.matchup.update({
-      where: { id: params.id },
+      where: { id: id },
       data: body,
     });
     return NextResponse.json(updated);
