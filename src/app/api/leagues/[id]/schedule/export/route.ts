@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { writeAuditLog } from '@/lib/audit';
 
 export async function GET(
   _req: NextRequest,
@@ -33,6 +34,12 @@ export async function GET(
   ];
 
   const csv = rows.map((r) => r.join(',')).join('\n');
+
+  await writeAuditLog('EXPORT', id, {
+    scheduleId: schedule.id,
+    season: schedule.season,
+    matchupCount: schedule.matchups.length,
+  });
 
   return new NextResponse(csv, {
     headers: {

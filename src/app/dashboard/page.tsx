@@ -1,6 +1,9 @@
 'use client';
 
+// src/app/page.tsx
+
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { ScheduleGrid } from '@/components/ScheduleGrid';
 import { StatCards } from '@/components/StatCards';
 import { TeamLog } from '@/components/TeamLog';
@@ -50,22 +53,12 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [showSyncModal, setShowSyncModal] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [syncInput, setSyncInput] = useState('');
-
-  const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(
-    new Set(Array.from({ length: 13 }, (_, i) => i + 1))
-  );
-
-  function toggleWeek(week: number): void {
-    setExpandedWeeks((prev) => {
-      const next = new Set(prev);
-      next.has(week) ? next.delete(week) : next.add(week);
-      return next;
-    });
-  }
 
   // ── Fetch all leagues on mount
   useEffect(() => {
@@ -89,10 +82,7 @@ export default function DashboardPage() {
     setError(null);
     try {
       const res = await fetch(`/api/leagues/${leagueId}/schedule`);
-      if (res.status === 404) {
-        setSchedule(null);
-        return;
-      }
+      if (res.status === 404) { setSchedule(null); return; }
       if (!res.ok) throw new Error('Failed to load schedule');
       const data = await res.json() as Schedule;
       setSchedule(data);
@@ -140,15 +130,32 @@ export default function DashboardPage() {
     setGenerating(true);
     setError(null);
     try {
-      const res = await fetch(`/api/leagues/${activeLeagueId}/schedule`, {
-        method: 'POST',
-      });
+      const res = await fetch(`/api/leagues/${activeLeagueId}/schedule`, { method: 'POST' });
       if (!res.ok) throw new Error('Schedule generation failed');
       await fetchSchedule(activeLeagueId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Generation failed');
     } finally {
       setGenerating(false);
+    }
+  }
+
+  async function handleClear(): Promise<void> {
+    if (!activeLeagueId) return;
+    setClearing(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/leagues/${activeLeagueId}/schedule`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json() as { error?: string };
+        throw new Error(body.error ?? 'Clear failed');
+      }
+      setSchedule(null);
+      setShowClearConfirm(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Clear failed');
+    } finally {
+      setClearing(false);
     }
   }
 
@@ -200,117 +207,122 @@ export default function DashboardPage() {
   const crossMatchups = schedule?.matchups.filter((m) => m.type === 'cross-division') ?? [];
 
   const selectedTeamMatchups = selectedTeamId
-    ? schedule?.matchups
-        .filter((m) => m.homeTeamId === selectedTeamId || m.awayTeamId === selectedTeamId)
-        .sort((a, b) => a.week - b.week) ?? []
+    ? schedule?.matchups.filter(
+        (m) => m.homeTeamId === selectedTeamId || m.awayTeamId === selectedTeamId,
+      ) ?? []
     : [];
 
   const activeLeague = leagues.find((l) => l.id === activeLeagueId);
 
   return (
-    <main className="min-h-screen bg-[#0e0e0f] text-[#e8e6df] font-mono">
+    <main className="min-h-screen px-4 py-8 sm:px-8" style={{ background: '#0e0e0f', color: '#e8e6df' }}>
+      <div className="max-w-5xl mx-auto">
 
-      {/* ── Top bar ───────────────────────────────────────────────────────────
-          Mobile: two rows — branding/switcher on top, actions below.
-          Desktop: single row with space-between.
-      ── */}
-      <header className="border-b border-[#2a2a2c] px-4 sm:px-8 py-3 sm:py-4
-                         flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        {/* Row 1: logo + league switcher */}
-        <div className="flex items-center gap-4 sm:gap-6">
-          <span className="text-xs tracking-[0.2em] uppercase font-medium shrink-0">
-            Commissioner
-          </span>
+        {/* ── Top nav */}
+        <div className="flex items-center justify-between mb-6">
           <LeagueSwitcher
             leagues={leagues}
             activeId={activeLeagueId}
             onChange={setActiveLeagueId}
           />
+          <Link
+            href="/log"
+            className="text-xs transition-colors touch-manipulation hover:text-[#e8e6df]"
+            style={{ color: '#555' }}
+          >
+            Activity Log →
+          </Link>
         </div>
-
-        {/* Row 2 (mobile) / right side (desktop): action buttons */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* "synced at" label — secondary info, only worth showing on wider screens */}
-          {lastSynced && (
-            <span className="hidden sm:inline text-[11px]" style={{ color: '#80ff49' }}>
-              synced {lastSynced.toLocaleTimeString()}
-            </span>
-          )}
-          <button
-            onClick={() => setShowSyncModal(true)}
-            disabled={syncing}
-            className="flex-1 sm:flex-none px-3 py-1.5 text-xs border border-[#2a2a2c] rounded
-                       text-[#888] hover:text-[#e8e6df] hover:border-[#444]
-                       transition-colors disabled:opacity-40 touch-manipulation"
-          >
-            {syncing ? 'Syncing…' : '↻ Sync Sleeper'}
-          </button>
-          <button
-            onClick={handleExport}
-            disabled={!schedule}
-            className="flex-1 sm:flex-none px-3 py-1.5 text-xs border border-[#2a2a2c] rounded
-                       hover:text-[#80ff49] hover:border-[#80ff49]
-                       transition-colors disabled:opacity-40 touch-manipulation"
-          >
-            ↓ Export CSV
-          </button>
-          <button
-            onClick={handleGenerate}
-            disabled={generating || !activeLeagueId}
-            className="flex-1 sm:flex-none px-3 py-1.5 text-xs border border-[#2a2a2c] rounded
-                       hover:text-[#80ff49] hover:border-[#80ff49]
-                       transition-colors disabled:opacity-40 touch-manipulation"
-          >
-            {generating ? 'Generating…' : schedule ? '⟳ Regenerate' : '+ Generate'}
-          </button>
-        </div>
-      </header>
-
-      <div className="px-4 sm:px-8 py-6">
 
         {/* ── Error banner */}
         {error && (
-          <div className="mb-6 px-4 py-3 bg-[#2a1515] border border-[#5a2020] rounded text-[#f87171] text-xs">
+          <div
+            className="mb-4 px-3 py-2 rounded text-xs border"
+            style={{
+              background: 'rgba(255,73,73,0.08)',
+              color: '#ff4949',
+              borderColor: 'rgba(255,73,73,0.2)',
+            }}
+          >
             {error}
-            <button onClick={() => setError(null)} className="ml-4 opacity-60 hover:opacity-100">✕</button>
           </div>
         )}
 
-        {/* ── Season heading */}
-        {activeLeague && (
-          <div className="mb-8">
-            <h1 className="text-2xl font-medium tracking-tight">
-              {activeLeague.name}
-            </h1>
-            <p className="text-sm mt-1" style={{ color: '#80ff49' }}>
-              {activeLeague.season} season &middot; 13 weeks &middot; 2 divisions
-            </p>
-          </div>
-        )}
+        {/* ── Action bar */}
+        <div className="flex flex-wrap gap-2 mb-6">
+          <button
+            onClick={() => setShowSyncModal(true)}
+            className="px-4 py-2 rounded text-sm font-medium border border-[#2a2a2c] transition-colors
+                       hover:border-[#444] hover:text-[#e8e6df] touch-manipulation"
+            style={{ color: '#888' }}
+          >
+            {lastSynced ? '↻ Re-sync' : '+ Sync League'}
+          </button>
 
-        {loading && (
-          <div className="text-sm">Loading schedule…</div>
-        )}
-
-        {!loading && !schedule && activeLeagueId && (
-          <div className="flex flex-col items-center justify-center py-24 text-center">
-            <p className="mb-4">No schedule generated yet.</p>
+          {!loading && activeLeagueId && (
             <button
               onClick={handleGenerate}
               disabled={generating}
               className="px-4 py-2 rounded text-sm font-medium transition-colors disabled:opacity-40 touch-manipulation"
               style={{ background: '#80ff49', color: '#0e0e0f' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#9fff6e')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#80ff49')}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#9fff6e')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = '#80ff49')}
             >
-              {generating ? 'Generating…' : '+ Generate Schedule'}
+              {generating ? 'Generating…' : schedule ? '↻ Regenerate' : '+ Generate Schedule'}
             </button>
+          )}
+
+          {!loading && schedule && (
+            <>
+              <button
+                onClick={handleExport}
+                className="px-4 py-2 rounded text-sm font-medium border border-[#2a2a2c] transition-colors
+                           hover:border-[#444] hover:text-[#e8e6df] touch-manipulation"
+                style={{ color: '#888' }}
+              >
+                ↓ Export CSV
+              </button>
+
+              <button
+                onClick={() => setShowClearConfirm(true)}
+                className="px-4 py-2 rounded text-sm font-medium border transition-colors touch-manipulation"
+                style={{
+                  borderColor: 'rgba(255,73,73,0.3)',
+                  color: '#ff4949',
+                  background: 'transparent',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,73,73,0.08)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                ✕ Clear Schedule
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* ── Loading skeleton */}
+        {loading && (
+          <div className="space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div
+                key={i}
+                className="h-10 rounded border border-[#2a2a2c] animate-pulse"
+                style={{ background: '#141415' }}
+              />
+            ))}
           </div>
         )}
 
+        {/* ── Empty state */}
+        {!loading && !schedule && activeLeagueId && (
+          <p className="text-xs text-center py-20" style={{ color: '#555' }}>
+            No schedule yet. Generate one above.
+          </p>
+        )}
+
+        {/* ── Schedule content */}
         {!loading && schedule && (
           <>
-            {/* ── Stat cards */}
             <StatCards
               total={schedule.matchups.length}
               division={divisionMatchups.length}
@@ -318,104 +330,15 @@ export default function DashboardPage() {
               generatedAt={schedule.generatedAt}
             />
 
-            {/* ── Schedule grid + sidebar
-                Mobile: single column, sidebar stacks below grid.
-                Desktop: grid flex-1, sidebar fixed w-64 beside it.
-            ── */}
             <div className="mt-8 flex flex-col gap-6 sm:flex-row sm:items-start">
-
-              {/* Schedule grid */}
               <div className="flex-1 min-w-0">
-                <div className="flex flex-col gap-1">
-                  {byWeek.map((matchups, i) => {
-                    const week = i + 1;
-                    const isOpen = expandedWeeks.has(week);
-
-                    return (
-                      <div key={week} className="border border-[#2a2a2c] rounded">
-                        {/* Week header / toggle */}
-                        <button
-                          onClick={() => toggleWeek(week)}
-                          className="w-full flex items-center justify-between px-4 py-2.5 text-xs
-                                     hover:bg-[#1a1a1c] transition-colors touch-manipulation"
-                        >
-                          <span className="tracking-widest uppercase" style={{ color: '#80ff49' }}>
-                            Week {week}
-                          </span>
-                          <div className="flex items-center gap-3" style={{ color: '#80ff49' }}>
-                            <span>{matchups.length} games</span>
-                            <span
-                              className="transition-transform duration-200"
-                              style={{ display: 'inline-block', transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
-                            >
-                              ▾
-                            </span>
-                          </div>
-                        </button>
-
-                        {/* Matchup rows */}
-                        {isOpen && (
-                          <div className="border-t border-[#2a2a2c] divide-y divide-[#1e1e20]">
-                            {matchups.length === 0 ? (
-                              <p className="px-4 py-3 text-xs">No games scheduled.</p>
-                            ) : (
-                              matchups.map((m, gameIdx) => (
-                                <div
-                                  key={m.id}
-                                  className="flex items-center justify-between px-4 py-2.5 text-xs group"
-                                >
-                                  {/* Game number */}
-                                  <span className="w-6 shrink-0">
-                                    {gameIdx + 1}
-                                  </span>
-
-                                  {/* Teams — truncate gracefully on narrow screens */}
-                                  <div className="flex-1 flex items-center gap-1.5 sm:gap-2 min-w-0">
-                                    <span className="text-[#e8e6df] truncate">{m.homeTeam.name}</span>
-                                    <span className="shrink-0 text-[#555]">vs</span>
-                                    <span className="text-[#e8e6df] truncate">{m.awayTeam.name}</span>
-                                  </div>
-
-                                  {/* Type badge */}
-                                  <span
-                                    className="shrink-0 px-1.5 py-0.5 rounded text-[10px] ml-2 sm:ml-3"
-                                    style={
-                                      m.type === 'division'
-                                        ? { background: 'rgba(200,73,255,0.15)', color: '#c849ff' }
-                                        : { background: 'rgba(255,109,73,0.15)', color: '#ff6d49' }
-                                    }
-                                  >
-                                    {m.type === 'division' ? 'DIV' : 'X-DIV'}
-                                  </span>
-
-                                  {/* Swap button — always visible on touch, hover-only on pointer devices */}
-                                  <button
-                                    onClick={() => handleSwap(m.id, m.homeTeamId, m.awayTeamId)}
-                                    className="ml-2 sm:ml-3 shrink-0 hover:text-[#e8e6df] transition-all
-                                               touch-manipulation
-                                               opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
-                                    title="Swap home/away"
-                                    aria-label="Swap home and away teams"
-                                  >
-                                    ⇄
-                                  </button>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+                <ScheduleGrid weeks={byWeek} onSwap={handleSwap} />
               </div>
 
-              {/* ── Team log sidebar */}
               <div className="w-full sm:w-64 sm:shrink-0">
                 <p className="text-[10px] uppercase tracking-widest mb-3" style={{ color: '#80ff49' }}>
                   Team schedule
                 </p>
-                {/* On mobile, team buttons wrap in a 2-col grid instead of a long list */}
                 <div className="grid grid-cols-2 gap-1 mb-4 sm:flex sm:flex-col">
                   {allTeams
                     .sort((a, b) => a.divisionId - b.divisionId || a.name.localeCompare(b.name))
@@ -455,14 +378,12 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* ── Sync modal ────────────────────────────────────────────────────────
-          px-4 on the backdrop ensures the modal never bleeds to screen edges.
-      ── */}
+      {/* ── Sync modal */}
       {showSyncModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
           <div className="bg-[#141415] border border-[#2a2a2c] rounded-lg p-6 w-full max-w-sm">
             <h2 className="text-sm font-medium mb-1">Sync Sleeper League</h2>
-            <p className="text-[#555] text-xs mb-4">
+            <p className="text-xs mb-4" style={{ color: '#555' }}>
               Paste your Sleeper league ID to add or update it.
             </p>
             <input
@@ -489,6 +410,41 @@ export default function DashboardPage() {
                            hover:bg-white transition-colors disabled:opacity-40 touch-manipulation"
               >
                 {syncing ? 'Syncing…' : 'Sync'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Clear confirmation modal */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+          <div className="bg-[#141415] border border-[#2a2a2c] rounded-lg p-6 w-full max-w-sm">
+            <h2 className="text-sm font-medium mb-1">Clear schedule?</h2>
+            <p className="text-xs mb-6" style={{ color: '#555' }}>
+              This will permanently delete all matchups for{' '}
+              <span style={{ color: '#e8e6df' }}>{activeLeague?.name ?? 'this league'}</span>.
+              You can regenerate a new schedule afterwards.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                disabled={clearing}
+                className="px-3 py-1.5 text-xs text-[#666] hover:text-[#e8e6df] transition-colors
+                           disabled:opacity-40 touch-manipulation"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleClear}
+                disabled={clearing}
+                className="px-3 py-1.5 text-xs rounded font-medium transition-colors
+                           disabled:opacity-40 touch-manipulation"
+                style={{ background: '#ff4949', color: '#fff' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#ff6666')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '#ff4949')}
+              >
+                {clearing ? 'Clearing…' : 'Yes, clear it'}
               </button>
             </div>
           </div>

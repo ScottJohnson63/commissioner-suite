@@ -1,5 +1,5 @@
 -- CreateTable
-CREATE TABLE "League" (
+CREATE TABLE IF NOT EXISTS "League" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "sleeperLeagueId" TEXT NOT NULL,
     "name" TEXT NOT NULL DEFAULT '',
@@ -9,7 +9,7 @@ CREATE TABLE "League" (
 );
 
 -- CreateTable
-CREATE TABLE "Team" (
+CREATE TABLE IF NOT EXISTS "Team" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "leagueId" TEXT NOT NULL,
     "sleeperRosterId" TEXT NOT NULL,
@@ -19,7 +19,7 @@ CREATE TABLE "Team" (
 );
 
 -- CreateTable
-CREATE TABLE "Schedule" (
+CREATE TABLE IF NOT EXISTS "Schedule" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "leagueId" TEXT NOT NULL,
     "season" INTEGER NOT NULL,
@@ -29,7 +29,7 @@ CREATE TABLE "Schedule" (
 );
 
 -- CreateTable
-CREATE TABLE "Matchup" (
+CREATE TABLE IF NOT EXISTS "Matchup" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "scheduleId" TEXT NOT NULL,
     "week" INTEGER NOT NULL,
@@ -41,9 +41,25 @@ CREATE TABLE "Matchup" (
     CONSTRAINT "Matchup_awayTeamId_fkey" FOREIGN KEY ("awayTeamId") REFERENCES "Team" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
--- CreateIndex
-CREATE UNIQUE INDEX "League_sleeperLeagueId_key" ON "League"("sleeperLeagueId");
+-- CreateTable
+CREATE TABLE IF NOT EXISTS "AuditLog" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "action" TEXT NOT NULL,
+    "leagueId" TEXT,
+    "detail" TEXT NOT NULL DEFAULT '{}',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "AuditLog_leagueId_fkey" FOREIGN KEY ("leagueId") REFERENCES "League" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+);
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Team_leagueId_sleeperRosterId_key" ON "Team"("leagueId", "sleeperRosterId");
+CREATE UNIQUE INDEX IF NOT EXISTS "League_sleeperLeagueId_key" ON "League"("sleeperLeagueId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX IF NOT EXISTS "Team_leagueId_sleeperRosterId_key" ON "Team"("leagueId", "sleeperRosterId");
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "AuditLog_leagueId_idx" ON "AuditLog"("leagueId");
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "AuditLog_createdAt_idx" ON "AuditLog"("createdAt");
 

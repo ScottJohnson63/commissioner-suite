@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { fetchLeagueData } from '@/lib/sleeper/sync';
+import { writeAuditLog } from '@/lib/audit';
 
 export async function POST(
   req: NextRequest
@@ -40,6 +41,13 @@ export async function POST(
           }),
         ),
       );
+
+      await writeAuditLog('SYNC', league.id, {
+        sleeperLeagueId,
+        name,
+        season,
+        teamCount: teams.length,
+      });
 
       results.push({ leagueId: league.id, sleeperLeagueId, teamCount: teams.length });
     } catch (err) {

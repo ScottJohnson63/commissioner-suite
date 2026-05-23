@@ -19,6 +19,7 @@ model League {
   createdAt       DateTime   @default(now())
   teams           Team[]
   schedules       Schedule[]
+  auditLogs       AuditLog[]
 }
 
 model Team {
@@ -54,4 +55,23 @@ model Matchup {
   schedule   Schedule @relation(fields: [scheduleId], references: [id])
   homeTeam   Team     @relation("HomeTeam", fields: [homeTeamId], references: [id])
   awayTeam   Team     @relation("AwayTeam", fields: [awayTeamId], references: [id])
+}
+
+enum AuditActionType {
+  SYNC
+  GENERATE
+  DELETE
+  EXPORT
+}
+
+model AuditLog {
+  id        String          @id @default(cuid())
+  action    AuditActionType
+  leagueId  String?
+  league    League?         @relation(fields: [leagueId], references: [id], onDelete: SetNull)
+  detail    String          @default("{}")
+  createdAt DateTime        @default(now())
+
+  @@index([leagueId])
+  @@index([createdAt])
 }
