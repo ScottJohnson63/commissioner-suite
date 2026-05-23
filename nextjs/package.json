@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev:python": "cd ../python && .venv/bin/uvicorn main:app --reload --port 8000",
+    "dev:python": "cd ../python && venv/bin/uvicorn main:app --reload --port 8000",
     "dev:all": "concurrently \"npm run dev\" \"npm run dev:python\"",
     "dev": "next dev",
     "build": "prisma generate && next build",
@@ -18,6 +18,7 @@
     "@libsql/client": "^0.17.3",
     "@prisma/adapter-libsql": "^7.8.0",
     "@prisma/client": "^6.19.3",
+    "groq-sdk": "^1.2.0",
     "next": "16.2.6",
     "prisma": "^6.19.3",
     "react": "19.2.4",

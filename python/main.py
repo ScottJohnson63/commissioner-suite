@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import nfl
+import ssl
+import certifi
+
+ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
 
 app = FastAPI(title="Fantasy AI API", version="1.0.0")
 
