@@ -75,26 +75,38 @@ async function fetchTrending(): Promise<{ adds: TrendingPlayer[]; drops: Trendin
     }
 }
 
+// Module-level cache — persists across requests in the same server instance
+let playerMapCache: Record<string, string> | null = null;
+let playerMapCachedAt: number = 0;
+const PLAYER_MAP_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
 async function fetchSleeperPlayerMap(): Promise<Record<string, string>> {
+    const now = Date.now();
+
+    // Return cached version if still fresh
+    if (playerMapCache && now - playerMapCachedAt < PLAYER_MAP_TTL_MS) {
+        return playerMapCache;
+    }
+
     try {
-        const res = await fetch('https://api.sleeper.app/v1/players/nfl', {
-            next: { revalidate: 86400 }, // cache for 24 hours — this is a huge payload
-        });
-        if (!res.ok) return {};
+        const res = await fetch('https://api.sleeper.app/v1/players/nfl');
+        if (!res.ok) return playerMapCache ?? {};
+
         const data = await res.json() as Record<string, { full_name?: string }>;
-        return Object.fromEntries(
+        playerMapCache = Object.fromEntries(
             Object.entries(data)
                 .filter(([, player]) => player.full_name)
                 .map(([id, player]) => [id, player.full_name!]),
         );
+        playerMapCachedAt = now;
+        return playerMapCache;
     } catch {
-        return {};
+        return playerMapCache ?? {};
     }
 }
 
 function buildSystemPrompt(context: AgentContext, playerMap: Record<string, string>): string {
     const statsSnippet = context.nflStats
-        .slice(0, 100) // keep prompt size reasonable
+        .slice(0, 20)
         .map((p) =>
             [
                 `Player: ${p.player_name ?? p.player_id}`,
@@ -174,7 +186,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
     try {
         const stream = await groq.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
+            model: 'llama-3.1-8b-instant',
             messages: [
                 { role: 'system', content: systemPrompt },
                 ...body.messages.map((m) => ({

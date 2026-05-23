@@ -75,3 +75,140 @@ model AuditLog {
   @@index([leagueId])
   @@index([createdAt])
 }
+
+model NflWeeklyStat {
+  id                      String  @id @default(cuid())
+
+  // ── Identity ───────────────────────────────────────
+  playerId                String
+  playerName              String?
+  playerDisplayName       String?
+  position                String?
+  positionGroup           String?
+  headshot                String?
+  season                  Int
+  week                    Int
+  seasonType              String?
+  team                    String?
+  opponentTeam            String?
+
+  // ── Passing ────────────────────────────────────────
+  completions             Float?
+  attempts                Float?
+  passingYards            Float?
+  passingTds              Float?
+  passingInterceptions    Float?
+  sacksSuffered           Float?
+  sackYardsLost           Float?
+  sackFumbles             Float?
+  sackFumblesLost         Float?
+  passingAirYards         Float?
+  passingYardsAfterCatch  Float?
+  passingFirstDowns       Float?
+  passingEpa              Float?
+  passingCpoe             Float?
+  passing2ptConversions   Float?
+  pacr                    Float?  // passing air conversion ratio
+
+  // ── Rushing ────────────────────────────────────────
+  carries                 Float?
+  rushingYards            Float?
+  rushingTds              Float?
+  rushingFumbles          Float?
+  rushingFumblesLost      Float?
+  rushingFirstDowns       Float?
+  rushingEpa              Float?
+  rushing2ptConversions   Float?
+
+  // ── Receiving ──────────────────────────────────────
+  receptions              Float?
+  targets                 Float?
+  receivingYards          Float?
+  receivingTds            Float?
+  receivingFumbles        Float?
+  receivingFumblesLost    Float?
+  receivingAirYards       Float?
+  receivingYardsAfterCatch Float?
+  receivingFirstDowns     Float?
+  receivingEpa            Float?
+  receiving2ptConversions Float?
+  racr                    Float?  // receiver air conversion ratio
+  targetShare             Float?
+  airYardsShare           Float?
+  wopr                    Float?  // weighted opportunity rating
+
+  // ── Defense ────────────────────────────────────────
+  defTacklesSolo          Float?
+  defTacklesWithAssist    Float?
+  defTackleAssists        Float?
+  defTacklesForLoss       Float?
+  defTacklesForLossYards  Float?
+  defFumblesForced        Float?
+  defSacks                Float?
+  defSackYards            Float?
+  defQbHits               Float?
+  defInterceptions        Float?
+  defInterceptionYards    Float?
+  defPassDefended         Float?
+  defTds                  Float?
+  defFumbles              Float?
+  defSafeties             Float?
+
+  // ── Misc / Special Teams ───────────────────────────
+  specialTeamsTds         Float?
+  miscYards               Float?
+  fumbleRecoveryOwn       Float?
+  fumbleRecoveryYardsOwn  Float?
+  fumbleRecoveryOpp       Float?
+  fumbleRecoveryYardsOpp  Float?
+  fumbleRecoveryTds       Float?
+  penalties               Float?
+  penaltyYards            Float?
+  puntReturns             Float?
+  puntReturnYards         Float?
+  kickoffReturns          Float?
+  kickoffReturnYards      Float?
+
+  // ── Kicking ────────────────────────────────────────
+  fgMade                  Float?
+  fgAtt                   Float?
+  fgMissed                Float?
+  fgBlocked               Float?
+  fgLong                  Float?
+  fgPct                   Float?
+  fgMade0To19             Float?
+  fgMade20To29            Float?
+  fgMade30To39            Float?
+  fgMade40To49            Float?
+  fgMade50To59            Float?
+  fgMade60Plus            Float?
+  fgMissed0To19           Float?
+  fgMissed20To29          Float?
+  fgMissed30To39          Float?
+  fgMissed40To49          Float?
+  fgMissed50To59          Float?
+  fgMissed60Plus          Float?
+  fgMadeDistance          Float?
+  fgMissedDistance        Float?
+  fgBlockedDistance       Float?
+  patMade                 Float?
+  patAtt                  Float?
+  patMissed               Float?
+  patBlocked              Float?
+  patPct                  Float?
+  gwfgMade                Float?
+  gwfgAtt                 Float?
+  gwfgMissed              Float?
+  gwfgBlocked             Float?
+  gwfgDistance            Float?
+
+  // ── Fantasy ────────────────────────────────────────
+  fantasyPoints           Float?
+  fantasyPointsPpr        Float?
+
+  @@unique([season, week, playerId])
+  @@index([season, week])
+  @@index([playerId])
+  @@index([position, season])
+  @@index([team, season])
+}
