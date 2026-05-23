@@ -2,10 +2,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
+import { prisma } from '@/lib/prisma';
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-const PYTHON_API_URL = process.env.PYTHON_API_URL ?? 'http://localhost:8000';
 const SLEEPER_BASE = 'https://api.sleeper.app/v1';
 const CURRENT_SEASON = 2024;
 
@@ -44,12 +44,12 @@ interface AgentContext {
 
 async function fetchRecentStats(): Promise<PlayerStats[]> {
     try {
-        const res = await fetch(
-            `${PYTHON_API_URL}/nfl/weekly?season=${CURRENT_SEASON}`,
-            { cache: 'no-store' },
-        );
-        if (!res.ok) return [];
-        return res.json() as Promise<PlayerStats[]>;
+        const stats = await prisma.nflWeeklyStat.findMany({
+            where: { season: CURRENT_SEASON },
+            orderBy: [{ week: 'desc' }, { fantasyPointsPpr: 'desc' }],
+            take: 20,
+        });
+        return stats as unknown as PlayerStats[];
     } catch {
         return [];
     }

@@ -1,98 +1,133 @@
 // tests/app/api/nfl/proxy.test.ts
 
+import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { GET } from '@/app/api/nfl/[...path]/route';
 import { NextRequest } from 'next/server';
-import { jest, describe, it, expect, beforeEach, beforeAll, afterAll } from '@jest/globals';
 
-let mockFetch: jest.MockedFunction<typeof fetch>;
+// Mock Prisma
+jest.mock('@/lib/prisma', () => ({
+  prisma: {
+    nflWeeklyStat: {
+      findMany: jest.fn(),
+    },
+  },
+}));
 
-beforeAll(() => {
-  mockFetch = jest.spyOn(global, 'fetch') as jest.MockedFunction<typeof fetch>;
-});
+import { prisma } from '@/lib/prisma';
 
-afterAll(() => {
-  mockFetch.mockRestore();
-});
+const mockFindMany = prisma.nflWeeklyStat.findMany as jest.MockedFunction<
+  typeof prisma.nflWeeklyStat.findMany
+>;
 
 function makeRequest(path: string): NextRequest {
   return new NextRequest(`http://localhost:3000/api/nfl/${path}`);
 }
 
-describe('GET /api/nfl/[...path]', () => {
+const mockStats = [
+  {
+    id: '1',
+    playerId: '4046',
+    playerName: 'Tom Brady',
+    playerDisplayName: 'Tom Brady',
+    position: 'QB',
+    positionGroup: 'QB',
+    season: 2025,
+    week: 5,
+    passingYards: 320,
+    fantasyPointsPpr: 28.5,
+  },
+];
+
+describe('GET /api/nfl/weekly', () => {
   beforeEach(() => {
-    mockFetch.mockReset();
+    mockFindMany.mockReset();
   });
 
-  it('proxies a successful response from FastAPI', async () => {
-    const mockData = [{ player_id: '123', name: 'Tom Brady' }];
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify(mockData), { status: 200 }),
-    );
+  it('returns weekly stats for a season', async () => {
+    mockFindMany.mockResolvedValueOnce(mockStats as any);
 
-    const res = await GET(makeRequest('players'), {
-      params: Promise.resolve({ path: ['players'] }),
+    const res = await GET(makeRequest('weekly?season=2025'), {
+      params: Promise.resolve({ path: ['weekly'] }),
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(mockData);
-    expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:8000/nfl/players',
-      expect.objectContaining({ method: 'GET' }),
+    const body = await res.json();
+    expect(body).toHaveLength(1);
+    expect(body[0].playerName).toBe('Tom Brady');
+    expect(mockFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { season: 2025 },
+      }),
     );
   });
 
-  it('forwards query params to FastAPI', async () => {
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify([]), { status: 200 }),
-    );
+  it('filters by week when provided', async () => {
+    mockFindMany.mockResolvedValueOnce(mockStats as any);
 
-    const req = new NextRequest(
-      'http://localhost:3000/api/nfl/weekly?season=2024&week=5',
-    );
-    await GET(req, { params: Promise.resolve({ path: ['weekly'] }) });
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:8000/nfl/weekly?season=2024&week=5',
-      expect.anything(),
-    );
-  });
-
-  it('returns 502 when FastAPI is unreachable', async () => {
-    mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
-
-    const res = await GET(makeRequest('players'), {
-      params: Promise.resolve({ path: ['players'] }),
+    await GET(makeRequest('weekly?season=2025&week=5'), {
+      params: Promise.resolve({ path: ['weekly'] }),
     });
 
-    expect(res.status).toBe(502);
-    const body = await res.json() as { error: string };
-    expect(body.error).toMatch(/ECONNREFUSED/);
+    expect(mockFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { season: 2025, week: 5 },
+      }),
+    );
   });
 
-  it('forwards non-200 status codes from FastAPI', async () => {
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: 'Not found' }), { status: 404 }),
-    );
+  it('filters by position when provided', async () => {
+    mockFindMany.mockResolvedValueOnce(mockStats as any);
 
-    const res = await GET(makeRequest('players'), {
-      params: Promise.resolve({ path: ['players'] }),
+    await GET(makeRequest('weekly?season=2025&position=QB'), {
+      params: Promise.resolve({ path: ['weekly'] }),
+    });
+
+    expect(mockFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { season: 2025, position: 'QB' },
+      }),
+    );
+  });
+
+  it('returns 500 when Prisma throws', async () => {
+    mockFindMany.mockRejectedValueOnce(new Error('DB connection failed'));
+
+    const res = await GET(makeRequest('weekly?season=2025'), {
+      params: Promise.resolve({ path: ['weekly'] }),
+    });
+
+    expect(res.status).toBe(500);
+    const body = await res.json() as { error: string };
+    expect(body.error).toMatch(/DB connection failed/);
+  });
+
+  it('returns 404 for unknown endpoint', async () => {
+    const res = await GET(makeRequest('unknown'), {
+      params: Promise.resolve({ path: ['unknown'] }),
     });
 
     expect(res.status).toBe(404);
   });
+});
 
-  it('proxies nested paths correctly', async () => {
-    mockFetch.mockResolvedValueOnce(
-      new Response(JSON.stringify([]), { status: 200 }),
-    );
+describe('GET /api/nfl/players', () => {
+  beforeEach(() => {
+    mockFindMany.mockReset();
+  });
 
-    await GET(makeRequest('stats/weekly'), {
-      params: Promise.resolve({ path: ['stats', 'weekly'] }),
+  it('returns distinct players for a season', async () => {
+    mockFindMany.mockResolvedValueOnce(mockStats as any);
+
+    const res = await GET(makeRequest('players?season=2025'), {
+      params: Promise.resolve({ path: ['players'] }),
     });
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('/nfl/stats/weekly'),
-      expect.anything(),
+    expect(res.status).toBe(200);
+    expect(mockFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        distinct: ['playerId'],
+        where: { season: 2025 },
+      }),
     );
   });
 });

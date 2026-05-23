@@ -3,16 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev:python": "cd ../python && venv/bin/uvicorn main:app --reload --port 8000",
-    "dev:all": "concurrently \"npm run dev\" \"npm run dev:python\"",
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "jest --coverage --json --outputFile=../test-results/jest-results-$(date +%Y%m%d_%H%M%S).json",
-    "test:watch": "jest --watch",
-    "test:python": "cd ../python && venv/bin/python -m pytest tests/ -v >> ../test-results/pytest-results-$(date +%Y%m%d_%H%M%S).txt",
-    "test:all": "npm test && npm run test:python"
+    "test:watch": "jest --watch"
   },
   "dependencies": {
     "@libsql/client": "^0.17.3",
