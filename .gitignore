@@ -22,6 +22,7 @@ python/**/__pycache__/
 python/**/*.pyc
 python/.pytest_cache/
 python/node_modules/
+python/.env.example
 
 # vercel
 .vercel
