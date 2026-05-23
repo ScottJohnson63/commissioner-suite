@@ -3,10 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "dev:python": "cd ../python && .venv/bin/uvicorn main:app --reload --port 8000",
+    "dev:all": "concurrently \"npm run dev\" \"npm run dev:python\"",
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "jest --coverage --json --outputFile=../test-results/jest-results-$(date +%Y%m%d_%H%M%S).json",
+    "test:watch": "jest --watch",
+    "test:python": "cd ../python && venv/bin/python -m pytest tests/ -v >> ../test-results/pytest-results-$(date +%Y%m%d_%H%M%S).txt",
+    "test:all": "npm test && npm run test:python"
   },
   "dependencies": {
     "@libsql/client": "^0.17.3",
@@ -19,13 +25,18 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.19.41",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "concurrently": "^9.2.1",
     "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
+    "jest": "^30.4.2",
+    "jest-environment-node": "^30.4.1",
     "tailwindcss": "^4",
+    "ts-jest": "^29.4.11",
     "typescript": "^5"
   }
 }
