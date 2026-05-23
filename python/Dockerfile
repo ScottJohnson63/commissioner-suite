@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-RUN pip install pandas>=2.0.0 numpy pyarrow fastparquet && \
+RUN pip install pandas>=2.0.0 numpy pyarrow fastparquet appdirs && \
     pip install nfl_data_py==0.3.3 --no-deps && \
     pip install fastapi==0.115.0 "uvicorn[standard]==0.30.6" python-dotenv==1.0.1
 
