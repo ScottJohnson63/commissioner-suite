@@ -1,7 +1,7 @@
 // src/app/league/ai/page.tsx
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -12,6 +12,10 @@ interface Message {
   loading?: boolean;
 }
 
+type ModelUsed = 'gemini' | 'groq' | null;
+
+const HOURLY_LIMIT = 5;
+
 const SUGGESTED_PROMPTS = [
   'Should I start or sit my running back this week?',
   'Who are the top waiver wire pickups right now?',
@@ -19,22 +23,162 @@ const SUGGESTED_PROMPTS = [
   'Should I trade for a receiver or focus on defense?',
 ];
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function SessionAlert({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <div
+      className="w-full rounded-xl px-5 py-4 text-sm flex flex-col gap-2 relative"
+      style={{ background: '#1a1a1c', border: '1px solid #2e2e30' }}
+      role="alert"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span style={{ color: '#80ff49' }}>⚡</span>
+          <span className="font-medium" style={{ color: '#e8e6df' }}>
+            Session Limits Apply
+          </span>
+        </div>
+        <button
+          onClick={onDismiss}
+          className="shrink-0 text-xs leading-none mt-0.5 transition-colors"
+          style={{ color: '#555' }}
+          aria-label="Dismiss"
+        >
+          ✕
+        </button>
+      </div>
+      <p style={{ color: '#888' }}>
+        You are limited to <strong style={{ color: '#e8e6df' }}>{HOURLY_LIMIT} prompts per hour</strong>.
+        This agent is shared — please use it sparingly so everyone can access it.
+        The agent uses <strong style={{ color: '#e8e6df' }}>Gemini 2.5 Flash</strong> by default and
+        automatically switches to <strong style={{ color: '#e8e6df' }}>Groq Llama 3.1</strong> if the
+        Gemini session limit is reached.
+      </p>
+    </div>
+  );
+}
+
+function FallbackToast({ reason, onDismiss }: { reason: string; onDismiss: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDismiss, 6000);
+    return () => clearTimeout(t);
+  }, [onDismiss]);
+
+  const message = reason === 'gemini_rate_limit'
+    ? 'Gemini session limit reached — switched to'
+    : 'Gemini session error — switched to';
+
+  return (
+    <div
+      className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl text-sm flex items-center gap-3 shadow-xl"
+      style={{ background: '#1e1e20', border: '1px solid #3a3a3c', color: '#e8e6df', maxWidth: '90vw' }}
+      role="status"
+    >
+      <span style={{ color: '#facc15' }}>⚠</span>
+      <span>
+        {message}{' '}
+        <strong style={{ color: '#e8e6df' }}>Groq Llama 3.1</strong>
+      </span>
+      <button
+        onClick={onDismiss}
+        className="ml-1 text-xs transition-colors"
+        style={{ color: '#555' }}
+        aria-label="Dismiss"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
+function UsageBar({
+  used,
+  limit,
+  dailyUsed,
+}: {
+  used: number;
+  limit: number;
+  dailyUsed: number;
+}) {
+  const pct = Math.min(100, (used / limit) * 100);
+  const barColor =
+    pct >= 100 ? '#ef4444' : pct >= 80 ? '#facc15' : '#80ff49';
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between text-xs" style={{ color: '#555' }}>
+        <span>{used}/{limit} prompts this hour</span>
+        <span>{dailyUsed} used today</span>
+      </div>
+      <div
+        className="h-1 w-full rounded-full overflow-hidden"
+        style={{ background: '#1e1e20' }}
+      >
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${pct}%`, background: barColor }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ModelBadge({ model }: { model: ModelUsed }) {
+  if (!model) return null;
+  const label = model === 'gemini' ? 'Gemini 2.5 Flash' : 'Llama 3.1 · Groq';
+  const color = model === 'gemini' ? '#60a5fa' : '#a78bfa';
+  return (
+    <span
+      className="text-xs px-2 py-1 rounded transition-all"
+      style={{ background: '#1a1a1c', color }}
+    >
+      {label}
+    </span>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function AIPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Session alert (shown once on load)
+  const [showAlert, setShowAlert] = useState(true);
+
+  // Fallback toast
+const [showFallbackToast, setShowFallbackToast] = useState<string | null>(null);
+
+  // Rate-limit / usage tracking (client-side mirror of server headers)
+  const [hourlyUsed, setHourlyUsed] = useState(0);
+  const [dailyUsed, setDailyUsed] = useState(0);
+  const [modelUsed, setModelUsed] = useState<ModelUsed>(null);
+  const [rateLimited, setRateLimited] = useState(false);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const clientIdRef = useRef<string>('');
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  useEffect(() => {
+    let id = localStorage.getItem('agent_client_id');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('agent_client_id', id);
+    }
+    clientIdRef.current = id;
+  }, []);
+
+const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
+
   async function handleSubmit(prompt?: string): Promise<void> {
     const text = (prompt ?? input).trim();
-    if (!text || loading) return;
+    if (!text || loading || rateLimited) return;
 
     const userMessage: Message = { role: 'user', content: text };
     const pendingMessage: Message = { role: 'assistant', content: '', loading: true };
@@ -51,15 +195,48 @@ export default function AIPage() {
     try {
       const res = await fetch('/api/agent', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-Id': clientIdRef.current,
+        },
         body: JSON.stringify({ messages: history }),
       });
+
+      // ── Handle rate-limit ──────────────────────────────────────────────────
+      if (res.status === 429) {
+        setRateLimited(true);
+        const data = (await res.json()) as { error: string; resetAt?: number };
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1] = {
+            role: 'assistant',
+            content: `⛔ ${data.error}`,
+            loading: false,
+          };
+          return updated;
+        });
+        return;
+      }
 
       if (!res.ok || !res.body) {
         throw new Error('Agent failed to respond');
       }
 
-      // Read the stream
+      // ── Parse usage headers ────────────────────────────────────────────────
+      const newModel = (res.headers.get('X-Model-Used') ?? null) as ModelUsed;
+      const fallbackReason = res.headers.get('X-Fallback-Reason');
+      const remaining = Number(res.headers.get('X-RateLimit-Remaining') ?? 0);
+      const daily = Number(res.headers.get('X-Daily-Prompts-Used') ?? 0);
+
+      setModelUsed(newModel);
+      setHourlyUsed(HOURLY_LIMIT - remaining);
+      setDailyUsed(daily);
+
+      if (fallbackReason) {
+        setShowFallbackToast(fallbackReason);
+      }
+
+      // ── Stream text ────────────────────────────────────────────────────────
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let fullText = '';
@@ -108,7 +285,12 @@ export default function AIPage() {
       className="min-h-screen flex flex-col"
       style={{ background: '#0e0e0f', color: '#e8e6df' }}
     >
-      {/* ── Header */}
+      {/* ── Fallback toast ── */}
+      {showFallbackToast && (
+        <FallbackToast reason={showFallbackToast} onDismiss={dismissFallbackToast} />
+      )}
+      
+      {/* ── Header ── */}
       <div
         className="flex items-center justify-between px-4 py-4 sm:px-8 border-b"
         style={{ borderColor: '#1e1e20' }}
@@ -126,26 +308,23 @@ export default function AIPage() {
             AI Assistant
           </span>
         </div>
-        <span
-          className="text-xs px-2 py-1 rounded"
-          style={{ background: '#1a1a1c', color: '#80ff49' }}
-        >
-          Llama 3.3 · Groq
-        </span>
+        <ModelBadge model={modelUsed} />
       </div>
 
-      {/* ── Messages */}
+      {/* ── Messages ── */}
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="max-w-2xl mx-auto flex flex-col gap-6">
 
+          {/* Session alert */}
+          {showAlert && (
+            <SessionAlert onDismiss={() => setShowAlert(false)} />
+          )}
+
           {/* Empty state */}
           {messages.length === 0 && (
-            <div className="flex flex-col items-center gap-6 mt-12">
+            <div className="flex flex-col items-center gap-6 mt-8">
               <div className="text-center">
-                <div
-                  className="text-4xl mb-3"
-                  style={{ filter: 'grayscale(0.2)' }}
-                >
+                <div className="text-4xl mb-3" style={{ filter: 'grayscale(0.2)' }}>
                   🏈
                 </div>
                 <h1 className="text-xl font-medium mb-1">Fantasy Football AI</h1>
@@ -156,10 +335,10 @@ export default function AIPage() {
 
               {/* Suggested prompts */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full">
-                {SUGGESTED_PROMPTS.map((prompt) => (
+                {SUGGESTED_PROMPTS.map((p) => (
                   <button
-                    key={prompt}
-                    onClick={() => void handleSubmit(prompt)}
+                    key={p}
+                    onClick={() => void handleSubmit(p)}
                     className="text-left px-4 py-3 rounded-lg text-sm border transition-colors"
                     style={{
                       background: '#141415',
@@ -175,7 +354,7 @@ export default function AIPage() {
                       e.currentTarget.style.color = '#888';
                     }}
                   >
-                    {prompt}
+                    {p}
                   </button>
                 ))}
               </div>
@@ -206,23 +385,11 @@ export default function AIPage() {
                 }
               >
                 {msg.loading ? (
-                  <span
-                    className="inline-block w-4 h-4 rounded-full animate-pulse"
-                    style={{ background: '#80ff49', opacity: 0.6 }}
-                  />
+                  <span style={{ color: '#555' }}>Thinking…</span>
                 ) : (
                   <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
                 )}
               </div>
-
-              {msg.role === 'user' && (
-                <div
-                  className="w-7 h-7 rounded-full flex items-center justify-center text-xs shrink-0 mt-1"
-                  style={{ background: '#2a2a2c', color: '#888' }}
-                >
-                  U
-                </div>
-              )}
             </div>
           ))}
 
@@ -230,55 +397,73 @@ export default function AIPage() {
         </div>
       </div>
 
-      {/* ── Input */}
+      {/* ── Input area ── */}
       <div
-        className="border-t px-4 py-4 sm:px-8"
-        style={{ borderColor: '#1e1e20', background: '#0e0e0f' }}
+        className="px-4 pb-6 sm:px-8"
+        style={{ borderTop: '1px solid #1e1e20', paddingTop: '1rem' }}
       >
-        <div className="max-w-2xl mx-auto flex gap-3 items-end">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask about your lineup, trades, waiver wire…"
-            rows={1}
-            disabled={loading}
-            className="flex-1 resize-none rounded-xl px-4 py-3 text-sm outline-none border transition-colors disabled:opacity-50"
-            style={{
-              background: '#141415',
-              borderColor: '#2a2a2c',
-              color: '#e8e6df',
-              minHeight: '44px',
-              maxHeight: '120px',
-            }}
-            onFocus={(e) => (e.currentTarget.style.borderColor = '#444')}
-            onBlur={(e) => (e.currentTarget.style.borderColor = '#2a2a2c')}
-            onInput={(e) => {
-              const el = e.currentTarget;
-              el.style.height = 'auto';
-              el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-            }}
-          />
-          <button
-            onClick={() => void handleSubmit()}
-            disabled={loading || !input.trim()}
-            className="px-4 py-3 rounded-xl text-sm font-medium transition-colors disabled:opacity-40 shrink-0"
-            style={{ background: '#80ff49', color: '#0e0e0f' }}
-            onMouseEnter={(e) => {
-              if (!loading && input.trim())
-                e.currentTarget.style.background = '#9fff6e';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = '#80ff49';
-            }}
+        <div className="max-w-2xl mx-auto flex flex-col gap-3">
+          {/* Usage bar */}
+          <UsageBar used={hourlyUsed} limit={HOURLY_LIMIT} dailyUsed={dailyUsed} />
+
+          {/* Input row */}
+          <div
+            className="flex items-end gap-3 rounded-2xl px-4 py-3"
+            style={{ background: '#141415', border: '1px solid #2a2a2c' }}
           >
-            {loading ? '…' : 'Ask'}
-          </button>
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                rateLimited
+                  ? 'Hourly limit reached — try again later'
+                  : 'Ask about your lineup, trades, or waiver wire…'
+              }
+              disabled={loading || rateLimited}
+              rows={1}
+              className="flex-1 resize-none bg-transparent text-sm outline-none"
+              style={{
+                color: rateLimited ? '#555' : '#e8e6df',
+                maxHeight: '120px',
+                overflowY: 'auto',
+              }}
+            />
+            <button
+              onClick={() => void handleSubmit()}
+              disabled={!input.trim() || loading || rateLimited}
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm transition-colors"
+              style={{
+                background:
+                  !input.trim() || loading || rateLimited ? '#1e1e20' : '#80ff49',
+                color:
+                  !input.trim() || loading || rateLimited ? '#444' : '#0e0e0f',
+              }}
+              aria-label="Send"
+            >
+              ↑
+            </button>
+          </div>
+
+          <p className="text-center text-xs" style={{ color: '#333' }}>
+            AI responses may be inaccurate. Verify important decisions independently.
+          </p>
+          <p className="text-center text-xs" style={{ color: '#2a2a2c' }}>
+            Trending data provided by{' '}
+            <a
+              href="https://sleeper.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline transition-colors"
+              style={{ color: '#3a3a3c' }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#555'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = '#3a3a3c'; }}
+            >
+              Sleeper
+            </a>
+          </p>
         </div>
-        <p className="text-center text-xs mt-2" style={{ color: '#333' }}>
-          Enter to send · Shift+Enter for new line
-        </p>
       </div>
     </main>
   );

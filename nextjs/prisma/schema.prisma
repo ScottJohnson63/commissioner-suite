@@ -76,6 +76,12 @@ model AuditLog {
   @@index([createdAt])
 }
 
+model SleeperCache {
+  key       String   @id         // e.g. "nfl_player_map"
+  data      String               // JSON blob
+  fetchedAt DateTime @default(now())
+}
+
 model NflWeeklyStat {
   id                      String  @id @default(cuid())
 
