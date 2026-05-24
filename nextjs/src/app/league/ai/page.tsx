@@ -14,7 +14,22 @@ interface Message {
 
 type ModelUsed = 'gemini' | 'groq' | null;
 
-const HOURLY_LIMIT = 5;
+interface SleeperLeague {
+  leagueId: string;
+  name: string;
+  season: number;
+  totalRosters: number;
+  status: string;
+}
+
+interface SleeperUserData {
+  userId: string;
+  username: string;
+  displayName: string;
+  leagues: SleeperLeague[];
+}
+
+const HOURLY_LIMIT = 15;
 
 const SUGGESTED_PROMPTS = [
   'Should I start or sit my running back this week?',
@@ -51,9 +66,9 @@ function SessionAlert({ onDismiss }: { onDismiss: () => void }) {
       <p style={{ color: '#888' }}>
         You are limited to <strong style={{ color: '#e8e6df' }}>{HOURLY_LIMIT} prompts per hour</strong>.
         This agent is shared — please use it sparingly so everyone can access it.
-        The agent uses <strong style={{ color: '#e8e6df' }}>Gemini 2.5 Flash</strong> by default and
-        automatically switches to <strong style={{ color: '#e8e6df' }}>Groq Llama 3.1</strong> if the
-        Gemini session limit is reached.
+        The agent uses <strong style={{ color: '#e8e6df' }}>Groq Llama 3.1</strong> by default and
+        automatically switches to <strong style={{ color: '#e8e6df' }}>Gemini 2.5 Flash</strong> if the
+        Groq rate limit is reached.
       </p>
     </div>
   );
@@ -65,9 +80,9 @@ function FallbackToast({ reason, onDismiss }: { reason: string; onDismiss: () =>
     return () => clearTimeout(t);
   }, [onDismiss]);
 
-  const message = reason === 'gemini_rate_limit'
-    ? 'Gemini session limit reached — switched to'
-    : 'Gemini session error — switched to';
+  const message = reason === 'groq_rate_limit'
+    ? 'Groq rate limit reached — switched to'
+    : 'Groq error — switched to';
 
   return (
     <div
@@ -78,7 +93,7 @@ function FallbackToast({ reason, onDismiss }: { reason: string; onDismiss: () =>
       <span style={{ color: '#facc15' }}>⚠</span>
       <span>
         {message}{' '}
-        <strong style={{ color: '#e8e6df' }}>Groq Llama 3.1</strong>
+        <strong style={{ color: '#e8e6df' }}>Gemini 2.5 Flash</strong>
       </span>
       <button
         onClick={onDismiss}
@@ -125,9 +140,8 @@ function UsageBar({
 }
 
 function ModelBadge({ model }: { model: ModelUsed }) {
-  if (!model) return null;
   const label = model === 'gemini' ? 'Gemini 2.5 Flash' : 'Llama 3.1 · Groq';
-  const color = model === 'gemini' ? '#60a5fa' : '#a78bfa';
+  const color = model === 'gemini' ? '#60a5fa' : '#80ff49';
   return (
     <span
       className="text-xs px-2 py-1 rounded transition-all"
@@ -149,13 +163,21 @@ export default function AIPage() {
   const [showAlert, setShowAlert] = useState(true);
 
   // Fallback toast
-const [showFallbackToast, setShowFallbackToast] = useState<string | null>(null);
+  const [showFallbackToast, setShowFallbackToast] = useState<string | null>(null);
 
   // Rate-limit / usage tracking (client-side mirror of server headers)
   const [hourlyUsed, setHourlyUsed] = useState(0);
   const [dailyUsed, setDailyUsed] = useState(0);
-  const [modelUsed, setModelUsed] = useState<ModelUsed>(null);
+  const [modelUsed, setModelUsed] = useState<ModelUsed>('groq');
   const [rateLimited, setRateLimited] = useState(false);
+  // Sleeper identity — persisted in localStorage
+  const [sleeperUsername, setSleeperUsername] = useState('');
+  const [sleeperUser, setSleeperUser] = useState<SleeperUserData | null>(null);
+  const [activeLeagueId, setActiveLeagueId] = useState<string | null>(null);
+  const [activeLeagueName, setActiveLeagueName] = useState<string | null>(null);
+  const [leagueInputOpen, setLeagueInputOpen] = useState(false);
+  const [sleeperLoading, setSleeperLoading] = useState(false);
+  const [sleeperError, setSleeperError] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -164,6 +186,64 @@ const [showFallbackToast, setShowFallbackToast] = useState<string | null>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Restore Sleeper identity from localStorage on mount
+  useEffect(() => {
+    const savedUsername = localStorage.getItem('sleeper_username');
+    const savedLeagueId = localStorage.getItem('sleeper_league_id');
+    const savedLeagueName = localStorage.getItem('sleeper_league_name');
+    if (savedUsername) setSleeperUsername(savedUsername);
+    if (savedLeagueId) setActiveLeagueId(savedLeagueId);
+    if (savedLeagueName) setActiveLeagueName(savedLeagueName);
+  }, []);
+
+  async function handleSleeperLookup(): Promise<void> {
+    const username = sleeperUsername.trim().toLowerCase();
+    if (!username) return;
+    setSleeperLoading(true);
+    setSleeperError(null);
+    try {
+      const res = await fetch(`/api/sleeper/user?username=${encodeURIComponent(username)}`);
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: string };
+        throw new Error(data.error ?? 'User not found');
+      }
+      const data = (await res.json()) as SleeperUserData;
+      setSleeperUser(data);
+      localStorage.setItem('sleeper_username', username);
+      // Auto-select first league
+      if (data.leagues.length > 0) {
+        const first = data.leagues[0];
+        setActiveLeagueId(first.leagueId);
+        setActiveLeagueName(first.name);
+        localStorage.setItem('sleeper_league_id', first.leagueId);
+        localStorage.setItem('sleeper_league_name', first.name);
+      }
+    } catch (err) {
+      setSleeperError(err instanceof Error ? err.message : 'Failed to load Sleeper data');
+    } finally {
+      setSleeperLoading(false);
+    }
+  }
+
+  function handleLeagueSelect(leagueId: string, leagueName: string): void {
+    setActiveLeagueId(leagueId);
+    setActiveLeagueName(leagueName);
+    localStorage.setItem('sleeper_league_id', leagueId);
+    localStorage.setItem('sleeper_league_name', leagueName);
+    setLeagueInputOpen(false);
+  }
+
+  function handleSleeperDisconnect(): void {
+    setSleeperUser(null);
+    setSleeperUsername('');
+    setActiveLeagueId(null);
+    setActiveLeagueName(null);
+    localStorage.removeItem('sleeper_username');
+    localStorage.removeItem('sleeper_league_id');
+    localStorage.removeItem('sleeper_league_name');
+    setLeagueInputOpen(false);
+  }
 
   useEffect(() => {
     let id = localStorage.getItem('agent_client_id');
@@ -174,7 +254,7 @@ const [showFallbackToast, setShowFallbackToast] = useState<string | null>(null);
     clientIdRef.current = id;
   }, []);
 
-const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
+  const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
 
   async function handleSubmit(prompt?: string): Promise<void> {
     const text = (prompt ?? input).trim();
@@ -199,7 +279,7 @@ const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
           'Content-Type': 'application/json',
           'X-Client-Id': clientIdRef.current,
         },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: history, sleeperLeagueId: activeLeagueId ?? undefined }),
       });
 
       // ── Handle rate-limit ──────────────────────────────────────────────────
@@ -232,7 +312,7 @@ const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
       setHourlyUsed(HOURLY_LIMIT - remaining);
       setDailyUsed(daily);
 
-      if (fallbackReason) {
+      if (fallbackReason === 'groq_rate_limit') {
         setShowFallbackToast(fallbackReason);
       }
 
@@ -286,10 +366,8 @@ const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
       style={{ background: '#0e0e0f', color: '#e8e6df' }}
     >
       {/* ── Fallback toast ── */}
-      {showFallbackToast && (
-        <FallbackToast reason={showFallbackToast} onDismiss={dismissFallbackToast} />
-      )}
-      
+      {showFallbackToast && <FallbackToast reason={showFallbackToast} onDismiss={dismissFallbackToast} />}
+
       {/* ── Header ── */}
       <div
         className="flex items-center justify-between px-4 py-4 sm:px-8 border-b"
@@ -308,7 +386,102 @@ const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
             AI Assistant
           </span>
         </div>
-        <ModelBadge model={modelUsed} />
+        <div className="flex items-center gap-2">
+          {/* Sleeper league selector */}
+          <div className="relative">
+            <button
+              onClick={() => setLeagueInputOpen((v) => !v)}
+              className="text-xs px-2 py-1 rounded border transition-colors flex items-center gap-1.5"
+              style={{
+                background: '#141415',
+                borderColor: activeLeagueId ? '#80ff49' : '#2a2a2c',
+                color: activeLeagueId ? '#80ff49' : '#555',
+              }}
+            >
+              {activeLeagueName ?? 'Connect Sleeper'}
+              <span style={{ fontSize: '9px' }}>{leagueInputOpen ? '▲' : '▼'}</span>
+            </button>
+
+            {leagueInputOpen && (
+              <div
+                className="absolute right-0 top-8 z-50 rounded-xl p-4 flex flex-col gap-3 w-72 shadow-xl"
+                style={{ background: '#141415', border: '1px solid #2a2a2c' }}
+              >
+                <p className="text-xs font-medium" style={{ color: '#e8e6df' }}>
+                  Sleeper Account
+                </p>
+
+                {/* Username input */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={sleeperUsername}
+                    onChange={(e) => setSleeperUsername(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && void handleSleeperLookup()}
+                    placeholder="Sleeper username"
+                    className="flex-1 text-xs px-3 py-2 rounded-lg bg-transparent outline-none border"
+                    style={{ borderColor: '#2a2a2c', color: '#e8e6df' }}
+                  />
+                  <button
+                    onClick={() => void handleSleeperLookup()}
+                    disabled={sleeperLoading || !sleeperUsername.trim()}
+                    className="text-xs px-3 py-2 rounded-lg transition-colors font-medium"
+                    style={{
+                      background: sleeperLoading || !sleeperUsername.trim() ? '#1e1e20' : '#80ff49',
+                      color: sleeperLoading || !sleeperUsername.trim() ? '#444' : '#0e0e0f',
+                    }}
+                  >
+                    {sleeperLoading ? '…' : 'Go'}
+                  </button>
+                </div>
+
+                {sleeperError && (
+                  <p className="text-xs" style={{ color: '#ef4444' }}>{sleeperError}</p>
+                )}
+
+                {/* League dropdown */}
+                {sleeperUser && sleeperUser.leagues.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <p className="text-xs" style={{ color: '#555' }}>
+                      {sleeperUser.displayName}'s leagues
+                    </p>
+                    {sleeperUser.leagues.map((league) => (
+                      <button
+                        key={league.leagueId}
+                        onClick={() => handleLeagueSelect(league.leagueId, league.name)}
+                        className="text-left text-xs px-3 py-2 rounded-lg transition-colors"
+                        style={{
+                          background: activeLeagueId === league.leagueId ? '#1a2a1a' : '#1a1a1c',
+                          color: activeLeagueId === league.leagueId ? '#80ff49' : '#888',
+                          border: `1px solid ${activeLeagueId === league.leagueId ? '#80ff49' : '#2a2a2c'}`,
+                        }}
+                      >
+                        <span className="block font-medium" style={{ color: activeLeagueId === league.leagueId ? '#80ff49' : '#e8e6df' }}>
+                          {league.name}
+                        </span>
+                        <span style={{ color: '#555' }}>
+                          {league.totalRosters} teams · {league.season}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {sleeperUser && (
+                  <button
+                    onClick={handleSleeperDisconnect}
+                    className="text-xs transition-colors"
+                    style={{ color: '#555' }}
+                  >
+                    Disconnect
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <ModelBadge model={modelUsed} />
+        </div>
       </div>
 
       {/* ── Messages ── */}
@@ -346,8 +519,8 @@ const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
                       color: '#888',
                     }}
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = '#444';
-                      e.currentTarget.style.color = '#e8e6df';
+                      e.currentTarget.style.borderColor = '#80ff49';
+                      e.currentTarget.style.color = '#80ff49';
                     }}
                     onMouseLeave={(e) => {
                       e.currentTarget.style.borderColor = '#2a2a2c';
@@ -449,16 +622,16 @@ const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
           <p className="text-center text-xs" style={{ color: '#333' }}>
             AI responses may be inaccurate. Verify important decisions independently.
           </p>
-          <p className="text-center text-xs" style={{ color: '#2a2a2c' }}>
+          <p className="text-center text-xs" style={{ color: '#60a5fa' }}>
             Trending data provided by{' '}
             <a
               href="https://sleeper.com"
               target="_blank"
               rel="noopener noreferrer"
               className="underline transition-colors"
-              style={{ color: '#3a3a3c' }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = '#555'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = '#3a3a3c'; }}
+              style={{ color: '#60a5fa' }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#93c5fd'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = '#60a5fa'; }}
             >
               Sleeper
             </a>

@@ -1,0 +1,52 @@
+name: Sync Sleeper Scores
+
+on:
+  schedule:
+    - cron: '30 8 * * 2'  # Every Tuesday at 08:30 UTC — 30 min after NFL stats sync
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force sync regardless of season window'
+        required: false
+        default: 'false'
+      week:
+        description: 'Override week number (leave blank for auto)'
+        required: false
+        default: ''
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('python/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          cd python
+          pip install -r requirements.txt
+
+      - name: Run Sleeper score sync
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          NFL_SEASON: "2025"
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+          WEEK: ${{ github.event.inputs.week || '' }}
+        run: |
+          cd python
+          python scripts/sync_sleeper_scores.py

@@ -51,7 +51,9 @@ model Matchup {
   week       Int
   homeTeamId String
   awayTeamId String
-  type       String   // 'division' | 'cross-division'
+  type       String
+  homePoints Float?   // ← new
+  awayPoints Float?   // ← new
   schedule   Schedule @relation(fields: [scheduleId], references: [id])
   homeTeam   Team     @relation("HomeTeam", fields: [homeTeamId], references: [id])
   awayTeam   Team     @relation("AwayTeam", fields: [awayTeamId], references: [id])
