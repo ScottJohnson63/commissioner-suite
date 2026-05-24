@@ -47,14 +47,16 @@ async function sleeperGet<T>(path: string): Promise<T> {
 export async function GET(req: NextRequest): Promise<NextResponse> {
     const { searchParams } = req.nextUrl;
     const username = searchParams.get('username')?.trim().toLowerCase();
+    const userId = searchParams.get('userId')?.trim();
 
-    if (!username) {
-        return NextResponse.json({ error: 'username is required' }, { status: 400 });
+    if (!username && !userId) {
+        return NextResponse.json({ error: 'username or userId is required' }, { status: 400 });
     }
 
     try {
-        // Step 1 — resolve username to user object
-        const user = await sleeperGet<SleeperUser>(`/user/${username}`);
+        // Step 1 — resolve to user object.
+        // Prefer userId (stable) over username (can change) per Sleeper docs.
+        const user = await sleeperGet<SleeperUser>(userId ? `/user/${userId}` : `/user/${username}`);
 
         if (!user?.user_id) {
             return NextResponse.json({ error: 'Sleeper user not found' }, { status: 404 });

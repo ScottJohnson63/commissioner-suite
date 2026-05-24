@@ -2,7 +2,6 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import Link from 'next/link';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -210,6 +209,8 @@ export default function AIPage() {
       }
       const data = (await res.json()) as SleeperUserData;
       setSleeperUser(data);
+      // Store stable userId per Sleeper docs (username can change)
+      localStorage.setItem('sleeper_user_id', data.userId);
       localStorage.setItem('sleeper_username', username);
       // Auto-select first league
       if (data.leagues.length > 0) {
@@ -240,6 +241,7 @@ export default function AIPage() {
     setActiveLeagueId(null);
     setActiveLeagueName(null);
     localStorage.removeItem('sleeper_username');
+    localStorage.removeItem('sleeper_user_id');
     localStorage.removeItem('sleeper_league_id');
     localStorage.removeItem('sleeper_league_name');
     setLeagueInputOpen(false);
@@ -362,26 +364,18 @@ export default function AIPage() {
 
   return (
     <main
-      className="min-h-screen flex flex-col"
-      style={{ background: '#0e0e0f', color: '#e8e6df' }}
+      className="h-full flex flex-col"
+      style={{ color: '#e8e6df' }}
     >
       {/* ── Fallback toast ── */}
       {showFallbackToast && <FallbackToast reason={showFallbackToast} onDismiss={dismissFallbackToast} />}
 
       {/* ── Header ── */}
       <div
-        className="flex items-center justify-between px-4 py-4 sm:px-8 border-b"
+        className="flex items-center justify-between px-4 py-4 sm:px-8 border-b shrink-0"
         style={{ borderColor: '#1e1e20' }}
       >
         <div className="flex items-center gap-3">
-          <Link
-            href="/dashboard"
-            className="text-xs transition-colors"
-            style={{ color: '#555' }}
-          >
-            ← Dashboard
-          </Link>
-          <span style={{ color: '#2a2a2c' }}>|</span>
           <span className="text-sm font-medium" style={{ color: '#e8e6df' }}>
             AI Assistant
           </span>

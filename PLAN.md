@@ -39,6 +39,6 @@ To do:
 Overall:
 I want two distinguish two different portals. One is the league portal. This will have a dashboard with all different league stats and information. Second is the players association portal. This is where the current dashboard will go. PA members will have read only access. 
 
-[ ] Convert current home page into a login page. 
+[x] Convert current home page into a login page. 
 [ ] Create a league dashboard page
 [ ] Move existing dashboard to players association dashboard at /assoc/dashboard

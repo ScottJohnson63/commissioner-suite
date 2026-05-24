@@ -1,6 +1,7 @@
 // src/app/api/trending/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
+import { getPlayerMap } from '@/lib/sleeper/playerCache';
 
 const SLEEPER_BASE = 'https://api.sleeper.app/v1';
 
@@ -11,10 +12,13 @@ interface SleeperTrendingPlayer {
   count: number;
 }
 
-interface TrendingPlayer {
+export interface TrendingPlayer {
   player_id: string;
   count: number;
   type: 'add' | 'drop';
+  name: string | null;
+  position: string | null;
+  team: string | null;
 }
 
 // ── Server-side Sleeper rate-limit guard ──────────────────────────────────────
@@ -99,20 +103,37 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    if (type === 'add' || type === 'drop') {
-      const players = await fetchFromSleeper(buildUrl(type));
-      const result: TrendingPlayer[] = players.map((p) => ({ ...p, type }));
-      return NextResponse.json(result);
-    }
-
-    const [adds, drops] = await Promise.all([
-      fetchFromSleeper(buildUrl('add')),
-      fetchFromSleeper(buildUrl('drop')),
+    // Fetch trending player IDs + player map in parallel
+    const [trendingResult, playerMap] = await Promise.all([
+      type === 'add' || type === 'drop'
+        ? fetchFromSleeper(buildUrl(type)).then((players) => ({ single: { players, type } }))
+        : Promise.all([fetchFromSleeper(buildUrl('add')), fetchFromSleeper(buildUrl('drop'))]).then(
+            ([adds, drops]) => ({ both: { adds, drops } }),
+          ),
+      getPlayerMap().catch(() => new Map()), // player map failure is non-fatal
     ]);
 
+    function enrich(p: SleeperTrendingPlayer, t: 'add' | 'drop'): TrendingPlayer {
+      const info = playerMap.get(p.player_id);
+      return {
+        player_id: p.player_id,
+        count: p.count,
+        type: t,
+        name: info?.name ?? null,
+        position: info?.position ?? null,
+        team: info?.team ?? null,
+      };
+    }
+
+    if ('single' in trendingResult) {
+      const { players, type: t } = trendingResult.single;
+      return NextResponse.json(players.map((p) => enrich(p, t as 'add' | 'drop')));
+    }
+
+    const { adds, drops } = trendingResult.both;
     return NextResponse.json({
-      adds: adds.map((p) => ({ ...p, type: 'add' as const })),
-      drops: drops.map((p) => ({ ...p, type: 'drop' as const })),
+      adds: adds.map((p) => enrich(p, 'add')),
+      drops: drops.map((p) => enrich(p, 'drop')),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Upstream error';
