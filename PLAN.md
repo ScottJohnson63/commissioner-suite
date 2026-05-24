@@ -27,9 +27,18 @@ To Do:
 [x] Rate limit AI agent for a prompt session (e.g., max 3 prompts every 5 hours - consider a future refactor to do this per user)
 
 -- Part 3: Make not mistakes -- 
+Overall: 
 I want to update the agent to utilize a good range of data, refine and tweek the prompts to ensure accuracy of data as needed
 
 To do: 
 [ ] Update the data sets from nfl data py to look at specific years 
 [ ] Validate and verify sleeper data is accurate
 [ ] Document other prompt issues
+
+-- Part 4: Separate League & Players Association Portals -- 
+Overall:
+I want two distinguish two different portals. One is the league portal. This will have a dashboard with all different league stats and information. Second is the players association portal. This is where the current dashboard will go. PA members will have read only access. 
+
+[ ] Convert current home page into a login page. 
+[ ] Create a league dashboard page
+[ ] Move existing dashboard to players association dashboard at /assoc/dashboard
