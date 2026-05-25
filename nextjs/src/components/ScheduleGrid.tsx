@@ -24,7 +24,7 @@ interface Matchup {
 
 interface Props {
   weeks: Matchup[][];
-  onSwap: (matchupId: string, homeTeamId: string, awayTeamId: string) => Promise<void>;
+  onSwap?: (matchupId: string, homeTeamId: string, awayTeamId: string) => Promise<void>;
 }
 
 // ─── MatchupRow ───────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ interface MatchupRowProps {
   matchup: Matchup;
   index: number;
   swapping: string | null;
-  onSwap: (matchup: Matchup) => Promise<void>;
+  onSwap?: (matchup: Matchup) => Promise<void>;
 }
 
 function MatchupRow({ matchup, index, swapping, onSwap }: MatchupRowProps) {
@@ -63,21 +63,23 @@ function MatchupRow({ matchup, index, swapping, onSwap }: MatchupRowProps) {
         {matchup.type === 'division' ? 'DIV' : 'X-DIV'}
       </span>
 
-      {/* Swap — always visible on touch, hover-only on pointer devices */}
-      <button
-        onClick={() => onSwap(matchup)}
-        disabled={swapping === matchup.id}
-        className="ml-2 sm:ml-3 shrink-0 transition-all touch-manipulation
-                   opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100
-                   disabled:opacity-20"
-        style={{ color: '#555' }}
-        title="Swap home/away"
-        aria-label="Swap home and away teams"
-        onMouseEnter={(e) => (e.currentTarget.style.color = '#e8e6df')}
-        onMouseLeave={(e) => (e.currentTarget.style.color = '#555')}
-      >
-        {swapping === matchup.id ? '…' : '⇄'}
-      </button>
+      {/* Swap — commissioner only */}
+      {onSwap && (
+        <button
+          onClick={() => onSwap(matchup)}
+          disabled={swapping === matchup.id}
+          className="ml-2 sm:ml-3 shrink-0 transition-all touch-manipulation
+                     opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100
+                     disabled:opacity-20"
+          style={{ color: '#555' }}
+          title="Swap home/away"
+          aria-label="Swap home and away teams"
+          onMouseEnter={(e) => (e.currentTarget.style.color = '#e8e6df')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = '#555')}
+        >
+          {swapping === matchup.id ? '…' : '⇄'}
+        </button>
+      )}
     </div>
   );
 }
@@ -90,7 +92,7 @@ interface WeekAccordionProps {
   isOpen: boolean;
   onToggle: () => void;
   swapping: string | null;
-  onSwap: (matchup: Matchup) => Promise<void>;
+  onSwap?: (matchup: Matchup) => Promise<void>;
 }
 
 function WeekAccordion({ week, matchups, isOpen, onToggle, swapping, onSwap }: WeekAccordionProps) {
@@ -153,6 +155,7 @@ export function ScheduleGrid({ weeks, onSwap }: Props) {
   }
 
   async function handleSwap(matchup: Matchup): Promise<void> {
+    if (!onSwap) return;
     setSwapping(matchup.id);
     try {
       await onSwap(matchup.id, matchup.homeTeamId, matchup.awayTeamId);

@@ -1,6 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useSession } from 'next-auth/react';
+import { ScheduleGrid } from '@/components/ScheduleGrid';
+import { StatCards } from '@/components/StatCards';
+import { TeamLog } from '@/components/TeamLog';
+import { LeagueSelector } from '@/components/LeagueSelector';
+import { useSleeperData } from '@/hooks/useSleeperData';
 
 const IS_DEMO = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
 
@@ -32,24 +38,9 @@ interface NewsArticle {
   sourceLabel: string;
 }
 
-interface SleeperLeague {
-  leagueId: string;
-  name: string;
-  season: number;
-  totalRosters: number;
-  status: string;
-}
+import type { SleeperUser, SleeperLeague } from '@/hooks/useSleeperData';
 
-interface SleeperUser {
-  userId: string;
-  username: string;
-  displayName: string;
-  avatar: string | null;
-  leagues: SleeperLeague[];
-}
-
-
-type Tab = 'league' | 'statistics' | 'news';
+type Tab = 'league' | 'statistics' | 'news' | 'schedules' | 'divisions' | 'lottery';
 
 // ─── League feature types ─────────────────────────────────────────────────────
 
@@ -91,69 +82,60 @@ interface MatchupReportResponse {
   narrative: string; demo?: boolean;
 }
 
-// ─── Onboarding modal ─────────────────────────────────────────────────────────
+// ─── Assoc-tab types ──────────────────────────────────────────────────────────
 
-function OnboardingModal({ onConnect }: { onConnect: (user: SleeperUser) => void }) {
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+interface DbLeague {
+  id: string;
+  sleeperLeagueId: string;
+  name: string;
+  season: number;
+}
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const username = input.trim().toLowerCase();
-    if (!username) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/sleeper/user?username=${encodeURIComponent(username)}`);
-      const data = await res.json() as SleeperUser & { error?: string };
-      if (!res.ok) throw new Error(data.error ?? 'User not found');
-      localStorage.setItem('sleeper_username', username);
-      onConnect(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect');
-    } finally {
-      setLoading(false);
-    }
-  }
+interface AssocTeam {
+  id: string;
+  name: string;
+  divisionId: number;
+  sleeperRosterId: string;
+}
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4"
-      style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
-      <div className="w-full max-w-sm rounded-xl p-8"
-        style={{ background: '#141415', border: '1px solid #2a2a2c' }}>
-        <p className="text-[10px] uppercase tracking-widest mb-1" style={{ color: '#80ff49' }}>
-          Get started
-        </p>
-        <h2 className="text-lg font-semibold mb-1" style={{ color: '#e8e6df' }}>
-          Connect your Sleeper account
-        </h2>
-        <p className="text-sm mb-6" style={{ color: '#555' }}>
-          Enter your Sleeper username to pull in your leagues and player data.
-        </p>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Your Sleeper username"
-            autoFocus
-            className="w-full rounded px-3 py-2.5 text-sm text-[#e8e6df] placeholder-[#444] focus:outline-none"
-            style={{ background: '#0e0e0f', border: '1px solid #2a2a2c' }}
-          />
-          {error && <p className="text-xs" style={{ color: '#ff4949' }}>{error}</p>}
-          <button
-            type="submit"
-            disabled={loading || !input.trim()}
-            className="w-full py-2.5 rounded text-sm font-medium transition-colors disabled:opacity-40"
-            style={{ background: '#80ff49', color: '#0e0e0f' }}
-          >
-            {loading ? 'Looking up…' : 'Connect'}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
+interface MatchupWithTeams {
+  id: string;
+  week: number;
+  type: string;
+  homeTeamId: string;
+  awayTeamId: string;
+  homeTeam: AssocTeam;
+  awayTeam: AssocTeam;
+}
+
+interface AssocSchedule {
+  id: string;
+  season: number;
+  generatedAt: string;
+  league: { id: string; sleeperLeagueId: string };
+  matchups: MatchupWithTeams[];
+}
+
+interface StandingEntry {
+  rank: number;
+  rosterId: number;
+  name: string;
+  ownerName: string | null;
+  isChampion: boolean;
+  division: 1 | 2;
+}
+
+interface StandingsResponse {
+  standings: StandingEntry[];
+}
+
+interface LotteryResult {
+  rosterId:  number;
+  name:      string;
+  ownerName: string | null;
+  prevRank:  number;
+  count:     number;
+  pick:      number;
 }
 
 // ─── League dropdown ──────────────────────────────────────────────────────────
@@ -746,39 +728,13 @@ function MatchupReportPanel({
 function LeagueTab({
   sleeperUser,
   activeLeagueId,
-  onSelect,
 }: {
   sleeperUser: SleeperUser | null;
   activeLeagueId: string | null;
-  onSelect: (id: string) => void;
 }) {
-  const active = sleeperUser?.leagues.find((l) => l.leagueId === activeLeagueId);
-  const dot = active ? (STATUS_COLOR[active.status] ?? '#555') : '#555';
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Dropdown + league meta */}
-      {sleeperUser && sleeperUser.leagues.length > 0 && (
-        <div className="flex flex-wrap items-center gap-4">
-          <LeagueDropdown
-            leagues={sleeperUser.leagues}
-            activeLeagueId={activeLeagueId}
-            onSelect={onSelect}
-          />
-          {active && (
-            <div className="flex items-center gap-2 text-xs" style={{ color: '#555' }}>
-              <span className="w-1.5 h-1.5 rounded-full shrink-0"
-                style={{ background: dot, display: 'inline-block' }} />
-              <span className="capitalize">{active.status.replace(/_/g, ' ')}</span>
-              <span>·</span>
-              <span>{active.totalRosters} teams</span>
-              <span>·</span>
-              <span>{active.season} season</span>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Demo mode banner */}
       {IS_DEMO && (
         <div className="rounded-lg px-4 py-3 flex items-center gap-3"
@@ -1327,7 +1283,6 @@ const NFL_REPORTERS: {
   { name: 'Jay Glazer',      handle: 'JayGlazer',         affiliation: 'Fox Sports',    specialty: 'Insider scoops'               },
   { name: 'Mike Garafolo',   handle: 'MikeGarafolo',      affiliation: 'NFL Network',   specialty: 'Transactions & injuries'      },
   { name: 'Jeremy Fowler',   handle: 'JFowlerESPN',       affiliation: 'ESPN',          specialty: 'League-wide coverage'         },
-  { name: 'Diana Russini',   handle: 'dianaussini',       affiliation: 'The Athletic',  specialty: 'NFL insiders & front office'  },
   { name: 'Albert Breer',    handle: 'AlbertBreer',       affiliation: 'SI / MMQB',     specialty: 'Analysis & draft intel'       },
   { name: 'Field Yates',     handle: 'FieldYates',        affiliation: 'ESPN',          specialty: 'Fantasy & roster moves'       },
   { name: 'Mike Florio',     handle: 'ProFootballTalk',   affiliation: 'NBC Sports',    specialty: 'News & commentary'            },
@@ -1549,40 +1504,733 @@ function NewsTab() {
   );
 }
 
+// ─── Schedules Tab (member) ───────────────────────────────────────────────────
+
+function SchedulesTab({
+  activeLeagueId,
+  refreshKey,
+  isCommissioner,
+}: {
+  activeLeagueId: string | null;
+  refreshKey: number;
+  isCommissioner: boolean;
+}) {
+  const [schedule, setSchedule]           = useState<AssocSchedule | null>(null);
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  const [loading, setLoading]             = useState(false);
+  const [generating, setGenerating]       = useState(false);
+  const [clearing, setClearing]           = useState(false);
+  const [error, setError]                 = useState<string | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  const fetchSchedule = useCallback(async (leagueId: string): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/leagues/${leagueId}/schedule`);
+      if (res.status === 404) { setSchedule(null); return; }
+      if (!res.ok) throw new Error('Failed to load schedule');
+      setSchedule(await res.json() as AssocSchedule);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load schedule');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeLeagueId) void fetchSchedule(activeLeagueId);
+    else setSchedule(null);
+  }, [activeLeagueId, refreshKey, fetchSchedule]);
+
+  async function handleGenerate(): Promise<void> {
+    if (!activeLeagueId) return;
+    setGenerating(true); setError(null);
+    try {
+      const res = await fetch(`/api/leagues/${activeLeagueId}/schedule`, { method: 'POST' });
+      if (!res.ok) throw new Error('Schedule generation failed');
+      await fetchSchedule(activeLeagueId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Generation failed');
+    } finally { setGenerating(false); }
+  }
+
+  async function handleClear(): Promise<void> {
+    if (!activeLeagueId) return;
+    setClearing(true); setError(null);
+    try {
+      const res = await fetch(`/api/leagues/${activeLeagueId}/schedule`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json() as { error?: string };
+        throw new Error(body.error ?? 'Clear failed');
+      }
+      setSchedule(null); setShowClearConfirm(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Clear failed');
+    } finally { setClearing(false); }
+  }
+
+  async function handleExport(): Promise<void> {
+    if (!activeLeagueId || !schedule) return;
+    const res = await fetch(`/api/leagues/${activeLeagueId}/schedule/export`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `schedule-${schedule.season}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleSwap(matchupId: string, homeTeamId: string, awayTeamId: string): Promise<void> {
+    const res = await fetch(`/api/matchups/${matchupId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ homeTeamId: awayTeamId, awayTeamId: homeTeamId }),
+    });
+    if (!res.ok) throw new Error('Swap failed');
+    if (activeLeagueId) await fetchSchedule(activeLeagueId);
+  }
+
+  const byWeek = schedule
+    ? Array.from({ length: 13 }, (_, i) => schedule.matchups.filter((m) => m.week === i + 1))
+    : [];
+
+  const allTeams: AssocTeam[] = schedule
+    ? Array.from(
+        new Map(
+          schedule.matchups.flatMap((m) => [
+            [m.homeTeam.id, m.homeTeam],
+            [m.awayTeam.id, m.awayTeam],
+          ]),
+        ).values(),
+      )
+    : [];
+
+  const divisionMatchups = schedule?.matchups.filter((m) => m.type === 'division') ?? [];
+  const crossMatchups    = schedule?.matchups.filter((m) => m.type === 'cross-division') ?? [];
+
+  const selectedTeamMatchups = selectedTeamId
+    ? schedule?.matchups.filter(
+        (m) => m.homeTeamId === selectedTeamId || m.awayTeamId === selectedTeamId,
+      ) ?? []
+    : [];
+
+  return (
+    <div className="max-w-5xl">
+      {/* Action bar */}
+      <div className="flex flex-wrap items-center gap-2 mb-6">
+        {isCommissioner && !loading && activeLeagueId && (
+          <button
+            onClick={handleGenerate}
+            disabled={generating}
+            className="px-4 py-2 rounded text-sm font-medium transition-colors disabled:opacity-40 touch-manipulation"
+            style={{ background: '#80ff49', color: '#0e0e0f' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#9fff6e')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = '#80ff49')}
+          >
+            {generating ? 'Generating…' : schedule ? '↻ Regenerate' : '+ Generate Schedule'}
+          </button>
+        )}
+        {!loading && schedule && (
+          <>
+            <button
+              onClick={handleExport}
+              className="px-4 py-2 rounded text-sm font-medium border border-[#2a2a2c] transition-colors
+                         hover:border-[#444] hover:text-[#e8e6df] touch-manipulation"
+              style={{ color: '#888' }}
+            >
+              ↓ Export CSV
+            </button>
+            {isCommissioner && (
+              <button
+                onClick={() => setShowClearConfirm(true)}
+                className="px-4 py-2 rounded text-sm font-medium border transition-colors touch-manipulation"
+                style={{ borderColor: 'rgba(255,73,73,0.3)', color: '#ff4949', background: 'transparent' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,73,73,0.08)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                ✕ Clear Schedule
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {error && (
+        <div className="mb-4 px-3 py-2 rounded text-xs border"
+          style={{ background: 'rgba(255,73,73,0.08)', color: '#ff4949', borderColor: 'rgba(255,73,73,0.2)' }}>
+          {error}
+        </div>
+      )}
+
+      {loading && (
+        <div className="space-y-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="h-10 rounded border border-[#2a2a2c] animate-pulse"
+              style={{ background: '#141415' }} />
+          ))}
+        </div>
+      )}
+
+      {!loading && !schedule && activeLeagueId && (
+        <p className="text-xs text-center py-20" style={{ color: '#555' }}>
+          No schedule yet. Generate one above.
+        </p>
+      )}
+
+      {!activeLeagueId && (
+        <p className="text-xs text-center py-20" style={{ color: '#555' }}>
+          Sync a league to get started.
+        </p>
+      )}
+
+      {!loading && schedule && (
+        <>
+          <StatCards
+            total={schedule.matchups.length}
+            division={divisionMatchups.length}
+            cross={crossMatchups.length}
+            generatedAt={schedule.generatedAt}
+          />
+          <div className="mt-8 flex flex-col gap-6 sm:flex-row sm:items-start">
+            <div className="flex-1 min-w-0">
+              <ScheduleGrid weeks={byWeek} onSwap={isCommissioner ? handleSwap : undefined} />
+            </div>
+            <div className="w-full sm:w-64 sm:shrink-0">
+              <p className="text-[10px] uppercase tracking-widest mb-3" style={{ color: '#80ff49' }}>
+                Team schedule
+              </p>
+              <div className="grid grid-cols-2 gap-1 mb-4 sm:flex sm:flex-col">
+                {allTeams
+                  .sort((a, b) => a.divisionId - b.divisionId || a.name.localeCompare(b.name))
+                  .map((team) => (
+                    <button
+                      key={team.id}
+                      onClick={() => setSelectedTeamId((prev) => (prev === team.id ? null : team.id))}
+                      className={`text-left px-3 py-1.5 rounded text-xs transition-colors touch-manipulation ${
+                        selectedTeamId === team.id
+                          ? 'bg-[#e8e6df] text-[#0e0e0f]'
+                          : team.divisionId === 0
+                          ? 'hover:text-[#c849ff]'
+                          : 'hover:text-[#ff6d49]'
+                      }`}
+                    >
+                      <span
+                        className="inline-block w-1.5 h-1.5 rounded-full mr-2"
+                        style={{ background: team.divisionId === 0 ? '#c849ff' : '#ff6d49' }}
+                      />
+                      {team.name}
+                    </button>
+                  ))}
+              </div>
+              {selectedTeamId && (
+                <TeamLog matchups={selectedTeamMatchups} teamId={selectedTeamId} teams={allTeams} />
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {showClearConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+          <div className="bg-[#141415] border border-[#2a2a2c] rounded-lg p-6 w-full max-w-sm">
+            <h2 className="text-sm font-medium mb-1">Clear schedule?</h2>
+            <p className="text-xs mb-6" style={{ color: '#555' }}>
+              This will permanently delete all matchups for this league. You can regenerate afterwards.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowClearConfirm(false)} disabled={clearing}
+                className="px-3 py-1.5 text-xs text-[#666] hover:text-[#e8e6df] transition-colors
+                           disabled:opacity-40 touch-manipulation"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleClear} disabled={clearing}
+                className="px-3 py-1.5 text-xs rounded font-medium transition-colors
+                           disabled:opacity-40 touch-manipulation"
+                style={{ background: '#ff4949', color: '#fff' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#ff6666')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '#ff4949')}
+              >
+                {clearing ? 'Clearing…' : 'Yes, clear it'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Divisions Tab (member) ───────────────────────────────────────────────────
+
+function DivisionsTab({ activeLeagueId }: { activeLeagueId: string | null }) {
+  const [standings, setStandings] = useState<StandingEntry[]>([]);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState<string | null>(null);
+
+  const load = useCallback(async (leagueId: string) => {
+    setLoading(true); setError(null);
+    try {
+      const res  = await fetch(`/api/assoc/standings?leagueId=${encodeURIComponent(leagueId)}`);
+      const data = await res.json() as StandingsResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to load standings');
+      setStandings(data.standings);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load standings');
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    setStandings([]); setError(null);
+    if (activeLeagueId) void load(activeLeagueId);
+  }, [activeLeagueId, load]);
+
+  const div1 = standings.filter((s) => s.division === 1);
+  const div2 = standings.filter((s) => s.division === 2);
+  const DIV_COLORS: Record<1 | 2, string> = { 1: '#c849ff', 2: '#ff6d49' };
+
+  return (
+    <div className="max-w-3xl">
+      {error && (
+        <div className="mb-4 px-3 py-2 rounded text-xs border"
+          style={{ background: 'rgba(255,73,73,0.08)', color: '#ff4949', borderColor: 'rgba(255,73,73,0.2)' }}>
+          {error}
+        </div>
+      )}
+      {loading && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {[1, 2].map((d) => (
+            <div key={d} className="rounded-lg overflow-hidden" style={{ border: '1px solid #1e1e20' }}>
+              <div className="px-4 py-3 border-b" style={{ borderColor: '#1e1e20', background: '#141415' }}>
+                <div className="h-3 w-24 rounded animate-pulse" style={{ background: '#2a2a2c' }} />
+              </div>
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3 px-4 py-3 border-b last:border-b-0"
+                  style={{ borderColor: '#1a1a1c' }}>
+                  <div className="h-3 w-4 rounded animate-pulse" style={{ background: '#1e1e20' }} />
+                  <div className="h-3 flex-1 rounded animate-pulse" style={{ background: '#1e1e20' }} />
+                  <div className="h-3 w-12 rounded animate-pulse" style={{ background: '#1e1e20' }} />
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+      {!loading && standings.length === 0 && !error && (
+        <p className="text-xs text-center py-16" style={{ color: '#444' }}>
+          {activeLeagueId ? 'No standings data found for this league.' : 'Select a league to get started.'}
+        </p>
+      )}
+      {!loading && standings.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {([1, 2] as const).map((divId) => {
+            const teams  = divId === 1 ? div1 : div2;
+            const accent = DIV_COLORS[divId];
+            return (
+              <div key={divId} className="rounded-lg overflow-hidden"
+                style={{ border: '1px solid #1e1e20', background: '#141415' }}>
+                <div className="px-4 py-3 border-b flex items-center gap-2"
+                  style={{ borderColor: '#1e1e20' }}>
+                  <p className="text-[10px] uppercase tracking-widest font-medium"
+                    style={{ color: accent }}>Division {divId}</p>
+                  <span className="text-[10px]" style={{ color: '#444' }}>
+                    {teams.length} teams · {divId === 1 ? 'odd ranks' : 'even ranks'}
+                  </span>
+                </div>
+                <div>
+                  {teams.map((team) => (
+                    <div key={team.rosterId}
+                      className="flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0"
+                      style={{ borderColor: '#1a1a1c' }}>
+                      <span className="w-5 text-right text-[11px] tabular-nums shrink-0" style={{ color: '#444' }}>
+                        {team.rank}
+                      </span>
+                      {team.isChampion ? (
+                        <span className="shrink-0 text-sm" title="Champion">♛</span>
+                      ) : (
+                        <span className="w-4 shrink-0" />
+                      )}
+                      <span className="flex-1 text-xs truncate min-w-0" style={{ color: '#e8e6df' }}>
+                        {team.name}
+                        {team.ownerName && (
+                          <span className="ml-1" style={{ color: '#555' }}>({team.ownerName})</span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {!loading && standings.length > 0 && (
+        <p className="mt-4 text-[10px]" style={{ color: '#444' }}>
+          ♛ Champion · Rankings from final bracket results
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── Lottery Tab (member) ─────────────────────────────────────────────────────
+
+const LOTTERY_TOTAL       = 1_000_000;
+const LOTTERY_DURATION_MS = 180_000;
+const LOTTERY_INTERVAL_MS = 50;
+const LOTTERY_BATCH       = Math.ceil(LOTTERY_TOTAL / (LOTTERY_DURATION_MS / LOTTERY_INTERVAL_MS));
+
+const PICK_ACCENT  = ['#facc15', '#aaaaaa', '#cd7f32'] as const;
+const PICK_LABEL   = ['1st Overall Pick', '2nd Overall Pick', '3rd Overall Pick'] as const;
+const LIVE_ACCENTS = ['#80ff49', '#facc15', '#ff6d49'] as const;
+
+function formatLotteryCountdown(ms: number): string {
+  if (ms <= 0) return '0:00';
+  const s = Math.ceil(ms / 1000);
+  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
+}
+
+function LotteryTab({ activeLeagueId, isCommissioner }: { activeLeagueId: string | null; isCommissioner: boolean }) {
+  const [standings, setStandings]   = useState<StandingEntry[]>([]);
+  const [loading, setLoading]       = useState(false);
+  const [error, setError]           = useState<string | null>(null);
+  const [running, setRunning]       = useState(false);
+  const [results, setResults]       = useState<LotteryResult[] | null>(null);
+  const [totalDrawn, setTotalDrawn] = useState(0);
+  const [liveCounts, setLiveCounts] = useState<number[]>([]);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
+
+  const load = useCallback(async (leagueId: string) => {
+    setLoading(true); setError(null); setResults(null);
+    try {
+      const res  = await fetch(`/api/assoc/standings?leagueId=${encodeURIComponent(leagueId)}`);
+      const data = await res.json() as StandingsResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to load standings');
+      setStandings(data.standings);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load standings');
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    setStandings([]); setError(null); setResults(null);
+    setRunning(false); setTotalDrawn(0); setLiveCounts([]);
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    if (activeLeagueId) void load(activeLeagueId);
+  }, [activeLeagueId, load]);
+
+  const worstTeams = useMemo(
+    () => [...standings].sort((a, b) => b.rank - a.rank).slice(0, 3),
+    [standings],
+  );
+
+  function runLottery() {
+    if (worstTeams.length === 0) return;
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    const n = worstTeams.length;
+    const counts = new Array<number>(n).fill(0);
+    let drawn = 0;
+    setRunning(true); setResults(null); setTotalDrawn(0); setLiveCounts([...counts]);
+    intervalRef.current = setInterval(() => {
+      const thisBatch = Math.min(LOTTERY_BATCH, LOTTERY_TOTAL - drawn);
+      for (let i = 0; i < thisBatch; i++) counts[Math.floor(Math.random() * n)]++;
+      drawn += thisBatch;
+      setTotalDrawn(drawn);
+      setLiveCounts([...counts]);
+      if (drawn >= LOTTERY_TOTAL) {
+        clearInterval(intervalRef.current!);
+        intervalRef.current = null;
+        const sorted: LotteryResult[] = worstTeams
+          .map((team, idx) => ({
+            rosterId: team.rosterId, name: team.name, ownerName: team.ownerName,
+            prevRank: team.rank, count: counts[idx], pick: 0,
+          }))
+          .sort((a, b) => b.count - a.count)
+          .map((r, i) => ({ ...r, pick: i + 1 }));
+        setResults(sorted);
+        setRunning(false);
+      }
+    }, LOTTERY_INTERVAL_MS);
+  }
+
+  const progressPct = (totalDrawn / LOTTERY_TOTAL) * 100;
+  const drawsPerMs  = LOTTERY_BATCH / LOTTERY_INTERVAL_MS;
+  const msRemaining = running ? (LOTTERY_TOTAL - totalDrawn) / drawsPerMs : 0;
+
+  const liveTeams = useMemo(
+    () => worstTeams.map((team, idx) => ({ ...team, count: liveCounts[idx] ?? 0 })),
+    [worstTeams, liveCounts],
+  );
+  const liveRankOf = useMemo(() => {
+    const sorted = [...liveTeams].sort((a, b) => b.count - a.count);
+    return new Map(sorted.map((t, i) => [t.rosterId, i]));
+  }, [liveTeams]);
+  const maxLiveCount = useMemo(() => Math.max(1, ...liveTeams.map((t) => t.count)), [liveTeams]);
+
+  return (
+    <div className="max-w-xl">
+      {error && (
+        <div className="mb-4 px-3 py-2 rounded text-xs border"
+          style={{ background: 'rgba(255,73,73,0.08)', color: '#ff4949', borderColor: 'rgba(255,73,73,0.2)' }}>
+          {error}
+        </div>
+      )}
+      {loading && (
+        <div className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-14 rounded animate-pulse"
+              style={{ background: '#141415', border: '1px solid #1e1e20' }} />
+          ))}
+        </div>
+      )}
+      {!activeLeagueId && !loading && (
+        <p className="text-xs text-center py-16" style={{ color: '#444' }}>
+          Select a league to get started.
+        </p>
+      )}
+      {!loading && !running && !results && worstTeams.length > 0 && (
+        <>
+          <p className="text-[10px] uppercase tracking-widest mb-3" style={{ color: '#555' }}>
+            Lottery Eligible · Previous Season Bottom 3
+          </p>
+          <div className="rounded-lg overflow-hidden mb-6"
+            style={{ background: '#141415', border: '1px solid #1e1e20' }}>
+            {worstTeams.map((team) => (
+              <div key={team.rosterId}
+                className="flex items-center gap-3 px-4 py-3 border-b last:border-b-0"
+                style={{ borderColor: '#1a1a1c' }}>
+                <span className="text-[10px] w-16 shrink-0 tabular-nums" style={{ color: '#555' }}>
+                  Rank #{team.rank}
+                </span>
+                <span className="flex-1 text-xs truncate" style={{ color: '#e8e6df' }}>
+                  {team.name}
+                  {team.ownerName && (
+                    <span className="ml-1" style={{ color: '#555' }}>({team.ownerName})</span>
+                  )}
+                </span>
+                <span className="text-[10px] shrink-0" style={{ color: '#444' }}>
+                  1 in {worstTeams.length} odds
+                </span>
+              </div>
+            ))}
+          </div>
+          {isCommissioner && (
+            <button
+              onClick={runLottery}
+              className="px-6 py-2.5 rounded text-sm font-medium transition-colors"
+              style={{ background: '#80ff49', color: '#0e0e0f' }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#9fff6e')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = '#80ff49')}
+            >
+              Run Draft Lottery
+            </button>
+          )}
+        </>
+      )}
+      {running && (
+        <div>
+          <div className="mb-7">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] uppercase tracking-widest" style={{ color: '#80ff49' }}>Drawing…</p>
+              <span className="text-[10px] tabular-nums" style={{ color: '#555' }}>
+                ~{formatLotteryCountdown(msRemaining)} remaining
+              </span>
+            </div>
+            <div className="relative h-3 rounded-full overflow-hidden" style={{ background: '#1e1e20' }}>
+              <div className="absolute inset-y-0 left-0 rounded-full"
+                style={{
+                  width: `${progressPct}%`,
+                  background: 'linear-gradient(90deg, #80ff49 0%, #c849ff 100%)',
+                  transition: 'width 0.05s linear',
+                }} />
+            </div>
+            <div className="flex items-center justify-between mt-1.5">
+              <span className="text-[10px] tabular-nums" style={{ color: '#444' }}>
+                {totalDrawn.toLocaleString()} / {LOTTERY_TOTAL.toLocaleString()} draws
+              </span>
+              <span className="text-[10px] tabular-nums" style={{ color: '#444' }}>
+                {progressPct.toFixed(1)}%
+              </span>
+            </div>
+          </div>
+          <p className="text-[10px] uppercase tracking-widest mb-3" style={{ color: '#444' }}>Live Race</p>
+          <div className="rounded-lg p-4 flex flex-col gap-4" style={{ background: '#141415', border: '1px solid #1e1e20' }}>
+            {liveTeams.map((team) => {
+              const rank   = liveRankOf.get(team.rosterId) ?? 0;
+              const accent = rank === 0 ? LIVE_ACCENTS[0] : '#555';
+              const barPct = Math.min(100, (team.count / LOTTERY_TOTAL) * 100 * worstTeams.length);
+              const pct    = totalDrawn > 0 ? ((team.count / totalDrawn) * 100).toFixed(2) : '0.00';
+              return (
+                <div key={team.rosterId}>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-[11px] font-bold shrink-0 w-4 text-center"
+                        style={{ color: accent, transition: 'color 0.3s' }}>{rank + 1}</span>
+                      <span className="text-xs truncate" style={{ color: '#e8e6df' }}>
+                        {team.name}
+                        {team.ownerName && (
+                          <span className="ml-1 text-[10px]" style={{ color: '#555' }}>({team.ownerName})</span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs tabular-nums font-semibold"
+                        style={{ color: accent, transition: 'color 0.3s' }}>
+                        {team.count.toLocaleString()}
+                      </span>
+                      <span className="text-[10px] tabular-nums w-10 text-right" style={{ color: '#444' }}>
+                        {pct}%
+                      </span>
+                    </div>
+                  </div>
+                  <div className="relative h-9 rounded-md ml-6"
+                    style={{ background: '#0e0e0f', border: '1px solid #1e1e20' }}>
+                    <div className="absolute inset-y-0 left-0 rounded-l-md"
+                      style={{ width: `${barPct}%`, background: accent, opacity: 0.25, transition: 'width 0.05s linear' }} />
+                    <div className="absolute inset-x-0 h-px" style={{ top: '50%', transform: 'translateY(-50%)', background: '#1a1a1c' }} />
+                    <span className="absolute right-2 text-sm select-none leading-none" style={{ top: '50%', transform: 'translateY(-50%)' }}>🏁</span>
+                    <span
+                      className="absolute text-xl select-none leading-none"
+                      style={{
+                        left: `clamp(4px, calc(${barPct}% - 14px), calc(100% - 34px))`,
+                        top: '50%',
+                        transform: 'translateY(-50%) scaleX(-1)',
+                        transition: 'left 0.05s linear',
+                        filter: rank === 0 ? 'drop-shadow(0 0 4px #facc15)' : undefined,
+                      }}
+                    >
+                      🏃
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {results && !running && (
+        <>
+          <p className="text-[10px] uppercase tracking-widest mb-3" style={{ color: '#555' }}>
+            Lottery Results · {LOTTERY_TOTAL.toLocaleString()} draws
+          </p>
+          <div className="flex flex-col gap-2 mb-6">
+            {results.map((r) => {
+              const accent = PICK_ACCENT[r.pick - 1];
+              const label  = PICK_LABEL[r.pick - 1];
+              const pct    = ((r.count / LOTTERY_TOTAL) * 100).toFixed(2);
+              return (
+                <div key={r.rosterId} className="rounded-lg px-4 py-3.5 flex items-center gap-4"
+                  style={{ background: '#141415', border: `1px solid ${r.pick === 1 ? `${accent}44` : '#1e1e20'}` }}>
+                  <span className="text-xl font-bold tabular-nums shrink-0 w-6 text-center"
+                    style={{ color: accent }}>{r.pick}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate" style={{ color: '#e8e6df' }}>
+                      {r.name}
+                      {r.ownerName && (
+                        <span className="ml-1 text-xs font-normal" style={{ color: '#555' }}>({r.ownerName})</span>
+                      )}
+                    </p>
+                    <p className="text-[10px] mt-0.5" style={{ color: '#555' }}>
+                      {label} · prev rank #{r.prevRank}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm font-semibold tabular-nums" style={{ color: accent }}>
+                      {r.count.toLocaleString()}
+                    </p>
+                    <p className="text-[10px] tabular-nums" style={{ color: '#444' }}>{pct}%</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="rounded-lg px-4 py-4 mb-6" style={{ background: '#141415', border: '1px solid #1e1e20' }}>
+            <p className="text-[10px] uppercase tracking-widest mb-4" style={{ color: '#444' }}>Final Race</p>
+            <div className="flex flex-col gap-4">
+              {results.map((r) => {
+                const accent  = r.pick === 1 ? PICK_ACCENT[0] : '#555';
+                const pct     = (r.count / LOTTERY_TOTAL) * 100;
+                const barPct  = Math.min(100, (r.count / LOTTERY_TOTAL) * 100 * results.length);
+                return (
+                  <div key={r.rosterId}>
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-[11px] font-bold shrink-0 w-4 text-center" style={{ color: accent }}>{r.pick}</span>
+                        <span className="text-xs truncate" style={{ color: '#e8e6df' }}>{r.name}</span>
+                      </div>
+                      <span className="text-[10px] tabular-nums shrink-0" style={{ color: '#555' }}>{pct.toFixed(2)}%</span>
+                    </div>
+                    <div className="relative h-9 rounded-md ml-6"
+                      style={{ background: '#0e0e0f', border: '1px solid #1e1e20' }}>
+                      <div className="absolute inset-y-0 left-0 rounded-l-md"
+                        style={{ width: `${barPct}%`, background: accent, opacity: 0.25 }} />
+                      <div className="absolute inset-x-0 h-px" style={{ top: '50%', transform: 'translateY(-50%)', background: '#1a1a1c' }} />
+                      <span className="absolute right-2 text-sm select-none leading-none" style={{ top: '50%', transform: 'translateY(-50%)' }}>🏁</span>
+                      <span
+                        className="absolute text-xl select-none leading-none"
+                        style={{
+                          left: `clamp(4px, calc(${barPct}% - 14px), calc(100% - 34px))`,
+                          top: '50%',
+                          transform: 'translateY(-50%) scaleX(-1)',
+                          filter: r.pick === 1 ? 'drop-shadow(0 0 6px #facc15)' : undefined,
+                        }}
+                      >
+                        🏃
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          {isCommissioner && (
+            <div className="flex gap-2">
+              <button onClick={runLottery}
+                className="px-4 py-2 rounded text-sm font-medium transition-colors"
+                style={{ background: '#80ff49', color: '#0e0e0f' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#9fff6e')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '#80ff49')}>
+                ↻ Re-run Lottery
+              </button>
+              <button onClick={() => { setResults(null); setTotalDrawn(0); setLiveCounts([]); }}
+                className="px-4 py-2 rounded text-sm font-medium border transition-colors"
+                style={{ borderColor: '#2a2a2c', color: '#888' }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = '#e8e6df')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = '#888')}>
+                Reset
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Dashboard page ───────────────────────────────────────────────────────────
 
 export default function LeagueDashboardPage() {
-  const [sleeperUser, setSleeperUser]     = useState<SleeperUser | null>(null);
-  const [activeLeagueId, setActiveLeagueId] = useState<string | null>(null);
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [tab, setTab]                     = useState<Tab>('league');
+  const { sleeperUser, activeLeagueId, setActiveLeagueId } = useSleeperData();
+  const [tab, setTab] = useState<Tab>('league');
 
-  const [trending, setTrending]           = useState<TrendingData | null>(null);
+  const [trending, setTrending]               = useState<TrendingData | null>(null);
   const [trendingLoading, setTrendingLoading] = useState(true);
-  const [trendingError, setTrendingError] = useState<string | null>(null);
+  const [trendingError, setTrendingError]     = useState<string | null>(null);
 
+  // ── Role-gated member tabs ───────────────────────────────────────────────────
+  const { data: session } = useSession();
+  const role = session?.user?.role;
+  const isCommissioner = role === 'COMMISSIONER';
+  const isMember = role === 'MEMBER' || role === 'COMMISSIONER';
 
-
-  // ── Restore Sleeper session ──────────────────────────────────────────────────
-  useEffect(() => {
-    const savedUserId   = localStorage.getItem('sleeper_user_id');
-    const savedUsername = localStorage.getItem('sleeper_username');
-    if (!savedUserId && !savedUsername) { setShowOnboarding(true); return; }
-    void (async () => {
-      try {
-        const param = savedUserId
-          ? `userId=${encodeURIComponent(savedUserId)}`
-          : `username=${encodeURIComponent(savedUsername!)}`;
-        const res = await fetch(`/api/sleeper/user?${param}`);
-        if (!res.ok) { setShowOnboarding(true); return; }
-        const data = await res.json() as SleeperUser;
-        localStorage.setItem('sleeper_user_id', data.userId);
-        setSleeperUser(data);
-        const saved = localStorage.getItem('sleeper_active_league');
-        setActiveLeagueId(saved ?? data.leagues[0]?.leagueId ?? null);
-      } catch { setShowOnboarding(true); }
-    })();
-  }, []);
+  // ── DB leagues (schedule / standings cross-reference) ───────────────────────
+  const [dbLeagues, setDbLeagues] = useState<DbLeague[]>([]);
+  const activeDbLeagueId =
+    dbLeagues.find((l) => l.sleeperLeagueId === activeLeagueId)?.id ?? null;
 
   // ── Fetch trending ───────────────────────────────────────────────────────────
   const fetchTrending = useCallback(async () => {
@@ -1599,50 +2247,63 @@ export default function LeagueDashboardPage() {
     }
   }, []);
 
-
-
   useEffect(() => { void fetchTrending(); }, [fetchTrending]);
 
-  // ── Handlers ─────────────────────────────────────────────────────────────────
-  function handleConnect(user: SleeperUser) {
-    setSleeperUser(user);
-    localStorage.setItem('sleeper_user_id', user.userId);
-    localStorage.setItem('sleeper_username', user.username);
-    const first = user.leagues[0];
-    setActiveLeagueId(first?.leagueId ?? null);
-    if (first) {
-      localStorage.setItem('sleeper_active_league', first.leagueId);
-      localStorage.setItem('sleeper_active_league_name', first.name);
-    }
-    setShowOnboarding(false);
-  }
+  // ── Fetch DB leagues for member-tab cross-reference ──────────────────────────
+  useEffect(() => {
+    void fetch('/api/leagues')
+      .then((r) => r.json() as Promise<DbLeague[]>)
+      .then(setDbLeagues)
+      .catch(() => { /* non-critical */ });
+  }, []);
 
-  function handleLeagueSelect(id: string) {
-    setActiveLeagueId(id);
-    localStorage.setItem('sleeper_active_league', id);
-    const name = sleeperUser?.leagues.find((l) => l.leagueId === id)?.name ?? '';
-    localStorage.setItem('sleeper_active_league_name', name);
-  }
-
-  function handleDisconnect() {
-    localStorage.removeItem('sleeper_username');
-    localStorage.removeItem('sleeper_user_id');
-    localStorage.removeItem('sleeper_active_league');
-    localStorage.removeItem('sleeper_active_league_name');
-    setSleeperUser(null);
-    setActiveLeagueId(null);
-    setShowOnboarding(true);
-  }
-
-  const TABS: { id: Tab; label: string }[] = [
+  const LEFT_TABS: { id: Tab; label: string }[] = [
     { id: 'league',     label: 'League'     },
     { id: 'statistics', label: 'Statistics' },
     { id: 'news',       label: 'News'       },
   ];
 
+  const MEMBER_TABS: { id: Tab; label: string }[] = [
+    { id: 'schedules', label: 'Schedules' },
+    { id: 'divisions', label: 'Divisions' },
+    { id: 'lottery',   label: 'Lottery'   },
+  ];
+
+  const allTabs = [...LEFT_TABS, ...(isMember ? MEMBER_TABS : [])];
+  const currentTabLabel = allTabs.find((t) => t.id === tab)?.label ?? '';
+
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close mobile menu on outside click
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
+        setMobileMenuOpen(false);
+      }
+    }
+    if (mobileMenuOpen) document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [mobileMenuOpen]);
+
+  function TabBtn({ id, label }: { id: Tab; label: string }) {
+    return (
+      <button
+        onClick={() => setTab(id)}
+        className="px-4 py-2.5 text-sm font-medium transition-colors"
+        style={{
+          color: tab === id ? '#e8e6df' : '#555',
+          borderBottom: `2px solid ${tab === id ? '#80ff49' : 'transparent'}`,
+          marginBottom: -1,
+        }}
+      >
+        {label}
+      </button>
+    );
+  }
+
   return (
     <div className="min-h-full px-5 py-6 sm:px-8" style={{ color: '#e8e6df' }}>
-      {showOnboarding && <OnboardingModal onConnect={handleConnect} />}
 
       {/* ── Header ── */}
       <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
@@ -1653,41 +2314,74 @@ export default function LeagueDashboardPage() {
           <h1 className="text-xl font-semibold">Dashboard</h1>
         </div>
 
-        {sleeperUser && (
-          <div className="flex items-center gap-2 mt-1">
+        <div className="flex items-center gap-3 mt-1">
+          <LeagueSelector
+            sleeperUser={sleeperUser}
+            activeLeagueId={activeLeagueId}
+            onSelect={setActiveLeagueId}
+          />
+          {(sleeperUser?.displayName ?? session?.user?.username) && (
             <span className="text-xs" style={{ color: '#80ff49' }}>
-              {' '}
-              <span style={{ color: '#80ff49' }}>{sleeperUser.displayName}</span>
+              {sleeperUser?.displayName ?? session?.user?.username}
             </span>
-            <button
-              onClick={handleDisconnect}
-              className="text-[10px] transition-colors"
-              style={{ color: '#80ff49' }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = '#c849ff')}
-              onMouseLeave={(e) => (e.currentTarget.style.color = '#80ff49')}
-            >
-              disconnect
-            </button>
-          </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Tab bar — desktop ── */}
+      <div className="hidden sm:flex items-stretch border-b mb-6" style={{ borderColor: '#1e1e20' }}>
+        {LEFT_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
+        {isMember && (
+          <>
+            <div className="flex-1" />
+            <div className="w-px my-2" style={{ background: '#1e1e20' }} />
+            {MEMBER_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
+          </>
         )}
       </div>
 
-      {/* ── Tab bar ── */}
-      <div className="flex border-b mb-6" style={{ borderColor: '#1e1e20' }}>
-        {TABS.map(({ id, label }) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            className="px-4 py-2.5 text-sm font-medium transition-colors"
-            style={{
-              color: tab === id ? '#e8e6df' : '#555',
-              borderBottom: `2px solid ${tab === id ? '#80ff49' : 'transparent'}`,
-              marginBottom: -1,
-            }}
+      {/* ── Tab bar — mobile hamburger ── */}
+      <div className="flex sm:hidden items-center border-b mb-6 relative" style={{ borderColor: '#1e1e20' }} ref={mobileMenuRef}>
+        <button
+          onClick={() => setMobileMenuOpen((o) => !o)}
+          className="flex items-center gap-2 px-1 py-2.5 text-sm font-medium transition-colors"
+          style={{ color: '#e8e6df' }}
+        >
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="none" aria-hidden>
+            <rect y="0"  width="16" height="2" rx="1" fill="currentColor" />
+            <rect y="5"  width="16" height="2" rx="1" fill="currentColor" />
+            <rect y="10" width="16" height="2" rx="1" fill="currentColor" />
+          </svg>
+          <span>{currentTabLabel}</span>
+          <svg width="10" height="6" viewBox="0 0 10 6" fill="none" className="ml-0.5"
+            style={{ transform: mobileMenuOpen ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }}>
+            <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5"
+              strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+
+        {mobileMenuOpen && (
+          <div
+            className="absolute top-full left-0 z-50 min-w-[160px] rounded-lg overflow-hidden shadow-lg mt-1"
+            style={{ background: '#141415', border: '1px solid #2a2a2c' }}
           >
-            {label}
-          </button>
-        ))}
+            {allTabs.map(({ id, label }) => (
+              <button
+                key={id}
+                onClick={() => { setTab(id); setMobileMenuOpen(false); }}
+                className="w-full text-left px-4 py-2.5 text-sm transition-colors"
+                style={{
+                  color: tab === id ? '#80ff49' : '#888',
+                  background: tab === id ? 'rgba(128,255,73,0.08)' : 'transparent',
+                }}
+                onMouseEnter={(e) => { if (tab !== id) e.currentTarget.style.color = '#e8e6df'; }}
+                onMouseLeave={(e) => { if (tab !== id) e.currentTarget.style.color = '#888'; }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── Tab content ── */}
@@ -1695,7 +2389,6 @@ export default function LeagueDashboardPage() {
         <LeagueTab
           sleeperUser={sleeperUser}
           activeLeagueId={activeLeagueId}
-          onSelect={handleLeagueSelect}
         />
       )}
 
@@ -1709,6 +2402,11 @@ export default function LeagueDashboardPage() {
       )}
 
       {tab === 'news' && <NewsTab />}
+
+      {/* ── Member tabs ── */}
+      {tab === 'schedules' && <SchedulesTab activeLeagueId={activeDbLeagueId} refreshKey={0} isCommissioner={isCommissioner} />}
+      {tab === 'divisions' && <DivisionsTab activeLeagueId={activeDbLeagueId} />}
+      {tab === 'lottery'   && <LotteryTab   activeLeagueId={activeDbLeagueId} isCommissioner={isCommissioner} />}
 
       {/* ── Attribution ── */}
       <p className="mt-8 text-center text-[11px]" style={{ color: '#80ff49' }}>

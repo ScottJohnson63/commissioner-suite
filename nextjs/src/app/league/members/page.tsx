@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useSession } from 'next-auth/react';
 
 type Role = 'COMMISSIONER' | 'MEMBER' | 'PLAYER';
 
@@ -14,7 +15,6 @@ interface User {
 }
 
 const ROLES: Role[] = ['COMMISSIONER', 'MEMBER', 'PLAYER'];
-const ASSIGNABLE_ROLES: Role[] = ['MEMBER', 'PLAYER'];
 
 const ROLE_LABELS: Record<Role, string> = {
   COMMISSIONER: 'Commissioner',
@@ -29,10 +29,16 @@ const ROLE_ACCENT: Record<Role, string> = {
 };
 
 export default function MembersPage() {
+  const { data: session } = useSession();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updating, setUpdating] = useState<string | null>(null);
+
+  const role = session?.user?.role as Role | undefined;
+  const isCommissioner = role === 'COMMISSIONER';
+  const isMember = role === 'MEMBER';
+  const currentUserId = session?.user?.id;
 
   useEffect(() => {
     fetch('/api/users')
@@ -45,15 +51,15 @@ export default function MembersPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  async function setRole(user: User, role: Role) {
-    if (role === user.role || !ASSIGNABLE_ROLES.includes(role)) return;
+  async function setRole(user: User, newRole: Role) {
+    if (newRole === user.role) return;
     setUpdating(user.id);
     setError(null);
     try {
       const res = await fetch(`/api/users/${user.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role }),
+        body: JSON.stringify({ role: newRole }),
       });
       if (!res.ok) throw new Error('Update failed');
       const updated = await res.json() as User;
@@ -65,9 +71,24 @@ export default function MembersPage() {
     }
   }
 
-  const grouped = ROLES.map((role) => ({
-    role,
-    users: users.filter((u) => u.role === role),
+  // PLAYER role: no access
+  if (role === 'PLAYER') {
+    return (
+      <div className="min-h-full flex items-center justify-center px-4" style={{ color: '#e8e6df' }}>
+        <div className="text-center max-w-xs">
+          <p className="text-2xl mb-3">🔒</p>
+          <h2 className="text-base font-medium mb-2">Access Restricted</h2>
+          <p className="text-sm" style={{ color: '#555' }}>
+            This page is only available to members and commissioners.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const grouped = ROLES.map((r) => ({
+    role: r,
+    users: users.filter((u) => u.role === r),
   }));
 
   return (
@@ -77,7 +98,9 @@ export default function MembersPage() {
         <div className="mb-8">
           <h1 className="text-lg font-medium mb-1">Members</h1>
           <p className="text-xs" style={{ color: '#555' }}>
-            Manage roles for registered users.
+            {isCommissioner
+              ? 'Manage roles for registered users.'
+              : 'Promote players to members.'}
           </p>
         </div>
 
@@ -114,14 +137,14 @@ export default function MembersPage() {
 
         {!loading && users.length > 0 && (
           <div className="space-y-6">
-            {grouped.map(({ role, users: group }) => (
-              <div key={role}>
+            {grouped.map(({ role: groupRole, users: group }) => (
+              <div key={groupRole}>
                 <div className="flex items-center gap-2 mb-2">
                   <p
                     className="text-[10px] uppercase tracking-widest"
-                    style={{ color: ROLE_ACCENT[role] }}
+                    style={{ color: ROLE_ACCENT[groupRole] }}
                   >
-                    {ROLE_LABELS[role]}s
+                    {ROLE_LABELS[groupRole]}s
                   </p>
                   <span className="text-[10px]" style={{ color: '#444' }}>
                     {group.length}
@@ -133,7 +156,7 @@ export default function MembersPage() {
                 >
                   {group.length === 0 ? (
                     <p className="px-4 py-4 text-xs" style={{ color: '#444' }}>
-                      No {ROLE_LABELS[role].toLowerCase()}s.
+                      No {ROLE_LABELS[groupRole].toLowerCase()}s.
                     </p>
                   ) : (
                     <table className="w-full text-sm">
@@ -143,6 +166,9 @@ export default function MembersPage() {
                             key={user.id}
                             user={user}
                             busy={updating === user.id}
+                            isSelf={user.id === currentUserId}
+                            isCommissioner={isCommissioner}
+                            isMember={isMember}
                             onSetRole={(r) => setRole(user, r)}
                           />
                         ))}
@@ -162,20 +188,45 @@ export default function MembersPage() {
 function UserRow({
   user,
   busy,
+  isSelf,
+  isCommissioner,
+  isMember,
   onSetRole,
 }: {
   user: User;
   busy: boolean;
+  isSelf: boolean;
+  isCommissioner: boolean;
+  isMember: boolean;
   onSetRole: (role: Role) => void;
 }) {
   const displayName = user.name ?? user.username ?? '—';
   const sub = user.email ?? (user.username ? `@${user.username}` : null);
+
+  // Commissioners can reassign anyone (except themselves).
+  // Members can only reassign non-commissioner users, and only to MEMBER or PLAYER.
+  const canEdit =
+    !isSelf &&
+    (isCommissioner || (isMember && user.role !== 'COMMISSIONER'));
+
+  const assignableRoles: Role[] = canEdit
+    ? ROLES.filter((r) => {
+        if (r === user.role) return false;
+        if (isMember && r === 'COMMISSIONER') return false;
+        return true;
+      })
+    : [];
 
   return (
     <tr className="border-b last:border-b-0" style={{ borderColor: '#1e1e20' }}>
       <td className="px-4 py-3">
         <p className="text-sm" style={{ color: '#e8e6df' }}>
           {displayName}
+          {isSelf && (
+            <span className="ml-1.5 text-[10px]" style={{ color: '#444' }}>
+              (you)
+            </span>
+          )}
         </p>
         {sub && (
           <p className="text-xs mt-0.5" style={{ color: '#555' }}>
@@ -184,13 +235,9 @@ function UserRow({
         )}
       </td>
       <td className="px-4 py-3 text-right">
-        {user.role === 'COMMISSIONER' ? (
-          <span className="text-xs" style={{ color: '#444' }}>
-            managed elsewhere
-          </span>
-        ) : (
+        {canEdit && assignableRoles.length > 0 && (
           <div className="inline-flex gap-1">
-            {ASSIGNABLE_ROLES.filter((r) => r !== user.role).map((r) => (
+            {assignableRoles.map((r) => (
               <button
                 key={r}
                 onClick={() => onSetRole(r)}

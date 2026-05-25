@@ -61,17 +61,28 @@ I want to add the ability for commissioners to assign PA roles to users. These g
 [x] Add Manage button to sidebar that allows the commissioner to select PA members based on users in the database
 [x] Add division selection 
 [x] Add lottery picker 
-[ ] Add functionality for PA members to have read only access to every page. 
-[ ] Add Association on league sidebar for PA members
+[x] Add functionality for PA members (MEMBERS) to have read only access to every page. 
+[x] Add Association tabs on league dashboard for pa members
 
 -- Part 7: Auth Updates -- 
 Overall: 
 I want to implement the functionality to check if a user attempting to login is in the sleeper leagues. If not, then they are denied.
 
-[ ] Add username to login flow 
-[ ] Remove the username dialog and the disconnect features.
+[x] Add username to login flow 
+[x] Remove the username dialog and the disconnect features.
 
--- Part 8: More Commissioner Controls --
+-- Part 8: Random odds and ends --
 Overall: 
 
-[ ] 
+[x] Move league context dropdown for league to the top
+[ ] Update division and lottery tab to log in activity log
+[ ] Add a Generate Draft Order button to the lottery page
+[x] Optimize league dashboard for mobile. If mobile, sidebar is locked in collapse mode. If mobile, the tabs become a hamburger menu selection. 
+[ ] Fix Schedule tab flickering after role changes
+[ ] Add commissioner login (the manual login method now should only be for commissioner/manually added accounts)
+
+-- Part 9: Code Cleanup & Refactor -- 
+Overall: 
+Clean up the code to refactor components into separate folders. Maximize modularization, reducing functions to one specific task where possible. 
+
+[ ]

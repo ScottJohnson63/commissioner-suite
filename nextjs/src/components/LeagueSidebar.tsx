@@ -3,27 +3,65 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
-import { signOut } from 'next-auth/react';
+import { signOut, useSession } from 'next-auth/react';
 
 // ─── Nav definition ───────────────────────────────────────────────────────────
 
-const NAV = [
+const BASE_NAV = [
   { label: 'Dashboard',    href: '/league/dashboard', icon: <GridIcon /> },
   { label: 'AI Assistant', href: '/league/ai',        icon: <SparkleIcon /> },
   { label: 'Schedule',     href: '/league/schedule',  icon: <CalendarIcon /> },
 ];
 
+// ─── Tooltip shown beside collapsed nav icons ─────────────────────────────────
+
+function NavTooltip({ label }: { label: string }) {
+  return (
+    <div
+      className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2 py-1.5 rounded text-xs
+                 whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100
+                 transition-opacity duration-150 z-50"
+      style={{ background: '#1e1e20', color: '#e8e6df', border: '1px solid #2a2a2c' }}
+    >
+      {label}
+    </div>
+  );
+}
+
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 export function LeagueSidebar() {
   const pathname = usePathname();
+  const { data: session } = useSession();
   const [expanded, setExpanded] = useState(true);
+  const [overflow, setOverflow] = useState<'hidden' | 'visible'>('hidden');
 
-  // Persist collapsed state
+  const NAV = [
+    ...BASE_NAV,
+    ...(session?.user?.role === 'MEMBER' || session?.user?.role === 'COMMISSIONER'
+      ? [{ label: 'Members', href: '/league/members', icon: <PeopleIcon /> }]
+      : []),
+  ];
+
+  // Default collapsed on mobile; respect saved preference otherwise
   useEffect(() => {
     const saved = localStorage.getItem('sidebar_expanded');
-    if (saved !== null) setExpanded(saved === 'true');
+    if (saved !== null) {
+      setExpanded(saved === 'true');
+    } else {
+      setExpanded(window.innerWidth >= 768);
+    }
   }, []);
+
+  // Allow tooltips to extend outside the aside once the collapse animation finishes
+  useEffect(() => {
+    if (expanded) {
+      setOverflow('hidden');
+    } else {
+      const t = setTimeout(() => setOverflow('visible'), 210);
+      return () => clearTimeout(t);
+    }
+  }, [expanded]);
 
   function toggle() {
     setExpanded((prev) => {
@@ -35,12 +73,12 @@ export function LeagueSidebar() {
 
   return (
     <aside
-      className="flex flex-col shrink-0 border-r transition-[width] duration-200"
+      className="isolate flex flex-col shrink-0 border-r transition-[width] duration-200"
       style={{
         width: expanded ? 216 : 52,
         background: '#0a0a0b',
         borderColor: '#1e1e20',
-        overflow: 'hidden',
+        overflow,
       }}
     >
       {/* ── Header / toggle ── */}
@@ -73,43 +111,46 @@ export function LeagueSidebar() {
         {NAV.map((item) => {
           const active = pathname === item.href;
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="flex items-center gap-3 rounded px-2 py-2 text-sm transition-colors"
-              style={{
-                background: active ? 'rgba(128,255,73,0.1)' : 'transparent',
-                color: active ? '#80ff49' : '#666',
-                minHeight: 36,
-              }}
-              onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = '#e8e6df'; }}
-              onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = '#666'; }}
-              title={!expanded ? item.label : undefined}
-            >
-              <span className="w-5 h-5 flex items-center justify-center shrink-0">
-                {item.icon}
-              </span>
-              {expanded && <span className="truncate leading-none">{item.label}</span>}
-            </Link>
+            <div key={item.href} className="relative group">
+              <Link
+                href={item.href}
+                className="flex items-center gap-3 rounded px-2 py-2 text-sm transition-colors"
+                style={{
+                  background: active ? 'rgba(128,255,73,0.1)' : 'transparent',
+                  color: active ? '#80ff49' : '#666',
+                  minHeight: 36,
+                }}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = '#e8e6df'; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = '#666'; }}
+              >
+                <span className="w-5 h-5 flex items-center justify-center shrink-0">
+                  {item.icon}
+                </span>
+                {expanded && <span className="truncate leading-none">{item.label}</span>}
+              </Link>
+              {!expanded && <NavTooltip label={item.label} />}
+            </div>
           );
         })}
       </nav>
 
       {/* ── Footer / sign out ── */}
       <div className="p-1.5 border-t" style={{ borderColor: '#1e1e20' }}>
-        <button
-          onClick={() => void signOut({ callbackUrl: '/' })}
-          className="flex items-center gap-3 w-full rounded px-2 py-2 text-sm transition-colors"
-          style={{ color: '#555', minHeight: 36 }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = '#ff4949')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = '#555')}
-          title={!expanded ? 'Sign out' : undefined}
-        >
-          <span className="w-5 h-5 flex items-center justify-center shrink-0">
-            <SignOutIcon />
-          </span>
-          {expanded && <span className="truncate">Sign out</span>}
-        </button>
+        <div className="relative group">
+          <button
+            onClick={() => void signOut({ callbackUrl: '/' })}
+            className="flex items-center gap-3 w-full rounded px-2 py-2 text-sm transition-colors"
+            style={{ color: '#555', minHeight: 36 }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = '#ff4949')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = '#555')}
+          >
+            <span className="w-5 h-5 flex items-center justify-center shrink-0">
+              <SignOutIcon />
+            </span>
+            {expanded && <span className="truncate">Sign out</span>}
+          </button>
+          {!expanded && <NavTooltip label="Sign out" />}
+        </div>
       </div>
     </aside>
   );
@@ -146,6 +187,17 @@ function CalendarIcon() {
   );
 }
 
+
+function PeopleIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <circle cx="5.5" cy="4.5" r="2" />
+      <path d="M1 13c0-2.5 2-4 4.5-4s4.5 1.5 4.5 4" />
+      <circle cx="11" cy="4.5" r="1.5" />
+      <path d="M11 9.5c1.5.3 3 1.3 3 3.5" />
+    </svg>
+  );
+}
 
 function SignOutIcon() {
   return (

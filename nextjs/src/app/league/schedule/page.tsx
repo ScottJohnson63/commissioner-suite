@@ -133,40 +133,42 @@ export default function SchedulePage() {
         </div>
 
         {/* Week navigation */}
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => changeWeek(-1)}
-            disabled={week <= 1}
-            className="w-8 h-8 rounded flex items-center justify-center text-sm transition-colors disabled:opacity-30"
-            style={{ background: '#141415', border: '1px solid #1e1e20', color: '#888' }}
-          >
-            ‹
-          </button>
-          <div className="flex gap-1">
-            {Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
-              <button
-                key={w}
-                onClick={() => { setWeek(w); localStorage.setItem('schedule_week', String(w)); }}
-                className="w-8 h-8 rounded text-xs transition-colors"
-                style={{
-                  background: w === week ? '#80ff49' : '#141415',
-                  border: `1px solid ${w === week ? '#80ff49' : '#1e1e20'}`,
-                  color: w === week ? '#0e0e0f' : '#555',
-                  fontWeight: w === week ? 600 : 400,
-                }}
-              >
-                {w}
-              </button>
-            ))}
+        <div className="overflow-x-auto w-full sm:w-auto" style={{ scrollbarWidth: 'none' }}>
+          <div className="flex items-center gap-1 min-w-max">
+            <button
+              onClick={() => changeWeek(-1)}
+              disabled={week <= 1}
+              className="w-8 h-8 rounded flex items-center justify-center text-sm transition-colors disabled:opacity-30 shrink-0"
+              style={{ background: '#141415', border: '1px solid #1e1e20', color: '#888' }}
+            >
+              ‹
+            </button>
+            <div className="flex gap-1 flex-nowrap">
+              {Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
+                <button
+                  key={w}
+                  onClick={() => { setWeek(w); localStorage.setItem('schedule_week', String(w)); }}
+                  className="w-8 h-8 rounded text-xs transition-colors shrink-0"
+                  style={{
+                    background: w === week ? '#80ff49' : '#141415',
+                    border: `1px solid ${w === week ? '#80ff49' : '#1e1e20'}`,
+                    color: w === week ? '#0e0e0f' : '#555',
+                    fontWeight: w === week ? 600 : 400,
+                  }}
+                >
+                  {w}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => changeWeek(1)}
+              disabled={week >= 18}
+              className="w-8 h-8 rounded flex items-center justify-center text-sm transition-colors disabled:opacity-30 shrink-0"
+              style={{ background: '#141415', border: '1px solid #1e1e20', color: '#888' }}
+            >
+              ›
+            </button>
           </div>
-          <button
-            onClick={() => changeWeek(1)}
-            disabled={week >= 18}
-            className="w-8 h-8 rounded flex items-center justify-center text-sm transition-colors disabled:opacity-30"
-            style={{ background: '#141415', border: '1px solid #1e1e20', color: '#888' }}
-          >
-            ›
-          </button>
         </div>
       </div>
 

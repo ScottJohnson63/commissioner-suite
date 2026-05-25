@@ -8,5 +8,10 @@ export default async function AuthRedirectPage() {
     redirect('/');
   }
 
+  // New OAuth user — not yet in the DB, must verify Sleeper membership first
+  if (session.user.pendingOAuth) {
+    redirect('/auth/connect-sleeper');
+  }
+
   redirect('/league/dashboard');
 }

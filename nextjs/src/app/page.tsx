@@ -4,10 +4,11 @@ import { useState } from 'react';
 import { signIn } from 'next-auth/react';
 
 export default function LoginPage() {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [username, setUsername]               = useState('');
+  const [password, setPassword]               = useState('');
+  const [sleeperUsername, setSleeperUsername] = useState('');
+  const [loading, setLoading]                 = useState<string | null>(null);
+  const [error, setError]                     = useState<string | null>(null);
 
   async function handleOAuth(provider: 'discord' | 'google') {
     setLoading(provider);
@@ -17,18 +18,19 @@ export default function LoginPage() {
 
   async function handleCredentials(e: React.FormEvent) {
     e.preventDefault();
-    if (!username.trim() || !password) return;
+    if (!username.trim() || !password || !sleeperUsername.trim()) return;
     setLoading('credentials');
     setError(null);
 
     const result = await signIn('credentials', {
-      username: username.trim(),
+      username:        username.trim(),
       password,
-      redirect: false,
+      sleeperUsername: sleeperUsername.trim(),
+      redirect:        false,
     });
 
     if (result?.error) {
-      setError('Invalid username or password.');
+      setError('Sign in failed. Check your credentials and Sleeper username.');
       setLoading(null);
     } else {
       window.location.href = '/auth/redirect';
@@ -110,7 +112,7 @@ export default function LoginPage() {
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="Username"
+            placeholder="Sleeper username"
             autoComplete="username"
             className="w-full bg-[#0e0e0f] border border-[#2a2a2c] rounded px-3 py-2.5 text-sm
                        text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444]
@@ -126,9 +128,19 @@ export default function LoginPage() {
                        text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444]
                        transition-colors"
           />
+          <input
+            type="text"
+            value={sleeperUsername}
+            onChange={(e) => setSleeperUsername(e.target.value)}
+            placeholder="Sleeper username (or #commish)"
+            autoComplete="off"
+            className="w-full bg-[#0e0e0f] border border-[#2a2a2c] rounded px-3 py-2.5 text-sm
+                       text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444]
+                       transition-colors"
+          />
           <button
             type="submit"
-            disabled={loading !== null || !username.trim() || !password}
+            disabled={loading !== null || !username.trim() || !password || !sleeperUsername.trim()}
             className="w-full px-4 py-2.5 rounded text-sm font-medium transition-colors disabled:opacity-40"
             style={{ background: '#80ff49', color: '#0e0e0f' }}
             onMouseEnter={(e) => {
@@ -139,6 +151,10 @@ export default function LoginPage() {
             {loading === 'credentials' ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+
+        <p className="mt-5 text-center text-[11px]" style={{ color: '#444' }}>
+          Your username is your Sleeper username.
+        </p>
 
       </div>
     </div>

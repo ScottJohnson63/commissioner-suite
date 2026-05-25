@@ -2,6 +2,9 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useSession } from 'next-auth/react';
+import { useSleeperData } from '@/hooks/useSleeperData';
+import { LeagueSelector } from '@/components/LeagueSelector';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -12,21 +15,6 @@ interface Message {
 }
 
 type ModelUsed = 'gemini' | 'groq' | null;
-
-interface SleeperLeague {
-  leagueId: string;
-  name: string;
-  season: number;
-  totalRosters: number;
-  status: string;
-}
-
-interface SleeperUserData {
-  userId: string;
-  username: string;
-  displayName: string;
-  leagues: SleeperLeague[];
-}
 
 const HOURLY_LIMIT = 15;
 
@@ -154,6 +142,9 @@ function ModelBadge({ model }: { model: ModelUsed }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AIPage() {
+  const { data: session } = useSession();
+  const { sleeperUser, activeLeagueId, setActiveLeagueId } = useSleeperData();
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -169,14 +160,6 @@ export default function AIPage() {
   const [dailyUsed, setDailyUsed] = useState(0);
   const [modelUsed, setModelUsed] = useState<ModelUsed>('groq');
   const [rateLimited, setRateLimited] = useState(false);
-  // Sleeper identity — persisted in localStorage
-  const [sleeperUsername, setSleeperUsername] = useState('');
-  const [sleeperUser, setSleeperUser] = useState<SleeperUserData | null>(null);
-  const [activeLeagueId, setActiveLeagueId] = useState<string | null>(null);
-  const [activeLeagueName, setActiveLeagueName] = useState<string | null>(null);
-  const [leagueInputOpen, setLeagueInputOpen] = useState(false);
-  const [sleeperLoading, setSleeperLoading] = useState(false);
-  const [sleeperError, setSleeperError] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -186,66 +169,6 @@ export default function AIPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Restore Sleeper identity from localStorage on mount
-  useEffect(() => {
-    const savedUsername = localStorage.getItem('sleeper_username');
-    const savedLeagueId = localStorage.getItem('sleeper_league_id');
-    const savedLeagueName = localStorage.getItem('sleeper_league_name');
-    if (savedUsername) setSleeperUsername(savedUsername);
-    if (savedLeagueId) setActiveLeagueId(savedLeagueId);
-    if (savedLeagueName) setActiveLeagueName(savedLeagueName);
-  }, []);
-
-  async function handleSleeperLookup(): Promise<void> {
-    const username = sleeperUsername.trim().toLowerCase();
-    if (!username) return;
-    setSleeperLoading(true);
-    setSleeperError(null);
-    try {
-      const res = await fetch(`/api/sleeper/user?username=${encodeURIComponent(username)}`);
-      if (!res.ok) {
-        const data = (await res.json()) as { error?: string };
-        throw new Error(data.error ?? 'User not found');
-      }
-      const data = (await res.json()) as SleeperUserData;
-      setSleeperUser(data);
-      // Store stable userId per Sleeper docs (username can change)
-      localStorage.setItem('sleeper_user_id', data.userId);
-      localStorage.setItem('sleeper_username', username);
-      // Auto-select first league
-      if (data.leagues.length > 0) {
-        const first = data.leagues[0];
-        setActiveLeagueId(first.leagueId);
-        setActiveLeagueName(first.name);
-        localStorage.setItem('sleeper_league_id', first.leagueId);
-        localStorage.setItem('sleeper_league_name', first.name);
-      }
-    } catch (err) {
-      setSleeperError(err instanceof Error ? err.message : 'Failed to load Sleeper data');
-    } finally {
-      setSleeperLoading(false);
-    }
-  }
-
-  function handleLeagueSelect(leagueId: string, leagueName: string): void {
-    setActiveLeagueId(leagueId);
-    setActiveLeagueName(leagueName);
-    localStorage.setItem('sleeper_league_id', leagueId);
-    localStorage.setItem('sleeper_league_name', leagueName);
-    setLeagueInputOpen(false);
-  }
-
-  function handleSleeperDisconnect(): void {
-    setSleeperUser(null);
-    setSleeperUsername('');
-    setActiveLeagueId(null);
-    setActiveLeagueName(null);
-    localStorage.removeItem('sleeper_username');
-    localStorage.removeItem('sleeper_user_id');
-    localStorage.removeItem('sleeper_league_id');
-    localStorage.removeItem('sleeper_league_name');
-    setLeagueInputOpen(false);
-  }
 
   useEffect(() => {
     let id = localStorage.getItem('agent_client_id');
@@ -382,97 +305,11 @@ export default function AIPage() {
         </div>
         <div className="flex items-center gap-2">
           {/* Sleeper league selector */}
-          <div className="relative">
-            <button
-              onClick={() => setLeagueInputOpen((v) => !v)}
-              className="text-xs px-2 py-1 rounded border transition-colors flex items-center gap-1.5"
-              style={{
-                background: '#141415',
-                borderColor: activeLeagueId ? '#80ff49' : '#2a2a2c',
-                color: activeLeagueId ? '#80ff49' : '#555',
-              }}
-            >
-              {activeLeagueName ?? 'Connect Sleeper'}
-              <span style={{ fontSize: '9px' }}>{leagueInputOpen ? '▲' : '▼'}</span>
-            </button>
-
-            {leagueInputOpen && (
-              <div
-                className="absolute right-0 top-8 z-50 rounded-xl p-4 flex flex-col gap-3 w-72 shadow-xl"
-                style={{ background: '#141415', border: '1px solid #2a2a2c' }}
-              >
-                <p className="text-xs font-medium" style={{ color: '#e8e6df' }}>
-                  Sleeper Account
-                </p>
-
-                {/* Username input */}
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={sleeperUsername}
-                    onChange={(e) => setSleeperUsername(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && void handleSleeperLookup()}
-                    placeholder="Sleeper username"
-                    className="flex-1 text-xs px-3 py-2 rounded-lg bg-transparent outline-none border"
-                    style={{ borderColor: '#2a2a2c', color: '#e8e6df' }}
-                  />
-                  <button
-                    onClick={() => void handleSleeperLookup()}
-                    disabled={sleeperLoading || !sleeperUsername.trim()}
-                    className="text-xs px-3 py-2 rounded-lg transition-colors font-medium"
-                    style={{
-                      background: sleeperLoading || !sleeperUsername.trim() ? '#1e1e20' : '#80ff49',
-                      color: sleeperLoading || !sleeperUsername.trim() ? '#444' : '#0e0e0f',
-                    }}
-                  >
-                    {sleeperLoading ? '…' : 'Go'}
-                  </button>
-                </div>
-
-                {sleeperError && (
-                  <p className="text-xs" style={{ color: '#ef4444' }}>{sleeperError}</p>
-                )}
-
-                {/* League dropdown */}
-                {sleeperUser && sleeperUser.leagues.length > 0 && (
-                  <div className="flex flex-col gap-1">
-                    <p className="text-xs" style={{ color: '#555' }}>
-                      {sleeperUser.displayName}'s leagues
-                    </p>
-                    {sleeperUser.leagues.map((league) => (
-                      <button
-                        key={league.leagueId}
-                        onClick={() => handleLeagueSelect(league.leagueId, league.name)}
-                        className="text-left text-xs px-3 py-2 rounded-lg transition-colors"
-                        style={{
-                          background: activeLeagueId === league.leagueId ? '#1a2a1a' : '#1a1a1c',
-                          color: activeLeagueId === league.leagueId ? '#80ff49' : '#888',
-                          border: `1px solid ${activeLeagueId === league.leagueId ? '#80ff49' : '#2a2a2c'}`,
-                        }}
-                      >
-                        <span className="block font-medium" style={{ color: activeLeagueId === league.leagueId ? '#80ff49' : '#e8e6df' }}>
-                          {league.name}
-                        </span>
-                        <span style={{ color: '#555' }}>
-                          {league.totalRosters} teams · {league.season}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {sleeperUser && (
-                  <button
-                    onClick={handleSleeperDisconnect}
-                    className="text-xs transition-colors"
-                    style={{ color: '#555' }}
-                  >
-                    Disconnect
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
+          <LeagueSelector
+            sleeperUser={sleeperUser}
+            activeLeagueId={activeLeagueId}
+            onSelect={setActiveLeagueId}
+          />
 
           <ModelBadge model={modelUsed} />
         </div>

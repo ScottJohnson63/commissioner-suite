@@ -8,7 +8,13 @@
     "start": "next start",
     "lint": "eslint",
     "test": "jest --coverage --json --outputFile=../test-results/jest-results-$(date +%Y%m%d_%H%M%S).json",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "seed": "npx tsx prisma/seed.ts",
+    "cleanup": "npx tsx prisma/cleanup.ts",
+    "migrate:turso": "npx tsx prisma/migrate-turso.ts"
+  },
+  "prisma": {
+    "seed": "npx tsx prisma/seed.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.2",

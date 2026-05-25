@@ -3,7 +3,9 @@ import { prisma } from '@/lib/prisma';
 
 export async function GET(): Promise<NextResponse> {
   try {
+    const adminUsername = process.env.ADMIN_USERNAME ?? 'admin';
     const users = await prisma.user.findMany({
+      where: { NOT: { username: adminUsername } },
       select: {
         id: true,
         name: true,
