@@ -11,7 +11,7 @@ export async function proxy(request: NextRequest) {
   const isProtected =
     pathname.startsWith('/league') ||
     pathname.startsWith('/assoc') ||
-    pathname.startsWith('/dashboard');
+    pathname.startsWith('/assoc/dashboard');
 
   // Unauthenticated user hitting a protected route → login
   if (isProtected && !isLoggedIn) {

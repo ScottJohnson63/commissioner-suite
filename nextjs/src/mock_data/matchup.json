@@ -1,0 +1,37 @@
+{
+  "_comment": "Mock fantasy rosters for DEMO_MODE=true local testing. Player IDs are GSIS format (NflWeeklyStat.playerId). Teams chosen to include a mix of outdoor/dome stadiums so weather API gets exercised.",
+  "team1": {
+    "name": "Alpha Squad",
+    "rosterId": 1,
+    "players": [
+      { "id": "00-0034796", "name": "Lamar Jackson",      "position": "QB", "team": "BAL" },
+      { "id": "00-0034844", "name": "Saquon Barkley",     "position": "RB", "team": "PHI" },
+      { "id": "00-0039139", "name": "Jahmyr Gibbs",       "position": "RB", "team": "DET" },
+      { "id": "00-0039040", "name": "De'Von Achane",      "position": "RB", "team": "MIA" },
+      { "id": "00-0036900", "name": "Ja'Marr Chase",      "position": "WR", "team": "CIN" },
+      { "id": "00-0036963", "name": "Amon-Ra St. Brown",  "position": "WR", "team": "DET" },
+      { "id": "00-0039893", "name": "Brian Thomas Jr.",   "position": "WR", "team": "JAX" },
+      { "id": "00-0039337", "name": "Malik Nabers",       "position": "WR", "team": "NYG" },
+      { "id": "00-0030506", "name": "Travis Kelce",       "position": "TE", "team": "KC"  },
+      { "id": "00-0033288", "name": "George Kittle",      "position": "TE", "team": "SF"  },
+      { "id": "00-0029597", "name": "Justin Tucker",      "position": "K",  "team": "BAL" }
+    ]
+  },
+  "team2": {
+    "name": "Beta Force",
+    "rosterId": 2,
+    "players": [
+      { "id": "00-0034857", "name": "Josh Allen",         "position": "QB", "team": "BUF" },
+      { "id": "00-0032764", "name": "Derrick Henry",      "position": "RB", "team": "BAL" },
+      { "id": "00-0038542", "name": "Bijan Robinson",     "position": "RB", "team": "ATL" },
+      { "id": "00-0035700", "name": "Josh Jacobs",        "position": "RB", "team": "GB"  },
+      { "id": "00-0036322", "name": "Justin Jefferson",   "position": "WR", "team": "MIN" },
+      { "id": "00-0036358", "name": "CeeDee Lamb",        "position": "WR", "team": "DAL" },
+      { "id": "00-0033906", "name": "Alvin Kamara",       "position": "RB", "team": "NO"  },
+      { "id": "00-0037248", "name": "James Cook",         "position": "RB", "team": "BUF" },
+      { "id": "00-0039338", "name": "Brock Bowers",       "position": "TE", "team": "LV"  },
+      { "id": "00-0034753", "name": "Mark Andrews",       "position": "TE", "team": "BAL" },
+      { "id": "00-0031136", "name": "Chris Boswell",      "position": "K",  "team": "PIT" }
+    ]
+  }
+}

@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 
+const IS_DEMO = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface TrendingPlayer {
@@ -48,6 +50,46 @@ interface SleeperUser {
 
 
 type Tab = 'league' | 'statistics' | 'news';
+
+// ─── League feature types ─────────────────────────────────────────────────────
+
+interface WaiverSuggestion {
+  playerId: string; name: string; position: string; team: string | null;
+  recentAvg: number; reason: string; trendingCount: number | null;
+}
+interface WaiverSuggestionsResponse {
+  weakPositions: string[];
+  suggestions: WaiverSuggestion[];
+  demo?: boolean;
+}
+
+interface TradePlayer { playerId: string; name: string; position: string; seasonPts: number }
+interface TradeProposal {
+  targetTeamName: string; targetOwnerId: string;
+  give: TradePlayer[]; receive: TradePlayer[];
+  fairnessScore: number; summary: string;
+}
+interface TradeSuggestionsResponse {
+  myPositionRanks: Record<string, number>;
+  proposals: TradeProposal[];
+  demo?: boolean;
+}
+
+interface PlayerProjection {
+  playerId: string; name: string; position: string; team: string | null;
+  floor: number; ceiling: number; projected: number;
+  defAdjustment: number; weatherNote: string | null;
+}
+interface TeamProjection { name: string; rosterId: number; floor: number; ceiling: number; projected: number }
+interface WeatherInfo { team: string; tempF: number; windMph: number; precipPct: number; stadiumName: string; note: string }
+interface VegasLine { homeTeam: string; awayTeam: string; total: number; spread: number; sport?: string }
+interface MatchupReportResponse {
+  week: number; season: number;
+  myTeam: TeamProjection; opponent: TeamProjection;
+  myPlayers: PlayerProjection[]; opponentPlayers: PlayerProjection[];
+  weather: WeatherInfo[] | null; vegasLines: VegasLine[] | null;
+  narrative: string; demo?: boolean;
+}
 
 // ─── Onboarding modal ─────────────────────────────────────────────────────────
 
@@ -276,6 +318,414 @@ function TrendingCard({
 }
 
 
+// ─── Shared panel helpers ─────────────────────────────────────────────────────
+
+const PANEL_BG = { background: '#141415', border: '1px solid #1e1e20' } as const;
+const INNER_BG = { background: '#0e0e0f', border: '1px solid #1e1e20' } as const;
+
+function PanelActionBtn({
+  onClick, disabled, loading, label, loadingLabel,
+}: {
+  onClick: () => void; disabled: boolean; loading: boolean; label: string; loadingLabel: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled || loading}
+      className="text-xs font-medium px-3 py-1.5 rounded transition-opacity disabled:opacity-40 shrink-0"
+      style={{ background: '#80ff49', color: '#0e0e0f' }}
+    >
+      {loading ? loadingLabel : label}
+    </button>
+  );
+}
+
+function PanelSkeleton({ rows = 3, height = 10 }: { rows?: number; height?: number }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="rounded animate-pulse" style={{ background: '#1e1e20', height }} />
+      ))}
+    </div>
+  );
+}
+
+function NoLeague() {
+  return <p className="text-xs text-center py-6" style={{ color: '#444' }}>Select a league first</p>;
+}
+
+// ─── Waiver Wire Suggestions Panel ───────────────────────────────────────────
+
+function WaiverSuggestionsPanel({
+  leagueId, userId,
+}: { leagueId: string | null; userId: string | null }) {
+  const [data, setData]       = useState<WaiverSuggestionsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState<string | null>(null);
+
+  async function run() {
+    if (!leagueId || !userId) return;
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(
+        `/api/sleeper/waiver-suggestions?leagueId=${leagueId}&userId=${userId}&season=2025`,
+      );
+      if (!res.ok) throw new Error('Failed to load suggestions');
+      setData(await res.json() as WaiverSuggestionsResponse);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Error'); }
+    finally { setLoading(false); }
+  }
+
+  return (
+    <div className="rounded-xl p-5 flex flex-col gap-4" style={PANEL_BG}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-lg shrink-0">📋</span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold" style={{ color: '#e8e6df' }}>Waiver Wire</p>
+          </div>
+        </div>
+        <PanelActionBtn onClick={() => void run()} disabled={!leagueId || !userId}
+          loading={loading} label="Find Suggestions" loadingLabel="Loading…" />
+      </div>
+
+      {(!leagueId || !userId) && <NoLeague />}
+      {error && <p className="text-xs" style={{ color: '#ff4949' }}>{error}</p>}
+      {loading && <PanelSkeleton rows={4} height={40} />}
+
+      {data && !loading && (
+        <>
+          {data.weakPositions.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] uppercase tracking-wider" style={{ color: '#555' }}>
+                Weak spots:
+              </span>
+              {data.weakPositions.map((pos) => (
+                <span key={pos} className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                  style={{ background: 'rgba(255,109,73,0.12)', color: '#ff6d49' }}>
+                  {pos}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-col">
+            {data.suggestions.length === 0 ? (
+              <p className="text-xs text-center py-3" style={{ color: '#444' }}>
+                No suggestions available — check back after more games
+              </p>
+            ) : data.suggestions.map((s) => (
+              <div key={s.playerId}
+                className="flex items-center gap-3 py-2.5 border-b last:border-b-0"
+                style={{ borderColor: '#1a1a1c' }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={SLEEPER_THUMB(s.playerId)} alt={s.name}
+                  width={30} height={30} className="rounded-full shrink-0 object-cover"
+                  style={{ width: 30, height: 30, background: '#1e1e20' }}
+                  onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-medium truncate" style={{ color: '#e8e6df' }}>
+                      {s.name}
+                    </span>
+                    <span className="text-[10px] px-1 rounded shrink-0"
+                      style={{ background: '#1e1e20', color: '#555' }}>{s.position}</span>
+                    {s.team && (
+                      <span className="text-[10px] shrink-0" style={{ color: '#444' }}>{s.team}</span>
+                    )}
+                  </div>
+                  <p className="text-[10px] truncate mt-0.5" style={{ color: '#555' }}>{s.reason}</p>
+                </div>
+                <span className="text-xs font-semibold tabular-nums shrink-0"
+                  style={{ color: '#80ff49' }}>
+                  {s.recentAvg.toFixed(1)} pts
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Trade Analyzer Panel ─────────────────────────────────────────────────────
+
+function TradeAnalyzerPanel({
+  leagueId, userId,
+}: { leagueId: string | null; userId: string | null }) {
+  const [data, setData]       = useState<TradeSuggestionsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState<string | null>(null);
+
+  async function run() {
+    if (!leagueId || !userId) return;
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(
+        `/api/sleeper/trade-suggestions?leagueId=${leagueId}&userId=${userId}&season=2025`,
+      );
+      if (!res.ok) throw new Error('Failed to load trades');
+      setData(await res.json() as TradeSuggestionsResponse);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Error'); }
+    finally { setLoading(false); }
+  }
+
+  return (
+    <div className="rounded-xl p-5 flex flex-col gap-4" style={PANEL_BG}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-lg shrink-0">🔄</span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold" style={{ color: '#e8e6df' }}>Trade Finder</p>
+            <p className="text-[10px] truncate" style={{ color: '#555' }}>
+              Realistic trades that address your roster needs
+            </p>
+          </div>
+        </div>
+        <PanelActionBtn onClick={() => void run()} disabled={!leagueId || !userId}
+          loading={loading} label="Analyze Trades" loadingLabel="Loading…" />
+      </div>
+
+      {(!leagueId || !userId) && <NoLeague />}
+      {error && <p className="text-xs" style={{ color: '#ff4949' }}>{error}</p>}
+      {loading && <PanelSkeleton rows={3} height={56} />}
+
+      {data && !loading && (
+        <>
+          {/* Position rank chips */}
+          {Object.keys(data.myPositionRanks).length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] uppercase tracking-wider shrink-0" style={{ color: '#555' }}>
+                Your ranks:
+              </span>
+              {Object.entries(data.myPositionRanks).map(([pos, rank]) => (
+                <span key={pos} className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                  style={{
+                    background: rank <= 3  ? 'rgba(128,255,73,0.12)'
+                              : rank <= 6  ? 'rgba(250,204,21,0.12)'
+                              :              'rgba(255,73,73,0.12)',
+                    color: rank <= 3 ? '#80ff49' : rank <= 6 ? '#facc15' : '#ff4949',
+                  }}>
+                  {pos} #{rank}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Trade cards */}
+          {data.proposals.length === 0 ? (
+            <p className="text-xs text-center py-3" style={{ color: '#444' }}>
+              No fair trades found — try again after more games are played
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {data.proposals.map((p, i) => (
+                <div key={i} className="rounded-lg p-3 flex flex-col gap-2" style={INNER_BG}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium truncate" style={{ color: '#e8e6df' }}>
+                      {p.targetTeamName}
+                    </span>
+                    {/* Fairness bar */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <div className="w-14 h-1.5 rounded-full overflow-hidden"
+                        style={{ background: '#1e1e20' }}>
+                        <div className="h-full rounded-full transition-all" style={{
+                          width: `${p.fairnessScore}%`,
+                          background: p.fairnessScore >= 75 ? '#80ff49'
+                                    : p.fairnessScore >= 50 ? '#facc15'
+                                    : '#ff4949',
+                        }} />
+                      </div>
+                      <span className="text-[10px] tabular-nums w-5 text-right"
+                        style={{ color: '#555' }}>
+                        {Math.round(p.fairnessScore)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['give', 'receive'] as const).map((side) => (
+                      <div key={side}>
+                        <p className="text-[9px] uppercase tracking-wider mb-1"
+                          style={{ color: '#555' }}>
+                          {side === 'give' ? 'You give' : 'You get'}
+                        </p>
+                        {p[side].map((pl) => (
+                          <div key={pl.playerId}
+                            className="flex items-center justify-between text-[10px] gap-1">
+                            <span className="truncate"
+                              style={{ color: '#e8e6df' }}>{pl.name}</span>
+                            <span className="tabular-nums shrink-0"
+                              style={{ color: side === 'receive' ? '#80ff49' : '#555' }}>
+                              {pl.seasonPts.toFixed(0)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10px] italic" style={{ color: '#555' }}>{p.summary}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Matchup Report Panel ─────────────────────────────────────────────────────
+
+function MatchupReportPanel({
+  leagueId, userId,
+}: { leagueId: string | null; userId: string | null }) {
+  const [data, setData]       = useState<MatchupReportResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState<string | null>(null);
+
+  async function run() {
+    if (!leagueId || !userId) return;
+    setLoading(true); setError(null);
+    try {
+      const res  = await fetch(`/api/sleeper/matchup-report?leagueId=${leagueId}&userId=${userId}`);
+      const json = await res.json() as MatchupReportResponse & { error?: string };
+      if (!res.ok) throw new Error(json.error ?? 'Failed to load matchup report');
+      setData(json);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Error'); }
+    finally { setLoading(false); }
+  }
+
+  return (
+    <div className="rounded-xl p-5 flex flex-col gap-4" style={PANEL_BG}>
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-lg shrink-0">⚔️</span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold" style={{ color: '#e8e6df' }}>Matchup Analysis</p>
+          </div>
+        </div>
+        <PanelActionBtn onClick={() => void run()} disabled={!leagueId || !userId}
+          loading={loading} label="Analyze Matchup" loadingLabel="Analyzing…" />
+      </div>
+
+      {(!leagueId || !userId) && <NoLeague />}
+      {error && <p className="text-xs" style={{ color: '#ff4949' }}>{error}</p>}
+      {loading && (
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="h-20 rounded animate-pulse" style={{ background: '#1e1e20' }} />
+            <div className="h-20 rounded animate-pulse" style={{ background: '#1e1e20' }} />
+          </div>
+          <PanelSkeleton rows={2} height={14} />
+        </div>
+      )}
+
+      {data && !loading && (
+        <div className="flex flex-col gap-4">
+          {/* Score comparison — two columns */}
+          <div className="grid grid-cols-2 gap-3">
+            {(
+              [
+                { key: 'myTeam', team: data.myTeam },
+                { key: 'opponent', team: data.opponent },
+              ] as const
+            ).map(({ key, team }) => (
+              <div key={key} className="rounded-lg p-3 flex flex-col gap-1" style={{
+                ...INNER_BG,
+                border: `1px solid ${key === 'myTeam' ? 'rgba(128,255,73,0.25)' : '#1e1e20'}`,
+              }}>
+                <p className="text-[10px] uppercase tracking-wider truncate"
+                  style={{ color: key === 'myTeam' ? '#80ff49' : '#555' }}>
+                  {team.name}
+                </p>
+                <p className="text-2xl font-bold tabular-nums" style={{ color: '#e8e6df' }}>
+                  {team.projected.toFixed(1)}
+                </p>
+                <div className="flex gap-2 text-[10px] tabular-nums">
+                  <span style={{ color: '#ff6d49' }}>↓{team.floor.toFixed(1)}</span>
+                  <span style={{ color: '#2a2a2c' }}>·</span>
+                  <span style={{ color: '#80ff49' }}>↑{team.ceiling.toFixed(1)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Weather + Vegas row */}
+          {(data.vegasLines || data.weather) && (
+            <div className="flex flex-wrap gap-2 text-[10px]">
+              {data.vegasLines?.slice(0, 3).map((l, i) => (
+                <span key={i} className="px-2 py-1 rounded flex items-center gap-1"
+                  style={{ background: '#1e1e20', color: '#555' }}>
+                  {l.sport && (
+                    <span className="font-semibold" style={{ color: '#facc15' }}>{l.sport}</span>
+                  )}
+                  {l.sport
+                    ? `${l.homeTeam.split(' ').at(-1)} vs ${l.awayTeam.split(' ').at(-1)} · O/U ${l.total}`
+                    : `O/U ${l.total} · ${l.spread > 0 ? '+' : ''}${l.spread}`}
+                </span>
+              ))}
+              {data.weather?.map((w, i) => (
+                <span key={i} className="px-2 py-1 rounded"
+                  style={{
+                    background: '#1e1e20',
+                    color: w.windMph > 20 || w.precipPct > 60 ? '#facc15' : '#555',
+                  }}>
+                  {w.team}: {w.tempF}°F · {w.windMph}mph · {w.precipPct}% rain
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Narrative */}
+          {data.narrative && (
+            <p className="text-xs leading-relaxed" style={{ color: '#888' }}>
+              {data.narrative}
+            </p>
+          )}
+
+          {/* Player tables */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {[
+              { label: data.myTeam.name, players: data.myPlayers, accent: '#80ff49' },
+              { label: data.opponent.name, players: data.opponentPlayers, accent: '#555' },
+            ].map(({ label, players, accent }) => (
+              <div key={label}>
+                <p className="text-[10px] uppercase tracking-wider mb-1.5 truncate"
+                  style={{ color: accent }}>{label}</p>
+                <div className="rounded-lg overflow-hidden" style={{ border: '1px solid #1e1e20' }}>
+                  {players.slice(0, 9).map((p) => (
+                    <div key={p.playerId}
+                      className="flex items-center justify-between px-3 py-1.5 border-b last:border-b-0 gap-2"
+                      style={{ borderColor: '#1a1a1c' }}>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-[9px] px-1 rounded shrink-0"
+                          style={{ background: '#1e1e20', color: '#555' }}>
+                          {p.position}
+                        </span>
+                        <span className="text-[11px] truncate" style={{ color: '#e8e6df' }}>
+                          {p.name}
+                        </span>
+                        {p.weatherNote && (
+                          <span className="text-[9px] shrink-0" style={{ color: '#facc15' }}>⚠</span>
+                        )}
+                      </div>
+                      <span className="text-[11px] tabular-nums shrink-0"
+                        style={{ color: accent }}>
+                        {p.floor.toFixed(0)}–{p.ceiling.toFixed(0)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Tab content: League ──────────────────────────────────────────────────────
 
 function LeagueTab({
@@ -314,27 +764,38 @@ function LeagueTab({
         </div>
       )}
 
-      {/* Placeholder sections */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {[
-          { label: 'Standings',  icon: '🏆', desc: 'Win/loss records and division standings' },
-          { label: 'Roster',     icon: '📋', desc: 'Your current roster and waiver picks'    },
-          { label: 'Matchups',   icon: '⚔️',  desc: 'Head-to-head matchup history'           },
-          { label: 'Trades',     icon: '🔄', desc: 'Recent and pending trade activity'       },
-          { label: 'Waivers',    icon: '📝', desc: 'Waiver wire priority and claims'         },
-          { label: 'Draft',      icon: '🎯', desc: 'Draft board and pick history'            },
-        ].map(({ label, icon, desc }) => (
-          <div key={label} className="rounded-xl p-5 flex flex-col gap-2"
-            style={{ background: '#141415', border: '1px solid #1e1e20' }}>
-            <div className="flex items-center gap-2">
-              <span className="text-base">{icon}</span>
-              <p className="text-sm font-medium" style={{ color: '#e8e6df' }}>{label}</p>
-            </div>
-            <p className="text-xs" style={{ color: '#444' }}>{desc}</p>
-            <span className="text-[10px] mt-1 px-2 py-0.5 rounded self-start"
-              style={{ background: '#1e1e20', color: '#555' }}>Coming soon</span>
+      {/* Demo mode banner */}
+      {IS_DEMO && (
+        <div className="rounded-lg px-4 py-3 flex items-center gap-3"
+          style={{ background: 'rgba(250,204,21,0.06)', border: '1px solid rgba(250,204,21,0.2)' }}>
+          <span className="text-base shrink-0" style={{ color: '#facc15' }}>⚗</span>
+          <div>
+            <p className="text-xs font-semibold" style={{ color: '#facc15' }}>Demo Mode Active</p>
+            <p className="text-[10px] mt-0.5" style={{ color: 'rgba(250,204,21,0.5)' }}>
+              Mock rosters · Real 2025 stats · Live odds from the current active sport · Set{' '}
+              <code style={{ color: 'rgba(250,204,21,0.75)' }}>DEMO_MODE=false</code> in{' '}
+              <code style={{ color: 'rgba(250,204,21,0.75)' }}>.env</code> to connect your Sleeper account
+            </p>
           </div>
-        ))}
+        </div>
+      )}
+
+      {/* Feature panels */}
+      <div className="flex flex-col gap-4">
+        <MatchupReportPanel
+          leagueId={activeLeagueId}
+          userId={sleeperUser?.userId ?? null}
+        />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <WaiverSuggestionsPanel
+            leagueId={activeLeagueId}
+            userId={sleeperUser?.userId ?? null}
+          />
+          <TradeAnalyzerPanel
+            leagueId={activeLeagueId}
+            userId={sleeperUser?.userId ?? null}
+          />
+        </div>
       </div>
     </div>
   );
@@ -1179,16 +1640,16 @@ export default function LeagueDashboardPage() {
 
         {sleeperUser && (
           <div className="flex items-center gap-2 mt-1">
-            <span className="text-xs" style={{ color: '#555' }}>
-              Sleeper:{' '}
-              <span style={{ color: '#e8e6df' }}>{sleeperUser.displayName}</span>
+            <span className="text-xs" style={{ color: '#80ff49' }}>
+              {' '}
+              <span style={{ color: '#80ff49' }}>{sleeperUser.displayName}</span>
             </span>
             <button
               onClick={handleDisconnect}
               className="text-[10px] transition-colors"
-              style={{ color: '#444' }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = '#ff4949')}
-              onMouseLeave={(e) => (e.currentTarget.style.color = '#444')}
+              style={{ color: '#80ff49' }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = '#c849ff')}
+              onMouseLeave={(e) => (e.currentTarget.style.color = '#80ff49')}
             >
               disconnect
             </button>
@@ -1235,10 +1696,10 @@ export default function LeagueDashboardPage() {
       {tab === 'news' && <NewsTab />}
 
       {/* ── Attribution ── */}
-      <p className="mt-8 text-center text-[11px]" style={{ color: '#2a2a2c' }}>
+      <p className="mt-8 text-center text-[11px]" style={{ color: '#80ff49' }}>
         Trending data from{' '}
         <a href="https://sleeper.com" target="_blank" rel="noopener noreferrer"
-          className="underline" style={{ color: '#333' }}>Sleeper</a>
+          className="underline" style={{ color: '#80ff49' }}>Sleeper</a>
         {' '}· Stats from nfl_data_py · Headlines from ESPN
       </p>
     </div>

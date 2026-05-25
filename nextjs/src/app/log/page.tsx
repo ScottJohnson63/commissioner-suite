@@ -96,7 +96,7 @@ export default function LogPage() {
         <div className="flex items-center justify-between mb-8">
           <div>
             <Link
-              href="/dashboard"
+              href="/assoc/dashboard"
               className="text-xs tracking-widest uppercase mb-2 block transition-colors hover:text-[#e8e6df]"
               style={{ color: '#555' }}
             >
