@@ -86,6 +86,10 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
    *                         the User + Account records, then the client calls
    *                         update({ userId }) to resolve the pending state.
    */
+  // Required when deployed behind a proxy/load balancer (e.g. AWS Lambda + API Gateway).
+  // Without this, Auth.js ignores x-forwarded-proto and misidentifies the protocol,
+  // causing PKCE cookie prefix mismatches that break OAuth callbacks.
+  trustHost: true,
   providers: [
     Discord({
       clientId:    process.env.DISCORD_CLIENT_ID!,
