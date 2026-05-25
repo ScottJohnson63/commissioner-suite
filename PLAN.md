@@ -57,11 +57,12 @@ I want to add some useful functions for the league. First, a waiver wire suggest
 Overall: 
 I want to add the ability for commissioners to assign PA roles to users. These grant access to assoc/dashboard, but restricts sync league and generate schedule button. Also want to add a division selection button and lottery picker. 
 
-[ ] Add sidebar from league/dashboard (migrate sync leagues and generate schedule buttons to the sidebar)
-[ ] Add Manage button to sidebar that allows the commissioner to select PA members based on users in the database
-[ ] Add division selection 
-[ ] Add lottery picker 
+[x] Add sidebar from league/dashboard
+[x] Add Manage button to sidebar that allows the commissioner to select PA members based on users in the database
+[x] Add division selection 
+[x] Add lottery picker 
 [ ] Add functionality for PA members to have read only access to every page. 
+[ ] Add Association on league sidebar for PA members
 
 -- Part 7: Auth Updates -- 
 Overall: 
@@ -69,3 +70,8 @@ I want to implement the functionality to check if a user attempting to login is 
 
 [ ] Add username to login flow 
 [ ] Remove the username dialog and the disconnect features.
+
+-- Part 8: More Commissioner Controls --
+Overall: 
+
+[ ] 

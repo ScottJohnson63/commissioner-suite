@@ -15,6 +15,7 @@ datasource db {
 enum Role {
   COMMISSIONER
   MEMBER
+  PLAYER
 }
 
 model User {

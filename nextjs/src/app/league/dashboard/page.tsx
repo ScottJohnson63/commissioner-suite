@@ -442,6 +442,21 @@ function WaiverSuggestionsPanel({
               </div>
             ))}
           </div>
+          {data.suggestions.some((s) => s.trendingCount !== null) && (
+            <p className="text-[10px] text-right" style={{ color: '#333' }}>
+              Add counts via{' '}
+              <a
+                href="https://sleeper.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#444' }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = '#80ff49')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = '#444')}
+              >
+                Sleeper
+              </a>
+            </p>
+          )}
         </>
       )}
     </div>
