@@ -10,7 +10,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const take = limitParam ? Math.min(parseInt(limitParam, 10), 500) : 100;
 
   try {
-    const logs = await prisma.auditLog.findMany({
+    const raw = await prisma.auditLog.findMany({
       where: leagueId ? { leagueId } : undefined,
       orderBy: { createdAt: 'desc' },
       take,
@@ -20,6 +20,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         },
       },
     });
+    const logs = raw.map((l) => ({
+      ...l,
+      detail: (() => { try { return JSON.parse(l.detail) as Record<string, unknown>; } catch { return {}; } })(),
+    }));
     return NextResponse.json(logs);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to fetch audit logs';

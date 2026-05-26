@@ -138,6 +138,15 @@ interface LotteryResult {
   pick:      number;
 }
 
+interface DraftPick {
+  pick:      number;
+  rosterId:  number;
+  name:      string;
+  ownerName: string | null;
+  source:    'lottery' | 'standings';
+  prevRank:  number;
+}
+
 // ─── League dropdown ──────────────────────────────────────────────────────────
 
 const STATUS_COLOR: Record<string, string> = {
@@ -1618,10 +1627,10 @@ function SchedulesTab({
     <div className="max-w-5xl">
       {/* Action bar */}
       <div className="flex flex-wrap items-center gap-2 mb-6">
-        {isCommissioner && !loading && activeLeagueId && (
+        {isCommissioner && activeLeagueId && (
           <button
             onClick={handleGenerate}
-            disabled={generating}
+            disabled={loading || generating}
             className="px-4 py-2 rounded text-sm font-medium transition-colors disabled:opacity-40 touch-manipulation"
             style={{ background: '#80ff49', color: '#0e0e0f' }}
             onMouseEnter={(e) => (e.currentTarget.style.background = '#9fff6e')}
@@ -1630,7 +1639,7 @@ function SchedulesTab({
             {generating ? 'Generating…' : schedule ? '↻ Regenerate' : '+ Generate Schedule'}
           </button>
         )}
-        {!loading && schedule && (
+        {schedule && (
           <>
             <button
               onClick={handleExport}
@@ -1662,7 +1671,7 @@ function SchedulesTab({
         </div>
       )}
 
-      {loading && (
+      {loading && !schedule && (
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="h-10 rounded border border-[#2a2a2c] animate-pulse"
@@ -1683,7 +1692,7 @@ function SchedulesTab({
         </p>
       )}
 
-      {!loading && schedule && (
+      {schedule && (
         <>
           <StatCards
             total={schedule.matchups.length}
@@ -1765,10 +1774,13 @@ function SchedulesTab({
 
 // ─── Divisions Tab (member) ───────────────────────────────────────────────────
 
-function DivisionsTab({ activeLeagueId }: { activeLeagueId: string | null }) {
-  const [standings, setStandings] = useState<StandingEntry[]>([]);
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState<string | null>(null);
+function DivisionsTab({ activeLeagueId, isCommissioner }: { activeLeagueId: string | null; isCommissioner: boolean }) {
+  const [standings, setStandings]         = useState<StandingEntry[]>([]);
+  const [loading, setLoading]             = useState(false);
+  const [error, setError]                 = useState<string | null>(null);
+  const [generating, setGenerating]       = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generateOk, setGenerateOk]       = useState(false);
 
   const load = useCallback(async (leagueId: string) => {
     setLoading(true); setError(null);
@@ -1783,9 +1795,26 @@ function DivisionsTab({ activeLeagueId }: { activeLeagueId: string | null }) {
   }, []);
 
   useEffect(() => {
-    setStandings([]); setError(null);
+    setStandings([]); setError(null); setGenerateError(null); setGenerateOk(false);
     if (activeLeagueId) void load(activeLeagueId);
   }, [activeLeagueId, load]);
+
+  const generateDivisions = useCallback(async () => {
+    if (!activeLeagueId || standings.length === 0) return;
+    setGenerating(true); setGenerateError(null); setGenerateOk(false);
+    try {
+      const res = await fetch('/api/assoc/divisions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leagueId: activeLeagueId, standings }),
+      });
+      const data = await res.json() as { updated?: number; error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to generate divisions');
+      setGenerateOk(true);
+    } catch (e) {
+      setGenerateError(e instanceof Error ? e.message : 'Failed to generate divisions');
+    } finally { setGenerating(false); }
+  }, [activeLeagueId, standings]);
 
   const div1 = standings.filter((s) => s.division === 1);
   const div2 = standings.filter((s) => s.division === 2);
@@ -1871,6 +1900,26 @@ function DivisionsTab({ activeLeagueId }: { activeLeagueId: string | null }) {
           ♛ Champion · Rankings from final bracket results
         </p>
       )}
+      {!loading && standings.length > 0 && isCommissioner && (
+        <div className="mt-5 flex items-center gap-3">
+          <button
+            onClick={() => void generateDivisions()}
+            disabled={generating}
+            className="px-5 py-2 rounded text-sm font-medium transition-colors disabled:opacity-50"
+            style={{ background: '#c849ff', color: '#fff' }}
+            onMouseEnter={(e) => { if (!generating) e.currentTarget.style.background = '#d966ff'; }}
+            onMouseLeave={(e) => { if (!generating) e.currentTarget.style.background = '#c849ff'; }}
+          >
+            {generating ? 'Saving…' : 'Generate Divisions'}
+          </button>
+          {generateOk && (
+            <span className="text-xs" style={{ color: '#80ff49' }}>Divisions saved.</span>
+          )}
+          {generateError && (
+            <span className="text-xs" style={{ color: '#ff4949' }}>{generateError}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1893,14 +1942,18 @@ function formatLotteryCountdown(ms: number): string {
 }
 
 function LotteryTab({ activeLeagueId, isCommissioner }: { activeLeagueId: string | null; isCommissioner: boolean }) {
-  const [standings, setStandings]   = useState<StandingEntry[]>([]);
-  const [loading, setLoading]       = useState(false);
-  const [error, setError]           = useState<string | null>(null);
-  const [running, setRunning]       = useState(false);
-  const [results, setResults]       = useState<LotteryResult[] | null>(null);
-  const [totalDrawn, setTotalDrawn] = useState(0);
-  const [liveCounts, setLiveCounts] = useState<number[]>([]);
+  const [standings, setStandings]       = useState<StandingEntry[]>([]);
+  const [loading, setLoading]           = useState(false);
+  const [error, setError]               = useState<string | null>(null);
+  const [running, setRunning]           = useState(false);
+  const [results, setResults]           = useState<LotteryResult[] | null>(null);
+  const [totalDrawn, setTotalDrawn]     = useState(0);
+  const [liveCounts, setLiveCounts]     = useState<number[]>([]);
+  const [draftOrder, setDraftOrder]     = useState<DraftPick[] | null>(null);
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [draftError, setDraftError]     = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const rerunRef    = useRef(false);
 
   useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
 
@@ -1919,9 +1972,19 @@ function LotteryTab({ activeLeagueId, isCommissioner }: { activeLeagueId: string
   useEffect(() => {
     setStandings([]); setError(null); setResults(null);
     setRunning(false); setTotalDrawn(0); setLiveCounts([]);
+    setDraftOrder(null); setDraftError(null);
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     if (activeLeagueId) void load(activeLeagueId);
   }, [activeLeagueId, load]);
+
+  useEffect(() => {
+    if (!results || !activeLeagueId) return;
+    void fetch('/api/assoc/lottery-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leagueId: activeLeagueId, results, rerun: rerunRef.current }),
+    });
+  }, [results, activeLeagueId]);
 
   const worstTeams = useMemo(
     () => [...standings].sort((a, b) => b.rank - a.rank).slice(0, 3),
@@ -1930,11 +1993,13 @@ function LotteryTab({ activeLeagueId, isCommissioner }: { activeLeagueId: string
 
   function runLottery() {
     if (worstTeams.length === 0) return;
+    rerunRef.current = results !== null;
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     const n = worstTeams.length;
     const counts = new Array<number>(n).fill(0);
     let drawn = 0;
     setRunning(true); setResults(null); setTotalDrawn(0); setLiveCounts([...counts]);
+    setDraftOrder(null); setDraftError(null);
     intervalRef.current = setInterval(() => {
       const thisBatch = Math.min(LOTTERY_BATCH, LOTTERY_TOTAL - drawn);
       for (let i = 0; i < thisBatch; i++) counts[Math.floor(Math.random() * n)]++;
@@ -1955,6 +2020,35 @@ function LotteryTab({ activeLeagueId, isCommissioner }: { activeLeagueId: string
         setRunning(false);
       }
     }, LOTTERY_INTERVAL_MS);
+  }
+
+  async function generateDraftOrder(): Promise<void> {
+    if (!results || standings.length === 0 || !activeLeagueId) return;
+    setDraftLoading(true); setDraftError(null);
+    try {
+      const lotteryRosterIds = new Set(results.map((r) => r.rosterId));
+      const lotteryPicks: DraftPick[] = results.map((r) => ({
+        pick: r.pick, rosterId: r.rosterId, name: r.name,
+        ownerName: r.ownerName, source: 'lottery', prevRank: r.prevRank,
+      }));
+      const nonLotteryPicks: DraftPick[] = [...standings]
+        .filter((s) => !lotteryRosterIds.has(s.rosterId))
+        .sort((a, b) => b.rank - a.rank) // worst first (highest rank number = worst)
+        .map((s, idx) => ({
+          pick: lotteryPicks.length + idx + 1,
+          rosterId: s.rosterId, name: s.name, ownerName: s.ownerName,
+          source: 'standings', prevRank: s.rank,
+        }));
+      const order = [...lotteryPicks, ...nonLotteryPicks];
+      setDraftOrder(order);
+      await fetch('/api/assoc/draft-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leagueId: activeLeagueId, draftOrder: order }),
+      });
+    } catch (e) {
+      setDraftError(e instanceof Error ? e.message : 'Failed to generate draft order');
+    } finally { setDraftLoading(false); }
   }
 
   const progressPct = (totalDrawn / LOTTERY_TOTAL) * 100;
@@ -2188,7 +2282,7 @@ function LotteryTab({ activeLeagueId, isCommissioner }: { activeLeagueId: string
             </div>
           </div>
           {isCommissioner && (
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <button onClick={runLottery}
                 className="px-4 py-2 rounded text-sm font-medium transition-colors"
                 style={{ background: '#80ff49', color: '#0e0e0f' }}
@@ -2196,13 +2290,75 @@ function LotteryTab({ activeLeagueId, isCommissioner }: { activeLeagueId: string
                 onMouseLeave={(e) => (e.currentTarget.style.background = '#80ff49')}>
                 ↻ Re-run Lottery
               </button>
-              <button onClick={() => { setResults(null); setTotalDrawn(0); setLiveCounts([]); }}
+              <button
+                onClick={() => void generateDraftOrder()}
+                disabled={draftLoading}
+                className="px-4 py-2 rounded text-sm font-medium transition-colors disabled:opacity-40"
+                style={{ background: '#facc15', color: '#0e0e0f' }}
+                onMouseEnter={(e) => { if (!draftLoading) e.currentTarget.style.background = '#fcd93a'; }}
+                onMouseLeave={(e) => { if (!draftLoading) e.currentTarget.style.background = '#facc15'; }}
+              >
+                {draftLoading ? 'Generating…' : draftOrder ? '↻ Regenerate Draft Order' : '+ Generate Draft Order'}
+              </button>
+              <button onClick={() => { setResults(null); setTotalDrawn(0); setLiveCounts([]); setDraftOrder(null); setDraftError(null); }}
                 className="px-4 py-2 rounded text-sm font-medium border transition-colors"
                 style={{ borderColor: '#2a2a2c', color: '#888' }}
                 onMouseEnter={(e) => (e.currentTarget.style.color = '#e8e6df')}
                 onMouseLeave={(e) => (e.currentTarget.style.color = '#888')}>
                 Reset
               </button>
+            </div>
+          )}
+          {draftError && (
+            <p className="mt-2 text-xs" style={{ color: '#ff4949' }}>{draftError}</p>
+          )}
+          {draftOrder && (
+            <div className="mt-6">
+              <p className="text-[10px] uppercase tracking-widest mb-3" style={{ color: '#facc15' }}>
+                Draft Order · {new Date().getFullYear()} Season
+              </p>
+              <div className="rounded-lg overflow-hidden"
+                style={{ background: '#141415', border: '1px solid #1e1e20' }}>
+                {draftOrder.map((pick) => {
+                  const isLottery = pick.source === 'lottery';
+                  const pickAccent = pick.pick <= 3 ? PICK_ACCENT[pick.pick - 1] : '#e8e6df';
+                  return (
+                    <div
+                      key={pick.rosterId}
+                      className="flex items-center gap-3 px-4 py-3 border-b last:border-b-0"
+                      style={{ borderColor: '#1a1a1c' }}
+                    >
+                      <span
+                        className="text-sm font-bold tabular-nums w-6 text-center shrink-0"
+                        style={{ color: pickAccent }}
+                      >
+                        {pick.pick}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium truncate" style={{ color: '#e8e6df' }}>
+                          {pick.name}
+                          {pick.ownerName && (
+                            <span className="ml-1 font-normal" style={{ color: '#555' }}>
+                              ({pick.ownerName})
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-[10px] mt-0.5" style={{ color: '#444' }}>
+                          {isLottery ? `Lottery · prev rank #${pick.prevRank}` : `Prev rank #${pick.prevRank}`}
+                        </p>
+                      </div>
+                      {isLottery && (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded shrink-0 font-medium"
+                          style={{ background: 'rgba(250,204,21,0.12)', color: '#facc15' }}
+                        >
+                          Lottery
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </>
@@ -2404,9 +2560,16 @@ export default function LeagueDashboardPage() {
       {tab === 'news' && <NewsTab />}
 
       {/* ── Member tabs ── */}
-      {tab === 'schedules' && <SchedulesTab activeLeagueId={activeDbLeagueId} refreshKey={0} isCommissioner={isCommissioner} />}
-      {tab === 'divisions' && <DivisionsTab activeLeagueId={activeDbLeagueId} />}
-      {tab === 'lottery'   && <LotteryTab   activeLeagueId={activeDbLeagueId} isCommissioner={isCommissioner} />}
+      {isMember && (
+        <>
+          {/* Keep SchedulesTab always mounted so fetched data survives tab switches */}
+          <div style={{ display: tab === 'schedules' ? undefined : 'none' }}>
+            <SchedulesTab activeLeagueId={activeDbLeagueId} refreshKey={0} isCommissioner={isCommissioner} />
+          </div>
+          {tab === 'divisions' && <DivisionsTab activeLeagueId={activeDbLeagueId} isCommissioner={isCommissioner} />}
+          {tab === 'lottery'   && <LotteryTab   activeLeagueId={activeDbLeagueId} isCommissioner={isCommissioner} />}
+        </>
+      )}
 
       {/* ── Attribution ── */}
       <p className="mt-8 text-center text-[11px]" style={{ color: '#80ff49' }}>

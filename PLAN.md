@@ -75,14 +75,15 @@ I want to implement the functionality to check if a user attempting to login is 
 Overall: 
 
 [x] Move league context dropdown for league to the top
-[ ] Update division and lottery tab to log in activity log
-[ ] Add a Generate Draft Order button to the lottery page
+[x] Update division and lottery tab to log in activity log
+[x] Add a Generate Draft Order button to the lottery page
 [x] Optimize league dashboard for mobile. If mobile, sidebar is locked in collapse mode. If mobile, the tabs become a hamburger menu selection. 
-[ ] Fix Schedule tab flickering after role changes
-[ ] Add commissioner login (the manual login method now should only be for commissioner/manually added accounts)
+[x] Fix Schedule tab flickering after role changes
+[x] Add commissioner login (the manual login method now should only be for commissioner/manually added accounts)
 
--- Part 9: Code Cleanup & Refactor -- 
+-- Part 9: Code Cleanup, Refactor, and issues -- 
 Overall: 
 Clean up the code to refactor components into separate folders. Maximize modularization, reducing functions to one specific task where possible. 
 
-[ ]
+[ ] 
+[ ] Remove sync league features & fix Schedules tab (might be same issue)

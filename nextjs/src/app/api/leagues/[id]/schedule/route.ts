@@ -50,6 +50,7 @@ export async function POST(
     });
 
     await writeAuditLog('GENERATE', league.id, {
+      type: 'schedule',
       scheduleId: saved.id,
       season: league.season,
       matchupCount: saved.matchups.length,

@@ -4,11 +4,11 @@ import { useState } from 'react';
 import { signIn } from 'next-auth/react';
 
 export default function LoginPage() {
-  const [username, setUsername]               = useState('');
-  const [password, setPassword]               = useState('');
-  const [sleeperUsername, setSleeperUsername] = useState('');
-  const [loading, setLoading]                 = useState<string | null>(null);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading]   = useState<string | null>(null);
   const [error, setError]                     = useState<string | null>(null);
+  const [showModal, setShowModal]             = useState(false);
 
   async function handleOAuth(provider: 'discord' | 'google') {
     setLoading(provider);
@@ -18,23 +18,33 @@ export default function LoginPage() {
 
   async function handleCredentials(e: React.FormEvent) {
     e.preventDefault();
-    if (!username.trim() || !password || !sleeperUsername.trim()) return;
+    if (!username.trim() || !password) return;
     setLoading('credentials');
     setError(null);
 
     const result = await signIn('credentials', {
-      username:        username.trim(),
+      username:  username.trim(),
       password,
-      sleeperUsername: sleeperUsername.trim(),
-      redirect:        false,
+      redirect:  false,
     });
 
     if (result?.error) {
-      setError('Sign in failed. Check your credentials and Sleeper username.');
+      setError('Sign in failed. Check your credentials.');
       setLoading(null);
     } else {
       window.location.href = '/auth/redirect';
     }
+  }
+
+  function openModal() {
+    setError(null);
+    setShowModal(true);
+  }
+
+  function closeModal() {
+    if (loading === 'credentials') return;
+    setShowModal(false);
+    setError(null);
   }
 
   return (
@@ -53,20 +63,6 @@ export default function LoginPage() {
             Sign in
           </h1>
         </div>
-
-        {/* Error banner */}
-        {error && (
-          <div
-            className="mb-4 px-3 py-2 rounded text-xs border"
-            style={{
-              background: 'rgba(255,73,73,0.08)',
-              color: '#ff4949',
-              borderColor: 'rgba(255,73,73,0.2)',
-            }}
-          >
-            {error}
-          </div>
-        )}
 
         {/* OAuth buttons */}
         <div className="flex flex-col gap-3 mb-6">
@@ -97,66 +93,102 @@ export default function LoginPage() {
           </button>
         </div>
 
-        {/* Divider */}
-        <div className="flex items-center gap-3 mb-6">
-          <div className="flex-1 h-px" style={{ background: '#2a2a2c' }} />
-          <span className="text-[10px] uppercase tracking-widest" style={{ color: '#444' }}>
-            or
-          </span>
-          <div className="flex-1 h-px" style={{ background: '#2a2a2c' }} />
-        </div>
-
-        {/* Credentials form */}
-        <form onSubmit={handleCredentials} className="flex flex-col gap-3">
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="Sleeper username"
-            autoComplete="username"
-            className="w-full bg-[#0e0e0f] border border-[#2a2a2c] rounded px-3 py-2.5 text-sm
-                       text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444]
-                       transition-colors"
-          />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password"
-            autoComplete="current-password"
-            className="w-full bg-[#0e0e0f] border border-[#2a2a2c] rounded px-3 py-2.5 text-sm
-                       text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444]
-                       transition-colors"
-          />
-          <input
-            type="text"
-            value={sleeperUsername}
-            onChange={(e) => setSleeperUsername(e.target.value)}
-            placeholder="Sleeper username (or #commish)"
-            autoComplete="off"
-            className="w-full bg-[#0e0e0f] border border-[#2a2a2c] rounded px-3 py-2.5 text-sm
-                       text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444]
-                       transition-colors"
-          />
+        {/* Commissioner login link */}
+        <p className="text-center text-[11px]" style={{ color: '#444' }}>
           <button
-            type="submit"
-            disabled={loading !== null || !username.trim() || !password || !sleeperUsername.trim()}
-            className="w-full px-4 py-2.5 rounded text-sm font-medium transition-colors disabled:opacity-40"
-            style={{ background: '#80ff49', color: '#0e0e0f' }}
-            onMouseEnter={(e) => {
-              if (!e.currentTarget.disabled) e.currentTarget.style.background = '#9fff6e';
-            }}
-            onMouseLeave={(e) => (e.currentTarget.style.background = '#80ff49')}
+            onClick={openModal}
+            className="underline underline-offset-2 transition-colors"
+            style={{ color: '#666' }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = '#999')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
           >
-            {loading === 'credentials' ? 'Signing in…' : 'Sign in'}
+            Commissioner login
           </button>
-        </form>
-
-        <p className="mt-5 text-center text-[11px]" style={{ color: '#444' }}>
-          Your username is your Sleeper username.
         </p>
 
       </div>
+
+      {/* Modal */}
+      {showModal && (
+        <div
+          className="fixed inset-0 flex items-center justify-center px-4 z-50"
+          style={{ background: 'rgba(0,0,0,0.7)' }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeModal(); }}
+        >
+          <div
+            className="w-full max-w-sm rounded-lg p-6 relative"
+            style={{ background: '#141415', border: '1px solid #2a2a2c' }}
+          >
+            {/* Close button */}
+            <button
+              onClick={closeModal}
+              disabled={loading === 'credentials'}
+              className="absolute top-4 right-4 text-xs transition-colors disabled:opacity-40"
+              style={{ color: '#555' }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = '#999')}
+              onMouseLeave={(e) => (e.currentTarget.style.color = '#555')}
+              aria-label="Close"
+            >
+              ✕
+            </button>
+
+            <h2 className="text-base font-semibold mb-5" style={{ color: '#e8e6df' }}>
+              Commissioner login
+            </h2>
+
+            {/* Error banner */}
+            {error && (
+              <div
+                className="mb-4 px-3 py-2 rounded text-xs border"
+                style={{
+                  background: 'rgba(255,73,73,0.08)',
+                  color: '#ff4949',
+                  borderColor: 'rgba(255,73,73,0.2)',
+                }}
+              >
+                {error}
+              </div>
+            )}
+
+            <form onSubmit={handleCredentials} className="flex flex-col gap-3">
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Admin username"
+                autoComplete="username"
+                className="w-full border rounded px-3 py-2.5 text-sm
+                           text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444]
+                           transition-colors"
+                style={{ background: '#0e0e0f', borderColor: '#2a2a2c' }}
+              />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+                autoComplete="current-password"
+                className="w-full border rounded px-3 py-2.5 text-sm
+                           text-[#e8e6df] placeholder-[#444] focus:outline-none focus:border-[#444]
+                           transition-colors"
+                style={{ background: '#0e0e0f', borderColor: '#2a2a2c' }}
+              />
+              <button
+                type="submit"
+                disabled={loading !== null || !username.trim() || !password}
+                className="w-full px-4 py-2.5 rounded text-sm font-medium transition-colors disabled:opacity-40"
+                style={{ background: '#80ff49', color: '#0e0e0f' }}
+                onMouseEnter={(e) => {
+                  if (!e.currentTarget.disabled) e.currentTarget.style.background = '#9fff6e';
+                }}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '#80ff49')}
+              >
+                {loading === 'credentials' ? 'Signing in…' : 'Sign in'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

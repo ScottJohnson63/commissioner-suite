@@ -101,16 +101,14 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     }),
     Credentials({
       credentials: {
-        username:        { label: 'Username' },
-        password:        { label: 'Password',         type: 'password' },
-        sleeperUsername: { label: 'Sleeper Username' },
+        username: { label: 'Username' },
+        password: { label: 'Password', type: 'password' },
       },
       async authorize(credentials) {
-        const username        = credentials?.username        as string | undefined;
-        const password        = credentials?.password        as string | undefined;
-        const sleeperUsername = credentials?.sleeperUsername as string | undefined;
+        const username = credentials?.username as string | undefined;
+        const password = credentials?.password as string | undefined;
 
-        if (!username || !password || !sleeperUsername) return null;
+        if (!username || !password) return null;
 
         const user = await prisma.user.findUnique({ where: { username } });
         if (!user?.password) return null;
@@ -118,13 +116,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         const valid = await bcrypt.compare(password, user.password);
         if (!valid) return null;
 
-        // COMMISSIONER accounts use "#commish" to bypass Sleeper validation
-        const commishBypass =
-          user.role === 'COMMISSIONER' && sleeperUsername.trim() === '#commish';
+        // Validate Sleeper league membership using the stored user ID (or
+        // username as a fallback if no Sleeper ID has been recorded yet).
+        const sleeperLookup = user.sleeperUserId ?? user.username;
+        if (!sleeperLookup) return null;
 
-        if (!commishBypass) {
-          const sleeper = await validateSleeperMembership(sleeperUsername);
-          if (!sleeper) return null;
+        const sleeper = await validateSleeperMembership(sleeperLookup);
+        if (!sleeper) return null;
+
+        // Keep the stored Sleeper user ID up to date.
+        if (user.sleeperUserId !== sleeper.userId) {
           await prisma.user.update({
             where: { id: user.id },
             data:  { sleeperUserId: sleeper.userId },

@@ -41,6 +41,9 @@ export function LeagueSidebar() {
     ...(session?.user?.role === 'MEMBER' || session?.user?.role === 'COMMISSIONER'
       ? [{ label: 'Members', href: '/league/members', icon: <PeopleIcon /> }]
       : []),
+    ...(session?.user?.role === 'MEMBER' || session?.user?.role === 'COMMISSIONER'
+      ? [{ label: 'Activity Log', href: '/league/log', icon: <LogIcon /> }]
+      : []),
   ];
 
   // Default collapsed on mobile; respect saved preference otherwise
@@ -213,6 +216,15 @@ function ChevronIcon({ direction }: { direction: 'left' | 'right' }) {
       {direction === 'left'
         ? <path d="M9 2L4 7l5 5" />
         : <path d="M5 2l5 5-5 5" />}
+    </svg>
+  );
+}
+
+function LogIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <rect x="2" y="1.5" width="11" height="12" rx="1.5" />
+      <path d="M5 5h5M5 7.5h5M5 10h3" />
     </svg>
   );
 }

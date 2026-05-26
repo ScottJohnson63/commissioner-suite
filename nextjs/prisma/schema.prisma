@@ -136,6 +136,17 @@ model AuditLog {
   @@index([createdAt])
 }
 
+model ErrorLog {
+  id        String   @id @default(cuid())
+  message   String
+  stack     String?
+  username  String?
+  url       String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 model SleeperCache {
   key       String   @id         // e.g. "nfl_player_map"
   data      String               // JSON blob
