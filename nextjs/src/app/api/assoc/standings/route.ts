@@ -1,51 +1,76 @@
+// src/app/api/assoc/standings/route.ts
+//
+// GET /api/assoc/standings?leagueId={internalId}
+//
+// Returns the final standings from the PREVIOUS season for a given league.
+// Used by the Lottery and Divisions tabs to seed draft order and division
+// assignments based on last year's playoff results.
+//
+// Data flow:
+//   1. Look up the league in the DB to get the Sleeper league ID.
+//   2. Fetch the Sleeper league metadata to find `previous_league_id`.
+//   3. Fetch users, rosters, winners bracket, and losers bracket for the
+//      previous season in parallel.
+//   4. Walk brackets from the final round backwards, assigning ranks 1→N
+//      (1 = champion) to each roster in the order they finished.
+//   5. Return a StandingEntry[] sorted by rank ascending.
+//
+// Bracket-rank algorithm:
+//   • In the final round, the championship match (both participants came from
+//     the winners path) is processed first so ranks flow 1→2→3→4.
+//   • Remaining rounds are walked newest-to-oldest so higher finishes get
+//     lower rank numbers.
+//
+// `division` on the returned entries is a placeholder (rank % 2 === 1 ? 1 : 2)
+// that the Divisions tab uses as a starting point before the commissioner
+// manually adjusts assignments.
+
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { sleeperGet } from '@/lib/sleeper/client';
+import type { SleeperRoster, SleeperUser, SleeperLeagueRaw } from '@/lib/sleeper/types';
+import type { StandingEntry } from '@/types/standings';
+import { ok, err } from '@/lib/api';
 
-const SLEEPER_BASE = 'https://api.sleeper.app/v1';
+export type { StandingEntry };
 
-interface SleeperLeagueInfo {
-  previous_league_id: string | null;
-}
+type SleeperLeagueInfo = Pick<SleeperLeagueRaw, 'previous_league_id'>;
 
-interface SleeperRoster {
-  roster_id: number;
-  owner_id: string | null;
-}
-
-interface SleeperUser {
-  user_id: string;
-  display_name: string;
-  metadata?: { team_name?: string };
-}
-
+/** Describes which prior match a participant advanced from; null = seeded directly. */
 type MatchFrom = { w: number } | { l: number } | null;
 
+/** A single match node in a Sleeper bracket, as returned by the API. */
 interface BracketMatch {
+  /** Round number (1 = earliest, higher = later). */
   r: number;
+  /** Match number within the round. */
   m: number;
+  /** Roster ID of participant 1 (null if not yet determined). */
   t1: number | null;
+  /** Roster ID of participant 2 (null if not yet determined). */
   t2: number | null;
+  /** Roster ID of the winner (null if match not yet played). */
   w: number | null;
+  /** Roster ID of the loser (null if match not yet played). */
   l: number | null;
+  /** Where t1 came from in the bracket. */
   t1_from: MatchFrom;
+  /** Where t2 came from in the bracket. */
   t2_from: MatchFrom;
 }
 
-export interface StandingEntry {
-  rank: number;
-  rosterId: number;
-  name: string;
-  ownerName: string | null;
-  isChampion: boolean;
-  division: 1 | 2;
-}
-
-async function sleeperFetch<T>(path: string): Promise<T> {
-  const res = await fetch(`${SLEEPER_BASE}${path}`, { next: { revalidate: 86400 } });
-  if (!res.ok) throw new Error(`Sleeper ${res.status} for ${path}`);
-  return res.json() as Promise<T>;
-}
-
+/**
+ * Derives a final-standings rank map from winners and losers bracket data.
+ *
+ * Walks each bracket from the final round backwards, assigning sequential
+ * integer ranks (1 = best) to each roster in finish order. The championship
+ * match in the final round is processed before consolation matches so that
+ * winner → rank 1, runner-up → rank 2, third → rank 3, etc.
+ *
+ * @param winners  Bracket data from /league/{id}/winners_bracket.
+ * @param losers   Bracket data from /league/{id}/losers_bracket.
+ * @returns        Map of rosterId → final rank.
+ */
 function rankFromBrackets(winners: BracketMatch[], losers: BracketMatch[]): Map<number, number> {
   const rankMap = new Map<number, number>();
   let nextRank = 1;
@@ -87,23 +112,23 @@ function rankFromBrackets(winners: BracketMatch[], losers: BracketMatch[]): Map<
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const leagueId = req.nextUrl.searchParams.get('leagueId');
-  if (!leagueId) return NextResponse.json({ error: 'leagueId is required' }, { status: 400 });
+  if (!leagueId) return err('leagueId is required', 400);
 
   const league = await prisma.league.findUnique({ where: { id: leagueId } });
-  if (!league) return NextResponse.json({ error: 'League not found' }, { status: 404 });
+  if (!league) return err('League not found', 404);
 
-  const { previous_league_id } = await sleeperFetch<SleeperLeagueInfo>(
+  const { previous_league_id } = await sleeperGet<SleeperLeagueInfo>(
     `/league/${league.sleeperLeagueId}`,
   );
   if (!previous_league_id) {
-    return NextResponse.json({ error: 'No previous season found for this league' }, { status: 404 });
+    return err('No previous season found for this league', 404);
   }
 
   const [users, rosters, winners, losers] = await Promise.all([
-    sleeperFetch<SleeperUser[]>(`/league/${previous_league_id}/users`),
-    sleeperFetch<SleeperRoster[]>(`/league/${previous_league_id}/rosters`),
-    sleeperFetch<BracketMatch[]>(`/league/${previous_league_id}/winners_bracket`),
-    sleeperFetch<BracketMatch[]>(`/league/${previous_league_id}/losers_bracket`),
+    sleeperGet<SleeperUser[]>(`/league/${previous_league_id}/users`),
+    sleeperGet<SleeperRoster[]>(`/league/${previous_league_id}/rosters`),
+    sleeperGet<BracketMatch[]>(`/league/${previous_league_id}/winners_bracket`),
+    sleeperGet<BracketMatch[]>(`/league/${previous_league_id}/losers_bracket`),
   ]);
 
   const userMap = new Map(users.map((u) => [u.user_id, u]));
@@ -133,5 +158,5 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       };
     });
 
-  return NextResponse.json({ standings });
+  return ok({ standings });
 }

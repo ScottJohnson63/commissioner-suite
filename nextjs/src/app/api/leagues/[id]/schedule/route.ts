@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 import { generateSchedule } from '@/lib/scheduler/engine';
 import { Team } from '@/lib/scheduler/types';
 import { writeAuditLog } from '@/lib/audit';
+import { ok, err } from '@/lib/api';
 
 export async function POST(
   _req: NextRequest,
@@ -17,7 +18,7 @@ export async function POST(
     include: { teams: true },
   });
 
-  if (!league) return NextResponse.json({ error: 'League not found' }, { status: 404 });
+  if (!league) return err('League not found', 404);
 
   const teams: Team[] = league.teams.map((t) => ({
     id: t.id,
@@ -57,10 +58,10 @@ export async function POST(
       seed,
     });
 
-    return NextResponse.json({ scheduleId: saved.id, matchupCount: saved.matchups.length });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Generation failed';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return ok({ scheduleId: saved.id, matchupCount: saved.matchups.length });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Generation failed';
+    return err(message);
   }
 }
 
@@ -81,9 +82,9 @@ export async function GET(
     },
   });
 
-  if (!schedule) return NextResponse.json({ error: 'No schedule found' }, { status: 404 });
+  if (!schedule) return err('No schedule found', 404);
 
-  return NextResponse.json(schedule);
+  return ok(schedule);
 }
 
 export async function DELETE(
@@ -93,7 +94,7 @@ export async function DELETE(
   const { id } = await params;
 
   const league = await prisma.league.findUnique({ where: { id } });
-  if (!league) return NextResponse.json({ error: 'League not found' }, { status: 404 });
+  if (!league) return err('League not found', 404);
 
   try {
     const schedules = await prisma.schedule.findMany({
@@ -102,7 +103,7 @@ export async function DELETE(
     });
 
     if (schedules.length === 0) {
-      return NextResponse.json({ error: 'No schedule to delete' }, { status: 404 });
+      return err('No schedule to delete', 404);
     }
 
     const scheduleIds = schedules.map((s) => s.id);
@@ -121,9 +122,9 @@ export async function DELETE(
       schedulesDeleted: count,
     });
 
-    return NextResponse.json({ deleted: count });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Delete failed';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return ok({ deleted: count });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Delete failed';
+    return err(message);
   }
 }

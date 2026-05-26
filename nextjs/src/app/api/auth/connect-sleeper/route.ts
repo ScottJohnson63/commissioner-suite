@@ -1,7 +1,36 @@
+// src/app/api/auth/connect-sleeper/route.ts
+//
+// POST /api/auth/connect-sleeper
+//
+// Handles Sleeper username verification for two distinct authentication paths:
+//
+// ── Path A: New OAuth user (pendingOAuth === true) ──────────────────────────
+//   New users who sign in with Discord or Google are initially placed in a
+//   "pending" state — their JWT is marked with `pendingOAuth: true` and no DB
+//   record exists for them yet. They are redirected to /auth/connect-sleeper
+//   where they must supply a Sleeper username.
+//
+//   This endpoint:
+//     1. Validates that the Sleeper username belongs to a member of a
+//        registered Sleeper league (via validateSleeperMembership).
+//     2. If valid, creates the User and Account records in a DB transaction.
+//     3. Returns { ok: true, userId } so the client can call
+//        `update({ userId })` on the NextAuth session to resolve the pending
+//        state and grant full access.
+//
+// ── Path B: Existing user reconnecting their Sleeper account ────────────────
+//   Credentials-based users (e.g. the admin account) can connect or reconnect
+//   a Sleeper username to their existing DB record. Commissioners skip the
+//   Sleeper membership check — they are trusted by role.
+//
+// Required header: valid NextAuth JWT (checked via `getToken`)
+// Required body:   { sleeperUsername: string }
+
 import { NextRequest, NextResponse } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 import { prisma } from '@/lib/prisma';
 import { validateSleeperMembership } from '@/auth';
+import { ok, err } from '@/lib/api';
 
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME ?? 'admin';
 
@@ -10,14 +39,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const token = await getToken({ req });
 
   if (!token) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return err('Unauthorized', 401);
   }
 
   const body             = (await req.json()) as { sleeperUsername?: string };
   const sleeperUsername  = body.sleeperUsername?.trim().toLowerCase();
 
   if (!sleeperUsername) {
-    return NextResponse.json({ error: 'sleeperUsername is required' }, { status: 400 });
+    return err('sleeperUsername is required', 400);
   }
 
   const isPending = token.pendingOAuth === true;
@@ -28,19 +57,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const providerAccountId = token.pendingProviderAccountId as string | undefined;
 
     if (!provider || !providerAccountId) {
-      return NextResponse.json(
-        { error: 'Missing OAuth provider data. Please sign in again.' },
-        { status: 400 },
-      );
+      return err('Missing OAuth provider data. Please sign in again.', 400);
     }
 
     // Validate Sleeper membership
     const sleeper = await validateSleeperMembership(sleeperUsername);
     if (!sleeper) {
-      return NextResponse.json(
-        { error: 'Your Sleeper account is not a member of any registered league.' },
-        { status: 403 },
-      );
+      return err('Your Sleeper account is not a member of any registered league.', 403);
     }
 
     // Guard: don't create a duplicate account if something raced
@@ -50,7 +73,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (existingAccount) {
       // Account was already created (unlikely race). Just return the userId so
       // the client can refresh its session.
-      return NextResponse.json({ ok: true, userId: existingAccount.userId });
+      return ok({ ok: true, userId: existingAccount.userId });
     }
 
     // Create User then Account in a transaction
@@ -83,18 +106,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return newUser;
     });
 
-    return NextResponse.json({ ok: true, userId: result.id });
+    return ok({ ok: true, userId: result.id });
   }
 
   // ── Path B: Existing credentials/admin user reconnecting their Sleeper ───────
   const userId = token.id as string | null;
   if (!userId) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return err('Unauthorized', 401);
   }
 
   const dbUser = await prisma.user.findUnique({ where: { id: userId } });
   if (!dbUser) {
-    return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    return err('User not found', 404);
   }
 
   // Commissioners (e.g. admin) skip Sleeper validation
@@ -102,10 +125,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!isCommissioner) {
     const sleeper = await validateSleeperMembership(sleeperUsername);
     if (!sleeper) {
-      return NextResponse.json(
-        { error: 'Your Sleeper account is not a member of any registered league.' },
-        { status: 403 },
-      );
+      return err('Your Sleeper account is not a member of any registered league.', 403);
     }
     await prisma.user.update({
       where: { id: userId },
@@ -116,5 +136,5 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
   }
 
-  return NextResponse.json({ ok: true, userId });
+  return ok({ ok: true, userId });
 }

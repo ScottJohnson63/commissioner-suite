@@ -4,6 +4,7 @@
 // Each feed is cached independently for 15 minutes.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { ok, err } from '@/lib/api';
 
 export type NewsSource = 'espn' | 'yahoo' | 'pft' | 'cbs';
 
@@ -55,6 +56,11 @@ const cache = new Map<NewsSource, CacheEntry>();
 
 // ── XML helpers ───────────────────────────────────────────────────────────────
 
+/**
+ * Extracts the text content of the first matching XML tag.
+ * Handles both CDATA-wrapped content (`<tag><![CDATA[...]]></tag>`) and
+ * plain text content (`<tag>...</tag>`). Returns an empty string when not found.
+ */
 function extractTag(xml: string, tag: string): string {
   const m =
     xml.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, 'i')) ??
@@ -62,6 +68,11 @@ function extractTag(xml: string, tag: string): string {
   return m ? m[1].trim() : '';
 }
 
+/**
+ * Extracts the value of `attr` from the first occurrence of `tag` in `xml`.
+ * Returns null if the tag or attribute is not found.
+ * Used to pull image URLs from `<media:content url="...">` and `<enclosure>` tags.
+ */
 function extractAttr(xml: string, tag: string, attr: string): string | null {
   const m = xml.match(new RegExp(`<${tag}[^>]+${attr}=["']([^"']+)["']`, 'i'));
   return m ? m[1] : null;
@@ -91,6 +102,13 @@ const NAMED_ENTITIES: Record<string, string> = {
   times: '×',  divide: '÷',
 };
 
+/**
+ * Decodes HTML entities in an RSS feed string to their Unicode equivalents.
+ * Handles:
+ *   1. Hex numeric entities  (&#x2019;)
+ *   2. Decimal numeric entities (&#8217;)
+ *   3. Named entities (&amp;, &rsquo;, &eacute;, …) via the NAMED_ENTITIES table
+ */
 function decodeEntities(s: string): string {
   // 1. Hex numeric entities:  &#x2019;  &#X2019;
   s = s.replace(/&#x([0-9a-f]+);/gi, (_, hex) =>
@@ -107,6 +125,10 @@ function decodeEntities(s: string): string {
   return s;
 }
 
+/**
+ * Strips HTML tags and decodes entities to produce plain text.
+ * Collapses multiple consecutive whitespace characters to a single space.
+ */
 function stripHtml(s: string): string {
   return decodeEntities(s.replace(/<[^>]+>/g, ' '))
     .replace(/\s{2,}/g, ' ')
@@ -115,6 +137,16 @@ function stripHtml(s: string): string {
 
 // ── Fetch one feed ────────────────────────────────────────────────────────────
 
+/**
+ * Fetches and parses a single RSS feed, returning up to 12 articles.
+ * All tag extraction and entity decoding is done with regex — no XML parser
+ * dependency — which keeps this lightweight and handles malformed feeds.
+ *
+ * @param key    Source identifier used to tag each article.
+ * @param label  Human-readable source name (e.g. "ESPN").
+ * @param url    RSS feed URL.
+ * @throws       `Error` if the HTTP response is not 2xx.
+ */
 async function fetchFeed(
   key: NewsSource,
   label: string,
@@ -149,6 +181,11 @@ async function fetchFeed(
 
 // ── Cached fetch ──────────────────────────────────────────────────────────────
 
+/**
+ * Returns cached articles for a feed if the cache is fresh (< TTL),
+ * otherwise re-fetches. On fetch failure, returns the stale cached articles
+ * rather than an error — partial results are better than no results.
+ */
 async function getCached(
   key: NewsSource,
   label: string,
@@ -180,7 +217,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     : FEEDS;
 
   if (feeds.length === 0) {
-    return NextResponse.json({ error: 'Unknown source' }, { status: 400 });
+    return err('Unknown source', 400);
   }
 
   const results = await Promise.all(
@@ -197,5 +234,5 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     })
     .slice(0, 40);
 
-  return NextResponse.json(all);
+  return ok(all);
 }

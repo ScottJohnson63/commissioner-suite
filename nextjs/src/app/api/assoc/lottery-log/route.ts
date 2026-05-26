@@ -1,6 +1,25 @@
+// src/app/api/assoc/lottery-log/route.ts
+//
+// POST /api/assoc/lottery-log
+//
+// Records the result of a draft lottery simulation in the audit log.
+// Called by the Lottery tab each time the commissioner runs or reruns the
+// lottery so every outcome is permanently logged for transparency.
+//
+// The lottery uses a weighted random draw (1,000,000 total tickets distributed
+// by inverse finish position). This endpoint captures the full ticket breakdown
+// and each team's assigned pick so the odds and result are fully auditable.
+//
+// Request body:
+//   leagueId — internal league ID
+//   results  — one entry per team, with ticket count and the assigned pick
+//   rerun    — true if this is a re-run of a previously logged lottery
+
 import { NextRequest, NextResponse } from 'next/server';
 import { writeAuditLog } from '@/lib/audit';
+import { ok, err } from '@/lib/api';
 
+/** A single team's outcome from the lottery simulation. */
 interface LotteryResult {
   rosterId: number;
   name: string;
@@ -14,7 +33,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const body = await req.json() as { leagueId?: string; results?: LotteryResult[]; rerun?: boolean };
 
   if (!body.leagueId || !Array.isArray(body.results)) {
-    return NextResponse.json({ error: 'leagueId and results are required' }, { status: 400 });
+    return err('leagueId and results are required', 400);
   }
 
   await writeAuditLog('GENERATE', body.leagueId, {
@@ -31,5 +50,5 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     })),
   });
 
-  return NextResponse.json({ logged: true });
+  return ok({ logged: true });
 }

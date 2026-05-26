@@ -1,69 +1,82 @@
 // src/app/api/agent/route.ts
+//
+// POST /api/agent — AI fantasy football assistant, two-pass architecture.
+//
+// ── Overview ──────────────────────────────────────────────────────────────────
+// The agent answers fantasy football questions by combining structured DB data
+// with live Sleeper trending and an LLM. It runs two sequential AI calls per
+// request:
+//
+//   Pass 1 — Intent classification (Groq, llama-3.1-8b-instant, temp=0)
+//     A lightweight "planner" prompt classifies the user's question into one of
+//     twelve QueryIntent values and extracts structured entities (players,
+//     position, opponent, season, weeksBack). This structured plan is then used
+//     to fetch precisely the right data from the DB — avoiding the need to dump
+//     all stats into the prompt context.
+//
+//   Pass 2 — Answer generation (Groq primary, Gemini fallback, streaming)
+//     The final system prompt is assembled from DB stats, Sleeper trending data,
+//     an optional league context block, and the intent-specific data description.
+//     The model streams its response back to the client as plain text.
+//
+// ── Data sources ──────────────────────────────────────────────────────────────
+//   • NflWeeklyStat DB table   — local copy of nfl_data_py stats, populated by
+//                                the Python FastAPI service on Railway/Render.
+//   • Sleeper trending API     — top adds/drops in the last 24 h (cached 10 min).
+//   • Sleeper player map       — player_id → full name (cached 24 h, stored in DB).
+//   • League context           — rosters, standings, upcoming matchups from Sleeper
+//                                (fetched only for league-aware intents).
+//
+// ── Rate limiting ────────────────────────────────────────────────────────────
+//   • Per-client: HOURLY_LIMIT prompts per rolling 60-minute window (in-memory).
+//   • Global daily counter:  logged in response headers for observability.
+//   Response headers expose limit/remaining/reset so the client can show a
+//   countdown to the user when they approach the cap.
+//
+// ── Model fallback ────────────────────────────────────────────────────────────
+//   Groq is the primary model. If Groq returns a 429 rate-limit error and a
+//   GEMINI_API_KEY is configured, the request is automatically retried on
+//   Gemini 2.5 Flash. The X-Model-Used and X-Fallback-Reason response headers
+//   record which path was taken.
+//
+// ── League context (Phase 2) ─────────────────────────────────────────────────
+//   If the client includes `sleeperLeagueId` in the request body AND the
+//   classified intent is league-aware (standings, roster_scan, etc.), the route
+//   fetches live roster/standings data from Sleeper and injects it into the
+//   system prompt so the model can answer questions about the user's specific
+//   league. If the intent needs league context but no Sleeper ID was supplied,
+//   the model is told to prompt the user to connect their account.
+//
+// ── Environment variables ─────────────────────────────────────────────────────
+//   GROQ_API_KEY    — required for Pass 1 (always) and Pass 2 (primary).
+//   GEMINI_API_KEY  — optional; enables the Gemini fallback for Pass 2.
+//   NFL_SEASON      — current NFL season year (e.g. 2025); defaults to the
+//                     current calendar year. Set this explicitly — stale values
+//                     are the most common cause of wrong season data.
 
 import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { prisma } from '@/lib/prisma';
+import {
+  HOURLY_LIMIT, getClientId, checkHourlyLimit, getDailyCount, incrementDaily,
+} from '@/lib/rateLimit';
+import {
+  fetchTrending, fetchSleeperPlayerMap, fetchLeagueContext,
+} from '@/lib/agentContext';
+import type { TrendingPlayer, LeagueContext } from '@/lib/agentContext';
+import { err } from '@/lib/api';
 
 // ── Clients ───────────────────────────────────────────────────────────────────
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '');
 
-const SLEEPER_BASE = 'https://api.sleeper.app/v1';
-
 // NFL_SEASON must be set to the most recently completed season (e.g. 2025).
 // "Last year" queries resolve to PREV_SEASON. Missing or stale env var is the
 // most common cause of wrong season data — verify in .env.local and production.
 const CURRENT_SEASON = parseInt(process.env.NFL_SEASON ?? String(new Date().getFullYear()), 10);
 const PREV_SEASON = CURRENT_SEASON - 1;
-
-// ── Rate limiting ─────────────────────────────────────────────────────────────
-
-interface HourBucket { count: number; windowStart: number; }
-interface DayBucket  { count: number; dayKey: string; }
-
-const hourlyBuckets = new Map<string, HourBucket>();
-let dailyBucket: DayBucket = { count: 0, dayKey: '' };
-const HOURLY_LIMIT = 15;
-
-function todayKey(): string { return new Date().toISOString().slice(0, 10); }
-
-function getDailyCount(): number {
-    const key = todayKey();
-    if (dailyBucket.dayKey !== key) dailyBucket = { count: 0, dayKey: key };
-    return dailyBucket.count;
-}
-
-function incrementDaily(): void {
-    const key = todayKey();
-    if (dailyBucket.dayKey !== key) dailyBucket = { count: 0, dayKey: key };
-    dailyBucket.count += 1;
-}
-
-function checkHourlyLimit(clientId: string): { allowed: boolean; remaining: number; resetAt: number } {
-    const now = Date.now();
-    const ONE_HOUR_MS = 60 * 60 * 1000;
-    let bucket = hourlyBuckets.get(clientId);
-    if (!bucket || now - bucket.windowStart >= ONE_HOUR_MS) {
-        bucket = { count: 0, windowStart: now };
-        hourlyBuckets.set(clientId, bucket);
-    }
-    const remaining = Math.max(0, HOURLY_LIMIT - bucket.count);
-    const resetAt = bucket.windowStart + ONE_HOUR_MS;
-    if (bucket.count >= HOURLY_LIMIT) return { allowed: false, remaining: 0, resetAt };
-    bucket.count += 1;
-    hourlyBuckets.set(clientId, bucket);
-    return { allowed: true, remaining: remaining - 1, resetAt };
-}
-
-function getClientId(req: NextRequest): string {
-    return (
-        req.headers.get('x-client-id')?.trim() ||
-        req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-        'unknown'
-    );
-}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -101,51 +114,7 @@ interface PlayerStats {
     fantasyPointsPpr?: number | null;
 }
 
-interface TrendingPlayer {
-    player_id: string;
-    count: number;
-    type: 'add' | 'drop';
-}
-
 type ModelUsed = 'gemini' | 'groq';
-
-// ── Phase 2: League context types ─────────────────────────────────────────────
-
-interface SleeperRosterPlayer {
-    playerId: string;
-    name: string;
-}
-
-interface LeagueRoster {
-    rosterId: string;
-    ownerName: string;
-    players: SleeperRosterPlayer[];
-}
-
-interface LeagueContext {
-    leagueId: string;           // internal Turso league ID
-    sleeperLeagueId: string;    // Sleeper league ID
-    leagueName: string;
-    currentWeek: number;
-    rosters: LeagueRoster[];
-    standings: TeamStanding[];
-    upcomingMatchups: UpcomingMatchup[];
-}
-
-interface TeamStanding {
-    teamName: string;
-    rosterId: string;
-    wins: number;
-    losses: number;
-    ties: number;
-    pointsFor: number;
-}
-
-interface UpcomingMatchup {
-    week: number;
-    homeTeam: string;
-    awayTeam: string;
-}
 
 // ── Query plan types ──────────────────────────────────────────────────────────
 
@@ -172,236 +141,6 @@ interface QueryPlan {
     weeksBack: number | null;   // Phase 1: "last 3 weeks" → 3
 }
 
-// ── Sleeper cache ─────────────────────────────────────────────────────────────
-
-const SLEEPER_MIN_INTERVAL_MS = 10 * 60 * 1000;
-const TRENDING_TTL_MS  = 10 * 60 * 1000;
-const PLAYER_MAP_TTL_MS = 24 * 60 * 60 * 1000;
-const ROSTER_TTL_MS    = 5 * 60 * 1000;  // Phase 2: rosters refresh every 5 min
-
-interface SleeperCacheEntry<T> { data: T; fetchedAt: number; }
-
-const sleeperCache = new Map<string, SleeperCacheEntry<unknown>>();
-const sleeperLastFetch = new Map<string, number>();
-
-async function sleeperFetch<T>(url: string, ttlMs: number): Promise<T | null> {
-    const now = Date.now();
-    const cached = sleeperCache.get(url) as SleeperCacheEntry<T> | undefined;
-    const lastFetch = sleeperLastFetch.get(url) ?? 0;
-    if (cached && now - cached.fetchedAt < ttlMs) return cached.data;
-    if (cached && now - lastFetch < SLEEPER_MIN_INTERVAL_MS) {
-        console.warn(`[sleeper] rate-limit guard: stale cache for ${url}`);
-        return cached.data;
-    }
-    try {
-        sleeperLastFetch.set(url, now);
-        const res = await fetch(url, { next: { revalidate: Math.floor(ttlMs / 1000) } });
-        if (!res.ok) { console.error(`[sleeper] HTTP ${res.status} for ${url}`); return cached?.data ?? null; }
-        const data = (await res.json()) as T;
-        sleeperCache.set(url, { data, fetchedAt: now });
-        return data;
-    } catch (err) {
-        console.error(`[sleeper] fetch error for ${url}:`, err);
-        return cached?.data ?? null;
-    }
-}
-
-async function fetchTrending(): Promise<{ adds: TrendingPlayer[]; drops: TrendingPlayer[] }> {
-    const [adds, drops] = await Promise.all([
-        sleeperFetch<TrendingPlayer[]>(`${SLEEPER_BASE}/players/nfl/trending/add?lookback_hours=24&limit=20`, TRENDING_TTL_MS),
-        sleeperFetch<TrendingPlayer[]>(`${SLEEPER_BASE}/players/nfl/trending/drop?lookback_hours=24&limit=20`, TRENDING_TTL_MS),
-    ]);
-    return {
-        adds: (adds ?? []).map((p) => ({ ...p, type: 'add' as const })),
-        drops: (drops ?? []).map((p) => ({ ...p, type: 'drop' as const })),
-    };
-}
-
-// ── Player map — L1 memory | L2 Turso | L3 Sleeper ───────────────────────────
-
-const PLAYER_MAP_CACHE_KEY = 'nfl_player_map';
-let playerMapMemory: Record<string, string> | null = null;
-let playerMapMemoryAt = 0;
-
-async function fetchSleeperPlayerMap(): Promise<Record<string, string>> {
-    const now = Date.now();
-    if (playerMapMemory && now - playerMapMemoryAt < PLAYER_MAP_TTL_MS) return playerMapMemory;
-    try {
-        const row = await prisma.sleeperCache.findUnique({ where: { key: PLAYER_MAP_CACHE_KEY } });
-        if (row) {
-            const ageMs = now - row.fetchedAt.getTime();
-            if (ageMs < PLAYER_MAP_TTL_MS) {
-                const parsed = JSON.parse(row.data) as Record<string, string>;
-                playerMapMemory = parsed;
-                playerMapMemoryAt = row.fetchedAt.getTime();
-                return parsed;
-            }
-        }
-    } catch (dbErr) { console.error('[player-map] DB read error:', dbErr); }
-
-    type RawPlayer = { full_name?: string };
-    const raw = await sleeperFetch<Record<string, RawPlayer>>('https://api.sleeper.app/v1/players/nfl', PLAYER_MAP_TTL_MS);
-    if (!raw) return playerMapMemory ?? {};
-
-    const mapped = Object.fromEntries(
-        Object.entries(raw).filter(([, p]) => p.full_name).map(([id, p]) => [id, p.full_name!]),
-    );
-    try {
-        await prisma.sleeperCache.upsert({
-            where: { key: PLAYER_MAP_CACHE_KEY },
-            update: { data: JSON.stringify(mapped), fetchedAt: new Date() },
-            create: { key: PLAYER_MAP_CACHE_KEY, data: JSON.stringify(mapped) },
-        });
-    } catch (dbErr) { console.error('[player-map] DB write error:', dbErr); }
-
-    playerMapMemory = mapped;
-    playerMapMemoryAt = now;
-    return mapped;
-}
-
-// ── Phase 2: League context fetchers ─────────────────────────────────────────
-
-interface SleeperRosterRaw {
-    roster_id: number;
-    owner_id: string | null;
-    players: string[] | null;  // array of Sleeper player IDs
-    settings: {
-        wins: number;
-        losses: number;
-        ties: number;
-        fpts: number;        // fantasy points for (integer part)
-        fpts_decimal: number; // fantasy points for (decimal part)
-    };
-}
-
-interface SleeperUserRaw {
-    user_id: string;
-    display_name: string;
-    metadata?: { team_name?: string };
-}
-
-interface SleeperStateRaw {
-    week: number;
-    season_type: string;
-}
-
-/**
- * Fetches Sleeper roster + user data for a league.
- * Returns both the roster list (with resolved player names) and standings.
- * Standings come directly from roster.settings which Sleeper keeps as
- * running totals — no need to fetch week-by-week matchup history.
- * Both are derived from a single /rosters call, cached for ROSTER_TTL_MS.
- */
-async function fetchLeagueRostersAndStandings(
-    sleeperLeagueId: string,
-    playerMap: Record<string, string>,
-): Promise<{ rosters: LeagueRoster[]; standings: TeamStanding[] }> {
-    const [rosters, users] = await Promise.all([
-        sleeperFetch<SleeperRosterRaw[]>(`${SLEEPER_BASE}/league/${sleeperLeagueId}/rosters`, ROSTER_TTL_MS),
-        sleeperFetch<SleeperUserRaw[]>(`${SLEEPER_BASE}/league/${sleeperLeagueId}/users`, ROSTER_TTL_MS),
-    ]);
-
-    if (!rosters) return { rosters: [], standings: [] };
-
-    const userMap = new Map((users ?? []).map((u) => [u.user_id, u]));
-
-    const leagueRosters: LeagueRoster[] = [];
-    const standings: TeamStanding[] = [];
-
-    for (const r of rosters) {
-        const user = r.owner_id ? userMap.get(r.owner_id) : undefined;
-        const ownerName = user?.metadata?.team_name ?? user?.display_name ?? `Team ${r.roster_id}`;
-
-        // Resolve player IDs to names via player map
-        const players: SleeperRosterPlayer[] = (r.players ?? []).map((id) => ({
-            playerId: id,
-            name: playerMap[id] ?? id,
-        }));
-
-        leagueRosters.push({ rosterId: String(r.roster_id), ownerName, players });
-
-        // Sleeper stores running W/L/PF totals on the roster settings object.
-        // fpts is stored as integer + decimal separately (e.g. 142 + 0.60 = 142.60)
-        const wins = r.settings?.wins ?? 0;
-        const losses = r.settings?.losses ?? 0;
-        const ties = r.settings?.ties ?? 0;
-        const pointsFor = parseFloat(
-            `${r.settings?.fpts ?? 0}.${String(r.settings?.fpts_decimal ?? 0).padStart(2, '0')}`,
-        );
-
-        standings.push({ teamName: ownerName, rosterId: String(r.roster_id), wins, losses, ties, pointsFor });
-    }
-
-    // Sort standings: wins desc, then points for desc
-    standings.sort((a, b) => b.wins - a.wins || b.pointsFor - a.pointsFor);
-
-    return { rosters: leagueRosters, standings };
-}
-
-/**
- * Fetches the upcoming NFL schedule from Sleeper for context on future matchups.
- */
-async function fetchUpcomingSchedule(currentWeek: number): Promise<UpcomingMatchup[]> {
-    const weeksToFetch = [currentWeek, currentWeek + 1, currentWeek + 2].filter((w) => w <= 18);
-    const schedules = await Promise.all(
-        weeksToFetch.map((w) =>
-            sleeperFetch<{ home_team: string; away_team: string }[]>(
-                `${SLEEPER_BASE}/schedule/nfl/regular/${CURRENT_SEASON}/${w}`,
-                TRENDING_TTL_MS,
-            ),
-        ),
-    );
-
-    return schedules.flatMap((games, i) =>
-        (games ?? []).slice(0, 5).map((g) => ({
-            week: weeksToFetch[i],
-            homeTeam: g.home_team,
-            awayTeam: g.away_team,
-        })),
-    );
-}
-
-/**
- * Assembles full league context. Gracefully returns null if the league
- * doesn't exist in Turso or Sleeper calls fail — the agent works without it.
- */
-async function fetchLeagueContext(
-    sleeperLeagueId: string,
-    playerMap: Record<string, string>,
-): Promise<LeagueContext | null> {
-    try {
-        const league = await prisma.league.findFirst({
-            where: { sleeperLeagueId },
-            select: { id: true, sleeperLeagueId: true, name: true },
-        });
-        const leagueName = league?.name ?? `League ${sleeperLeagueId}`;
-
-        // Get current NFL week from Sleeper state API
-        const nflState = await sleeperFetch<SleeperStateRaw>(
-            `${SLEEPER_BASE}/state/nfl`,
-            TRENDING_TTL_MS,
-        );
-        const currentWeek = nflState?.week ?? 1;
-
-        const [{ rosters, standings }, upcomingMatchups] = await Promise.all([
-            fetchLeagueRostersAndStandings(sleeperLeagueId, playerMap),
-            fetchUpcomingSchedule(currentWeek),
-        ]);
-
-        return {
-            leagueId: league?.id ?? sleeperLeagueId,
-            sleeperLeagueId,
-            leagueName,
-            currentWeek,
-            rosters,
-            standings,
-            upcomingMatchups,
-        };
-    } catch (err) {
-        console.error('[league-context] error:', err);
-        return null;
-    }
-}
 
 // ── Turso stat queries ────────────────────────────────────────────────────────
 
@@ -437,6 +176,14 @@ const STAT_SELECT = {
     fantasyPointsPpr: true,
 } as const;
 
+/**
+ * Looks up the Sleeper/GSIS player ID for a display name string.
+ * Searches the NflWeeklyStat table for the most recent match so that
+ * veteran players (who may have data from multiple seasons) are found correctly.
+ *
+ * @param name  Partial or full player display name (e.g. "Josh Allen").
+ * @returns     The player's stable `playerId`, or null if not found.
+ */
 async function resolvePlayerId(name: string): Promise<string | null> {
     try {
         const row = await prisma.nflWeeklyStat.findFirst({
@@ -448,6 +195,23 @@ async function resolvePlayerId(name: string): Promise<string | null> {
     } catch { return null; }
 }
 
+/**
+ * Runs the intent-specific database query described by `plan` and returns
+ * the matching stat rows. Each intent maps to a different Prisma query:
+ *
+ *   top_position       — season totals for the top players at a position.
+ *   player_vs_opponent — all games a player has played against a specific team.
+ *   player_comparison  — recent game logs for 2+ named players side-by-side.
+ *   player_recent      — last 10 games for a single player.
+ *   air_yards_efficiency — WR air yards / receiving efficiency last N weeks.
+ *   workload_trend     — full season game log for a player in chronological order.
+ *   efficiency_gap     — players with high targets but low fantasy point output.
+ *   standings / roster_scan / playoff_schedule — no DB query needed; data comes
+ *                        from the league context injected into the system prompt.
+ *   trending / general — delegates to fallbackRecentStats().
+ *
+ * Falls back to the most-recent-week top scorers on any error.
+ */
 async function executeQueryPlan(plan: QueryPlan): Promise<PlayerStats[]> {
     const season = plan.season ?? CURRENT_SEASON;
     const prevSeason = season - 1;
@@ -659,6 +423,11 @@ async function executeQueryPlan(plan: QueryPlan): Promise<PlayerStats[]> {
     }
 }
 
+/**
+ * Returns the top 25 fantasy scorers from the most recent week that has data
+ * in the DB. Used as a fallback when the intent is `general` or `trending`, or
+ * when a specific player/opponent cannot be resolved.
+ */
 async function fallbackRecentStats(): Promise<PlayerStats[]> {
     try {
         const latest = await prisma.nflWeeklyStat.findFirst({
@@ -708,6 +477,17 @@ Intent rules:
 
 IMPORTANT: If the question mentions "our league", "my league", "the league", "first place", "last place", or "standings", always use standings, roster_scan, or playoff_schedule — never general.`;
 
+/**
+ * Pass 1 — uses the lightweight Groq llama-3.1-8b model (temp=0) to classify
+ * the user's message into a structured QueryPlan.
+ *
+ * The model is given a strict JSON output schema via the PLANNER_SYSTEM_PROMPT.
+ * The result is validated before use: unknown intent values fall back to
+ * `{ intent: 'general' }` so a bad classification never crashes the query step.
+ *
+ * @param userMessage  The latest user message from the conversation.
+ * @returns  A QueryPlan with validated intent and extracted entities.
+ */
 async function classifyIntent(userMessage: string): Promise<QueryPlan> {
     const fallback: QueryPlan = { intent: 'general', players: [], position: null, opponent: null, season: null, weeksBack: null };
     try {
@@ -747,6 +527,17 @@ async function classifyIntent(userMessage: string): Promise<QueryPlan> {
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
+/**
+ * Formats a single PlayerStats record into a compact one-line string suitable
+ * for injection into the LLM system prompt.
+ *
+ * Example output:
+ *   "Josh Allen (QB) BUF Wk5 2025 | 31.4pts, 312PassYds, 3PassTD, 8Car, 42RushYds"
+ *
+ * Phase 1 fields (air yards, YAC, RACR, WOPR) are included when present.
+ * aDOT (average depth of target) is derived inline when both air yards and
+ * targets are available.
+ */
 function formatStatRow(p: PlayerStats): string {
     const parts = [
         `${p.playerDisplayName ?? p.playerName ?? p.playerId}`,
@@ -818,6 +609,19 @@ ${upcomingBlock || '  No schedule data.'}
 `;
 }
 
+/**
+ * Assembles the full system prompt for Pass 2 (the answer-generation call).
+ *
+ * Sections injected:
+ *   DATA CONTEXT  — plain-English description of what the NFL stats represent.
+ *   NFL STATS     — numbered list of formatted stat rows from executeQueryPlan.
+ *   LEAGUE CONTEXT — rosters, standings, and upcoming matchups (when available).
+ *   TRENDING ADDS/DROPS — top Sleeper waiver activity from the last 24 h.
+ *
+ * When the user asked a league-specific question but hasn't connected their
+ * Sleeper account, a `missingLeague` notice is added so the model can prompt
+ * them to connect rather than giving a generic (wrong) answer.
+ */
 function buildSystemPrompt(
     stats: PlayerStats[],
     trendingAdds: TrendingPlayer[],
@@ -863,6 +667,11 @@ ${dropsBlock}
 `;
 }
 
+/**
+ * Returns a short plain-English description of the data included in the system
+ * prompt for the current intent. This is shown to the LLM as a "DATA CONTEXT"
+ * header so it understands what the stat rows represent before it sees them.
+ */
 function buildDataContext(plan: QueryPlan, hasLeague: boolean): string {
     const season = plan.season ?? CURRENT_SEASON;
     switch (plan.intent) {
@@ -914,6 +723,15 @@ function isGroqRateLimitError(err: unknown): boolean {
         ('status' in err && (err as { status: number }).status === 429);
 }
 
+/**
+ * Streams a Gemini response using the Google Generative AI SDK.
+ * Used as a fallback when Groq returns a 429 rate-limit error.
+ *
+ * The conversation history is passed as a chat session (multi-turn) with the
+ * last message sent via `sendMessageStream` for streaming output.
+ *
+ * @returns  A ReadableStream of UTF-8 encoded text chunks.
+ */
 async function streamGemini(systemPrompt: string, messages: { role: string; content: string }[]): Promise<ReadableStream<Uint8Array>> {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', systemInstruction: systemPrompt });
     const history = messages.slice(0, -1).map((m) => ({
@@ -937,6 +755,15 @@ async function streamGemini(systemPrompt: string, messages: { role: string; cont
     });
 }
 
+/**
+ * Streams a Groq response (llama-3.1-8b-instant) for Pass 2.
+ * This is the primary answer-generation path.
+ *
+ * Only the last 6 messages from the conversation are passed (sliding window)
+ * to keep the prompt within token limits while preserving short-term context.
+ *
+ * @returns  A ReadableStream of UTF-8 encoded text chunks.
+ */
 async function streamGroq(systemPrompt: string, messages: { role: string; content: string }[]): Promise<ReadableStream<Uint8Array>> {
     const stream = await groq.chat.completions.create({
         model: 'llama-3.1-8b-instant',
@@ -971,7 +798,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     };
 
     if (!Array.isArray(body.messages) || body.messages.length === 0) {
-        return NextResponse.json({ error: 'messages array is required' }, { status: 400 });
+        return err('messages array is required', 400);
     }
 
     const clientId = getClientId(req);
@@ -984,7 +811,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
     if (!process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) {
-        return NextResponse.json({ error: 'No AI API keys are configured' }, { status: 500 });
+        return err('No AI API keys are configured');
     }
 
     const messages = body.messages.slice(-6);
@@ -1005,7 +832,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     const leagueAwareIntents: QueryIntent[] = ['standings', 'roster_scan', 'playoff_schedule', 'trending', 'player_comparison'];
     const needsLeague = leagueAwareIntents.includes(plan.intent);
     const leagueCtx = (body.sleeperLeagueId && needsLeague)
-        ? await fetchLeagueContext(body.sleeperLeagueId, playerMap)
+        ? await fetchLeagueContext(body.sleeperLeagueId, playerMap, CURRENT_SEASON)
         : null;
     // If intent needs league context but no Sleeper ID was provided, flag it
     const missingLeague = needsLeague && !body.sleeperLeagueId;
@@ -1028,7 +855,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         const isRateLimit = isGroqRateLimitError(groqErr);
         if (!isRateLimit || !process.env.GEMINI_API_KEY) {
             const message = groqErr instanceof Error ? groqErr.message : 'Groq API error';
-            return NextResponse.json({ error: message }, { status: 502 });
+            return err(message, 502);
         }
         fallbackReason = 'groq_rate_limit';
         try {
@@ -1036,7 +863,7 @@ export async function POST(req: NextRequest): Promise<Response> {
             modelUsed = 'gemini';
         } catch (geminiErr) {
             const message = geminiErr instanceof Error ? geminiErr.message : 'Gemini API error';
-            return NextResponse.json({ error: message }, { status: 502 });
+            return err(message, 502);
         }
     }
 

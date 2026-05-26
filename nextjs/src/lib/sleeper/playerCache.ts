@@ -5,10 +5,11 @@
 // called at most once per 24 h — we enforce that limit here.
 
 import { prisma } from '@/lib/prisma';
+import { SLEEPER_BASE } from '@/lib/sleeper/client';
 
 const CACHE_KEY = 'nfl_players';
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-const SLEEPER_PLAYERS_URL = 'https://api.sleeper.app/v1/players/nfl';
+const SLEEPER_PLAYERS_URL = `${SLEEPER_BASE}/players/nfl`;
 
 export interface SleeperPlayerInfo {
   name: string;        // full_name (or first_name + last_name)

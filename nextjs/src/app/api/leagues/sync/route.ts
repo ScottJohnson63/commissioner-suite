@@ -1,9 +1,31 @@
 // src/app/api/leagues/sync/route.ts
+//
+// POST /api/leagues/sync
+//
+// Syncs one or more Sleeper leagues into the local database. Called from the
+// Commissioner dashboard's "Sync League" button.
+//
+// Request body:
+//   leagueIds — array of Sleeper league IDs to sync (at least one required)
+//
+// For each league ID, the handler:
+//   1. Fetches league metadata, rosters, and users from the Sleeper API.
+//   2. Validates that the league has exactly 2 divisions.
+//   3. Upserts the League record (creates or updates name/season).
+//   4. Upserts each Team record (creates or updates name/divisionId).
+//   5. Writes a SYNC audit log entry.
+//
+// If any league fails, the handler returns a 500 with partial results and the
+// error message. The caller can retry the failed league independently.
+//
+// Note: upserts are keyed on `sleeperLeagueId` (League) and on the
+// `leagueId_sleeperRosterId` composite (Team), so repeated syncs are idempotent.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { fetchLeagueData } from '@/lib/sleeper/sync';
 import { writeAuditLog } from '@/lib/audit';
+import { ok, err } from '@/lib/api';
 
 export async function POST(
   req: NextRequest
@@ -12,7 +34,7 @@ export async function POST(
   const body = await req.json() as { leagueIds?: string[] };
 
   if (!Array.isArray(body.leagueIds) || body.leagueIds.length === 0) {
-    return NextResponse.json({ error: 'leagueIds must be a non-empty array' }, { status: 400 });
+    return err('leagueIds must be a non-empty array', 400);
   }
 
   const results: { leagueId: string; sleeperLeagueId: string; teamCount: number }[] = [];
@@ -50,9 +72,10 @@ export async function POST(
       });
 
       results.push({ leagueId: league.id, sleeperLeagueId, teamCount: teams.length });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`Sync error for league ${leagueId}:`, err);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Sync error for league ${leagueId}:`, error);
+      // Include partial results in the error body — can't use err() here.
       return NextResponse.json(
         { error: `Failed on league ${leagueId}: ${message}`, results },
         { status: 500 },
@@ -60,5 +83,5 @@ export async function POST(
     }
   }
 
-  return NextResponse.json({ synced: results.length, results });
+  return ok({ synced: results.length, results });
 }

@@ -14,63 +14,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getPlayerMap } from '@/lib/sleeper/playerCache';
+import { sleeperGet } from '@/lib/sleeper/client';
+import type { SleeperRoster, SleeperNflState, SleeperTrendingRaw } from '@/lib/sleeper/types';
+import { RouteCache } from '@/lib/cache';
+import type { WaiverSuggestion, WaiverSuggestionsResponse } from '@/types/suggestions';
+import { ok, err } from '@/lib/api';
 import MOCK_MATCHUP from '@/mock_data/matchup.json';
 import MOCK_WAIVER  from '@/mock_data/waiver.json';
+
+export type { WaiverSuggestion, WaiverSuggestionsResponse };
 
 const IS_DEMO  = process.env.DEMO_MODE === 'true';
 const DEMO_TTL = 60 * 1_000;      // 1 min — short so re-clicking after a min picks a new random week
 const LIVE_TTL = 10 * 60 * 1_000; // 10 min
 
-const BASE = 'https://api.sleeper.app/v1';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface SleeperRoster {
-  roster_id: number;
-  owner_id:  string | null;
-  players:   string[] | null;
-}
-
-interface SleeperNflState {
-  week:   number;
-  season: string;
-}
-
-interface SleeperTrendingRaw {
-  player_id: string;
-  count:     number;
-}
-
-export interface WaiverSuggestion {
-  playerId:      string;
-  name:          string;
-  position:      string;
-  team:          string | null;
-  recentAvg:     number;
-  reason:        string;
-  trendingCount: number | null;
-}
-
-export interface WaiverSuggestionsResponse {
-  weakPositions: string[];
-  suggestions:   WaiverSuggestion[];
-  demo?:         boolean;
-}
-
 // ─── In-process cache ─────────────────────────────────────────────────────────
 
-interface CacheEntry {
-  data: WaiverSuggestionsResponse;
-  ts:   number;
-}
-
-const cache = new Map<string, CacheEntry>();
-
-async function sleeperGet<T>(path: string, revalidate = 300): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { next: { revalidate } });
-  if (!res.ok) throw new Error(`Sleeper ${res.status}: ${path}`);
-  return res.json() as Promise<T>;
-}
+const cache = new RouteCache<WaiverSuggestionsResponse>();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -88,13 +48,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const leagueId = searchParams.get('leagueId')?.trim();
   const userId   = searchParams.get('userId')?.trim();
 
-  if (!leagueId) return NextResponse.json({ error: 'leagueId is required' }, { status: 400 });
-  if (!userId)   return NextResponse.json({ error: 'userId is required' },   { status: 400 });
+  if (!leagueId) return err('leagueId is required', 400);
+  if (!userId)   return err('userId is required',   400);
 
   const cacheKey = IS_DEMO ? `demo-waiver-${leagueId}` : `${leagueId}-${userId}`;
   const TTL      = IS_DEMO ? DEMO_TTL : LIVE_TTL;
-  const hit      = cache.get(cacheKey);
-  if (hit && Date.now() - hit.ts < TTL) return NextResponse.json(hit.data);
+  const hit = cache.get(cacheKey, TTL);
+  if (hit) return ok(hit);
 
   try {
     // ── Data-gathering phase (demo vs. live) ───────────────────────────────────
@@ -170,7 +130,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       const myRoster = rosters.find((r) => r.owner_id === userId);
       if (!myRoster) {
-        return NextResponse.json({ error: 'Roster not found for this user' }, { status: 404 });
+        return err('Roster not found for this user', 404);
       }
 
       rosteredSet = new Set<string>();
@@ -302,12 +262,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       suggestions: top8,
       ...(IS_DEMO && { demo: true }),
     };
-    cache.set(cacheKey, { data: result, ts: Date.now() });
-    return NextResponse.json(result);
+    cache.set(cacheKey, result);
+    return ok(result);
 
-  } catch (err) {
-    const msg    = err instanceof Error ? err.message : 'Upstream error';
+  } catch (error) {
+    const msg    = error instanceof Error ? error.message : 'Upstream error';
     const status = msg.includes('404') ? 404 : 502;
-    return NextResponse.json({ error: msg }, { status });
+    return err(msg, status);
   }
 }

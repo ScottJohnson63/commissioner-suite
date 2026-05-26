@@ -1,6 +1,27 @@
+// src/app/api/assoc/draft-order/route.ts
+//
+// POST /api/assoc/draft-order
+//
+// Records the final draft order (derived from the lottery + inverse-standings
+// logic) in the audit log so the Activity Log page shows a durable, timestamped
+// copy of who picks when.
+//
+// Note: draft order is NOT stored in a dedicated table — it is reconstructed
+// from the audit log whenever it needs to be displayed. This avoids a schema
+// migration while still giving commissioners a permanent record.
+//
+// Request body:
+//   leagueId   — internal league ID
+//   draftOrder — ordered array of DraftPick objects (pick 1 = first pick)
+//
+// Each pick captures the team name, roster ID, and where the pick originated
+// (lottery winner vs. inverse-standings placement) for full transparency.
+
 import { NextRequest, NextResponse } from 'next/server';
 import { writeAuditLog } from '@/lib/audit';
+import { ok, err } from '@/lib/api';
 
+/** A single pick slot in the draft order, as submitted by the Lottery tab UI. */
 interface DraftPick {
   pick: number;
   rosterId: number;
@@ -14,7 +35,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const body = await req.json() as { leagueId?: string; draftOrder?: DraftPick[] };
 
   if (!body.leagueId || !Array.isArray(body.draftOrder)) {
-    return NextResponse.json({ error: 'leagueId and draftOrder are required' }, { status: 400 });
+    return err('leagueId and draftOrder are required', 400);
   }
 
   await writeAuditLog('GENERATE', body.leagueId, {
@@ -29,5 +50,5 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     })),
   });
 
-  return NextResponse.json({ logged: true });
+  return ok({ logged: true });
 }

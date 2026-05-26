@@ -2,23 +2,17 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getPlayerMap } from '@/lib/sleeper/playerCache';
+import { SLEEPER_BASE } from '@/lib/sleeper/client';
+import type { TrendingPlayer } from '@/types/trending';
+import { ok, err } from '@/lib/api';
 
-const SLEEPER_BASE = 'https://api.sleeper.app/v1';
+export type { TrendingPlayer };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface SleeperTrendingPlayer {
   player_id: string;
   count: number;
-}
-
-export interface TrendingPlayer {
-  player_id: string;
-  count: number;
-  type: 'add' | 'drop';
-  name: string | null;
-  position: string | null;
-  team: string | null;
 }
 
 // ── Server-side Sleeper rate-limit guard ──────────────────────────────────────
@@ -85,17 +79,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const limit = Math.min(Number(searchParams.get('limit') ?? '25'), 100);
 
   if (isNaN(lookbackHours) || lookbackHours < 1 || lookbackHours > 168) {
-    return NextResponse.json(
-      { error: 'lookback_hours must be between 1 and 168' },
-      { status: 400 },
-    );
+    return err('lookback_hours must be between 1 and 168', 400);
   }
 
   if (type !== null && type !== 'add' && type !== 'drop') {
-    return NextResponse.json(
-      { error: 'type must be "add" or "drop"' },
-      { status: 400 },
-    );
+    return err('type must be "add" or "drop"', 400);
   }
 
   function buildUrl(t: 'add' | 'drop'): string {
@@ -127,16 +115,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     if ('single' in trendingResult) {
       const { players, type: t } = trendingResult.single;
-      return NextResponse.json(players.map((p) => enrich(p, t as 'add' | 'drop')));
+      return ok(players.map((p) => enrich(p, t as 'add' | 'drop')));
     }
 
     const { adds, drops } = trendingResult.both;
-    return NextResponse.json({
+    return ok({
       adds: adds.map((p) => enrich(p, 'add')),
       drops: drops.map((p) => enrich(p, 'drop')),
     });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Upstream error';
-    return NextResponse.json({ error: message }, { status: 502 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Upstream error';
+    return err(message, 502);
   }
 }

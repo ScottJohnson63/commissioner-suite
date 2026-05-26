@@ -8,36 +8,12 @@
 // Cached for 5 minutes per league+week combination.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { sleeperGet } from '@/lib/sleeper/client';
+import type { SleeperMatchupRaw, SleeperRoster, SleeperUser } from '@/lib/sleeper/types';
+import { RouteCache } from '@/lib/cache';
+import { ok, err } from '@/lib/api';
 
-const BASE = 'https://api.sleeper.app/v1';
 const TTL = 5 * 60 * 1000;
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface SleeperMatchupRaw {
-  roster_id: number;
-  matchup_id: number | null;
-  points: number;
-  starters_points?: number[];
-}
-
-interface SleeperRoster {
-  roster_id: number;
-  owner_id: string | null;
-  settings: {
-    wins: number;
-    losses: number;
-    ties: number;
-    fpts: number;
-    fpts_decimal: number;
-  };
-}
-
-interface SleeperUser {
-  user_id: string;
-  display_name: string;
-  metadata?: { team_name?: string };
-}
 
 export interface MatchupTeam {
   rosterId: number;
@@ -57,18 +33,7 @@ export interface MatchupPair {
 
 // ─── Simple in-process cache ──────────────────────────────────────────────────
 
-interface CacheEntry {
-  data: MatchupPair[];
-  ts: number;
-}
-
-const cache = new Map<string, CacheEntry>();
-
-async function sleeperGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { next: { revalidate: 300 } });
-  if (!res.ok) throw new Error(`Sleeper ${res.status}: ${path}`);
-  return res.json() as Promise<T>;
-}
+const cache = new RouteCache<MatchupPair[]>();
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 
@@ -78,17 +43,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const week = Number(searchParams.get('week') ?? '1');
 
   if (!leagueId) {
-    return NextResponse.json({ error: 'leagueId is required' }, { status: 400 });
+    return err('leagueId is required', 400);
   }
   if (isNaN(week) || week < 1 || week > 18) {
-    return NextResponse.json({ error: 'week must be 1–18' }, { status: 400 });
+    return err('week must be 1–18', 400);
   }
 
   const key = `${leagueId}:${week}`;
-  const cached = cache.get(key);
-  if (cached && Date.now() - cached.ts < TTL) {
-    return NextResponse.json(cached.data);
-  }
+  const cached = cache.get(key, TTL);
+  if (cached) return ok(cached);
 
   try {
     const [matchupsRaw, rosters, users] = await Promise.all([
@@ -138,12 +101,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     pairs.sort((a, b) => a.matchupId - b.matchupId);
-    cache.set(key, { data: pairs, ts: Date.now() });
+    cache.set(key, pairs);
 
-    return NextResponse.json(pairs);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Upstream error';
+    return ok(pairs);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Upstream error';
     const status = msg.includes('404') ? 404 : 502;
-    return NextResponse.json({ error: msg }, { status });
+    return err(msg, status);
   }
 }

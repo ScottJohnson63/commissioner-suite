@@ -13,13 +13,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getPlayerMap } from '@/lib/sleeper/playerCache';
+import { sleeperGet } from '@/lib/sleeper/client';
+import type { SleeperRoster, SleeperUser } from '@/lib/sleeper/types';
+import { RouteCache } from '@/lib/cache';
+import type { TradePlayer, TradeProposal, TradeSuggestionsResponse } from '@/types/suggestions';
+import { ok, err } from '@/lib/api';
 import MOCK_MATCHUP from '@/mock_data/matchup.json';
+
+export type { TradePlayer, TradeProposal, TradeSuggestionsResponse };
 
 const IS_DEMO  = process.env.DEMO_MODE === 'true';
 const DEMO_TTL = 60 * 1_000;      // 1 min
 const LIVE_TTL = 10 * 60 * 1_000; // 10 min
-
-const BASE = 'https://api.sleeper.app/v1';
 
 // ─── Fallback season totals for demo (used when DB returns 0 for a player) ───
 
@@ -50,53 +55,9 @@ const DEMO_SEASON_PTS: Record<string, number> = {
   '00-0031136': 128.9, // Chris Boswell
 };
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface SleeperRoster {
-  roster_id: number;
-  owner_id:  string | null;
-  players:   string[] | null;
-  settings:  { wins: number; losses: number; fpts: number; fpts_decimal: number };
-}
-
-interface SleeperUser {
-  user_id:   string;
-  display_name: string;
-  metadata?: { team_name?: string };
-}
-
-export interface TradePlayer {
-  playerId:  string;
-  name:      string;
-  position:  string;
-  seasonPts: number;
-}
-
-export interface TradeProposal {
-  targetTeamName: string;
-  targetOwnerId:  string;
-  give:           TradePlayer[];
-  receive:        TradePlayer[];
-  fairnessScore:  number;
-  summary:        string;
-}
-
-export interface TradeSuggestionsResponse {
-  myPositionRanks: Record<string, number>;
-  proposals:       TradeProposal[];
-  demo?:           boolean;
-}
-
 // ─── Cache ────────────────────────────────────────────────────────────────────
 
-interface CacheEntry { data: TradeSuggestionsResponse; ts: number }
-const cache = new Map<string, CacheEntry>();
-
-async function sleeperGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { next: { revalidate: 300 } });
-  if (!res.ok) throw new Error(`Sleeper ${res.status}: ${path}`);
-  return res.json() as Promise<T>;
-}
+const cache = new RouteCache<TradeSuggestionsResponse>();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -107,11 +68,24 @@ function isPos(p: string): p is Pos {
   return (POSITIONS as readonly string[]).includes(p);
 }
 
+/**
+ * Computes a trade fairness score from 0–100.
+ * 100 = perfectly balanced (equal season points on both sides).
+ * Scores below 60 are filtered out as too lopsided to recommend.
+ *
+ * Formula: 100 − (100 × |give − receive| / max(give, receive, 1))
+ */
 function fairness(givePts: number, receivePts: number): number {
   const denom = Math.max(givePts, receivePts, 1);
   return Math.max(0, Math.min(100, 100 - (100 * Math.abs(givePts - receivePts)) / denom));
 }
 
+/**
+ * Generates a one-sentence human-readable summary of a trade proposal.
+ * If both sides involve the same position, describes it as a like-for-like
+ * upgrade; otherwise describes it as trading depth for a starter at a
+ * different position.
+ */
 function buildSummary(give: TradePlayer[], receive: TradePlayer[]): string {
   const givePos    = [...new Set(give.map((p) => p.position))].join('/');
   const receivePos = [...new Set(receive.map((p) => p.position))].join('/');
@@ -126,13 +100,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const leagueId = searchParams.get('leagueId')?.trim();
   const userId   = searchParams.get('userId')?.trim();
 
-  if (!leagueId) return NextResponse.json({ error: 'leagueId is required' }, { status: 400 });
-  if (!userId)   return NextResponse.json({ error: 'userId is required' },   { status: 400 });
+  if (!leagueId) return err('leagueId is required', 400);
+  if (!userId)   return err('userId is required',   400);
 
   const cacheKey = IS_DEMO ? `demo-trade-${leagueId}` : `${leagueId}-${userId}`;
   const TTL      = IS_DEMO ? DEMO_TTL : LIVE_TTL;
-  const hit      = cache.get(cacheKey);
-  if (hit && Date.now() - hit.ts < TTL) return NextResponse.json(hit.data);
+  const hit = cache.get(cacheKey, TTL);
+  if (hit) return ok(hit);
 
   try {
     // ── Data-gathering phase (demo vs. live) ───────────────────────────────────
@@ -235,7 +209,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     const myRoster = rosters.find((r) => r.owner_id === userId);
     if (!myRoster) {
-      return NextResponse.json({ error: 'Roster not found for this user' }, { status: 404 });
+      return err('Roster not found for this user', 404);
     }
 
     // For each team: find their best player per position
@@ -350,12 +324,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       proposals: deduped,
       ...(IS_DEMO && { demo: true }),
     };
-    cache.set(cacheKey, { data: result, ts: Date.now() });
-    return NextResponse.json(result);
+    cache.set(cacheKey, result);
+    return ok(result);
 
-  } catch (err) {
-    const msg    = err instanceof Error ? err.message : 'Upstream error';
+  } catch (error) {
+    const msg    = error instanceof Error ? error.message : 'Upstream error';
     const status = msg.includes('404') ? 404 : 502;
-    return NextResponse.json({ error: msg }, { status });
+    return err(msg, status);
   }
 }

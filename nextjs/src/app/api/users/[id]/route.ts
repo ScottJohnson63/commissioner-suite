@@ -1,6 +1,28 @@
+// src/app/api/users/[id]/route.ts
+//
+// PATCH /api/users/{id}
+//
+// Updates the role of the user identified by `id`. Accessible to both
+// COMMISSIONER and MEMBER roles, with the following permission matrix:
+//
+//   Caller role    | Can assign     | Can modify
+//   ───────────────┼────────────────┼───────────────────────────────
+//   COMMISSIONER   | any role       | any non-self user
+//   MEMBER         | MEMBER/PLAYER  | non-COMMISSIONER users only
+//   PLAYER / none  | —              | —  (403)
+//
+// Self-role changes are always rejected (400) regardless of caller role to
+// prevent accidental lock-outs where a COMMISSIONER demotes themselves.
+//
+// Valid roles: COMMISSIONER | MEMBER | PLAYER
+//   • COMMISSIONER — full access, can manage members and generate schedules.
+//   • MEMBER       — read-only access to the Players Association dashboard.
+//   • PLAYER       — base role; no special access beyond the default pages.
+
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
+import { ok, err } from '@/lib/api';
 
 export async function PATCH(
   req: NextRequest,
@@ -10,33 +32,33 @@ export async function PATCH(
   const callerRole = session?.user?.role;
 
   if (callerRole !== 'COMMISSIONER' && callerRole !== 'MEMBER') {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    return err('Forbidden', 403);
   }
 
   const { id } = await params;
 
   if (session?.user?.id === id) {
-    return NextResponse.json({ error: 'Cannot change your own role' }, { status: 400 });
+    return err('Cannot change your own role', 400);
   }
 
   const body = await req.json() as { role?: 'COMMISSIONER' | 'MEMBER' | 'PLAYER' };
 
   if (!body.role || !['COMMISSIONER', 'MEMBER', 'PLAYER'].includes(body.role)) {
-    return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
+    return err('Invalid role', 400);
   }
 
   // Members cannot assign the COMMISSIONER role
   if (callerRole === 'MEMBER' && body.role === 'COMMISSIONER') {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    return err('Forbidden', 403);
   }
 
   try {
     // Members cannot change a COMMISSIONER's role
     const target = await prisma.user.findUnique({ where: { id }, select: { role: true } });
-    if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    if (!target) return err('User not found', 404);
 
     if (callerRole === 'MEMBER' && target.role === 'COMMISSIONER') {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      return err('Forbidden', 403);
     }
 
     const updated = await prisma.user.update({
@@ -44,8 +66,8 @@ export async function PATCH(
       data: { role: body.role },
       select: { id: true, name: true, username: true, email: true, role: true, createdAt: true },
     });
-    return NextResponse.json(updated);
+    return ok(updated);
   } catch {
-    return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    return err('User not found', 404);
   }
 }

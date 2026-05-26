@@ -1,11 +1,35 @@
 // src/app/api/nfl/[...path]/route.ts
+//
+// Internal NFL statistics API — proxies queries against the local NflWeeklyStat
+// database table populated by nfl_data_py (see the Python FastAPI service).
+//
+// Supported endpoints (path segment after /api/nfl/):
+//
+//   weekly  — GET /api/nfl/weekly?season=&week=&position=&limit=
+//               Returns raw per-player weekly stat rows, ordered by week desc
+//               then fantasy points desc. Useful for game-log displays.
+//
+//   players — GET /api/nfl/players?season=&position=
+//               Returns the distinct set of players who have stats in a given
+//               season, ordered alphabetically. Used to populate player pickers.
+//
+//   leaders — GET /api/nfl/leaders?season=&stat=&position=&limit=
+//               Aggregates season totals for a given stat column and returns
+//               the top N players by that stat. Designed for the Statistics tab
+//               leaderboards. Only columns in ALLOWED_STAT_COLS may be queried
+//               (SQL injection prevention — the column name is interpolated
+//               directly into a raw query because Prisma does not support
+//               dynamic aggregate columns).
+//
+// All endpoints read from the local Turso DB; no external API calls are made.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { ok, err } from '@/lib/api';
 
-// Stat columns available for the /leaders endpoint.
-// Validated against this set before use in raw SQL so the column name
-// is never user-controlled.
+// Allowlist of stat columns for the /leaders endpoint.
+// The column name is interpolated directly into raw SQL ($queryRawUnsafe),
+// so it must be validated against this set before use — never trust user input.
 const ALLOWED_STAT_COLS = new Set([
   // Fantasy
   'fantasyPointsPpr', 'fantasyPoints',
@@ -66,7 +90,7 @@ export async function GET(
           ...(limit !== undefined && { take: limit }),
         });
 
-        return NextResponse.json(stats);
+        return ok(stats);
       }
 
       case 'players': {
@@ -91,7 +115,7 @@ export async function GET(
           orderBy: { playerDisplayName: 'asc' },
         });
 
-        return NextResponse.json(players);
+        return ok(players);
       }
 
       // ── Season stat leaders (aggregated totals) ─────────────────────────────
@@ -103,7 +127,7 @@ export async function GET(
         const limit   = Math.min(Number(searchParams.get('limit') ?? '25'), 100);
 
         if (!ALLOWED_STAT_COLS.has(rawStat)) {
-          return NextResponse.json({ error: `Invalid stat column: ${rawStat}` }, { status: 400 });
+          return err(`Invalid stat column: ${rawStat}`, 400);
         }
 
         // Position is always a short all-caps abbreviation — safe to inline
@@ -142,17 +166,14 @@ export async function GET(
           gamesPlayed: typeof r.gamesPlayed === 'bigint' ? Number(r.gamesPlayed) : r.gamesPlayed,
         }));
 
-        return NextResponse.json(normalised);
+        return ok(normalised);
       }
 
       default:
-        return NextResponse.json(
-          { error: `Unknown endpoint: ${endpoint}` },
-          { status: 404 },
-        );
+        return err(`Unknown endpoint: ${endpoint}`, 404);
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Database error';
-    return NextResponse.json({ error: message }, { status: 500 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Database error';
+    return err(message);
   }
 }

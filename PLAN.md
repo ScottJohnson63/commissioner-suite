@@ -31,6 +31,7 @@ Overall:
 I want to update the agent to utilize a good range of data, refine and tweek the prompts to ensure accuracy of data as needed
 
 To do: 
+[ ] DO FIRST: Attempt to port in league/dashboard League Tab functions to the agent.
 [ ] Update the data sets from nfl data py to look at specific years 
 [ ] Validate and verify sleeper data is accurate
 [ ] Document other prompt issues
@@ -85,5 +86,17 @@ Overall:
 Overall: 
 Clean up the code to refactor components into separate folders. Maximize modularization, reducing functions to one specific task where possible. 
 
-[ ] 
+[x] Draft code cleanup plan. 
+[x] Execute plan in CLEANUP_PLAN_1.md
+[x] Review code for best practices in BEST_PRACTICES.md
+[x] Draft plan to implement a full test suite, including automated UI tests. Should include 100% code coverage is possible. See nextjs/TEST_PLAN.md
+[ ] If unit tests are added leave detailed comments for each part of the unit test so that I can personally review.
+[x] Add detailed documentation for all methods
 [ ] Remove sync league features & fix Schedules tab (might be same issue)
+[ ] Implement BEST_PRACTICES_REPORT.md
+
+-- Part 10: Update to advanced logging w/ Axiom and Vercel --
+Overview: 
+I want to setup a good logging system on the server so that I can view logs and debug if necessary. Axiom logging seems the easiest to setup considering I'm on Vercel
+
+[ ] Set it up following AXIOM_LOG.md

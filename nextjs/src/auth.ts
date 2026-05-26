@@ -1,9 +1,48 @@
+// src/auth.ts
+//
+// NextAuth v5 configuration for Commissioner Suite.
+//
+// ── Providers ────────────────────────────────────────────────────────────────
+//   Discord   — primary OAuth provider for league members.
+//   Google    — alternative OAuth provider.
+//   Credentials — username + password login for the commissioner account
+//                 created during initial setup.
+//
+// ── Authentication flow for OAuth users ──────────────────────────────────────
+//   New OAuth users are NOT immediately written to the database on sign-in.
+//   Instead, their JWT is flagged with `pendingOAuth: true` and they are
+//   redirected to /auth/connect-sleeper where they must prove they belong to
+//   one of the registered Sleeper leagues. Only after Sleeper verification does
+//   the POST /api/auth/connect-sleeper route create the User + Account records.
+//
+//   This two-step flow prevents random Discord/Google accounts from gaining
+//   access — only users who can prove Sleeper league membership are admitted.
+//
+// ── Authentication flow for credentials users ─────────────────────────────────
+//   The credentials provider verifies the password hash with bcrypt and then
+//   calls validateSleeperMembership to confirm the user's Sleeper account is
+//   still active in a registered league. This re-check on every login ensures
+//   that users who leave the league lose access automatically.
+//
+// ── JWT strategy ─────────────────────────────────────────────────────────────
+//   Sessions use JWT (not a DB-backed session table). The jwt() callback is
+//   the single source of truth: it loads the DB user on sign-in and on every
+//   session update trigger (e.g. after Sleeper verification or role change).
+//   The session() callback then maps token fields onto session.user.
+//
+// ── Required env vars ────────────────────────────────────────────────────────
+//   DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET
+//   GOOGLE_CLIENT_ID  / GOOGLE_CLIENT_SECRET   (optional if not used)
+//   AUTH_SECRET                                 (NextAuth signing secret)
+//   NFL_SEASON                                  (current NFL season year)
+
 import NextAuth from 'next-auth';
 import Discord from 'next-auth/providers/discord';
 import Google from 'next-auth/providers/google';
 import Credentials from 'next-auth/providers/credentials';
 import { prisma } from '@/lib/prisma';
 import bcrypt from 'bcryptjs';
+import { SLEEPER_BASE } from '@/lib/sleeper/client';
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 
@@ -32,7 +71,6 @@ declare module 'next-auth' {
 
 // ─── Sleeper helpers ──────────────────────────────────────────────────────────
 
-const SLEEPER_BASE   = 'https://api.sleeper.app/v1';
 const CURRENT_SEASON = parseInt(process.env.NFL_SEASON ?? String(new Date().getFullYear()), 10);
 
 interface SleeperUserRaw {
@@ -44,6 +82,19 @@ interface SleeperLeagueRaw {
   league_id: string;
 }
 
+/**
+ * Verifies that `sleeperUsername` is a member of at least one of the leagues
+ * registered in the local database.
+ *
+ * Validation steps:
+ *   1. Resolve the username to a Sleeper user object (gets the stable user_id).
+ *   2. Fetch all leagues the user is a member of for the current NFL season.
+ *   3. Cross-reference with leagues stored in the DB — at least one must match.
+ *
+ * @param sleeperUsername  Sleeper login handle (case-insensitive).
+ * @returns  `{ userId, username }` if valid, or `null` if the user cannot be
+ *           found on Sleeper, has no leagues, or is not in any registered league.
+ */
 export async function validateSleeperMembership(
   sleeperUsername: string,
 ): Promise<{ userId: string; username: string } | null> {

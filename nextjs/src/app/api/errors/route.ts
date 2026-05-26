@@ -1,5 +1,26 @@
+// src/app/api/errors/route.ts
+//
+// GET  /api/errors?limit={n}   — fetches recent client-side error log entries.
+// POST /api/errors              — writes a new error log entry from the browser.
+//
+// This endpoint acts as a lightweight client-side error reporter. The browser's
+// global `error` / `unhandledrejection` handlers POST here so that runtime
+// errors caught by the React error boundary or other global handlers are
+// persisted in the DB for debugging without needing a third-party error service.
+//
+// GET:
+//   Returns the most recent `limit` entries (capped at 500, default 100),
+//   ordered newest-first. No auth required — only accessible to server admins
+//   who know the URL (could be protected by middleware if needed).
+//
+// POST:
+//   Body: { message, stack?, username?, url? }
+//   `message` is required. All other fields are optional context.
+//   Returns the new entry's `id` so the client can correlate the report.
+
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { ok, err } from '@/lib/api';
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const { searchParams } = req.nextUrl;
@@ -11,10 +32,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       orderBy: { createdAt: 'desc' },
       take,
     });
-    return NextResponse.json(logs);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to fetch error logs';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return ok(logs);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to fetch error logs';
+    return err(message);
   }
 }
 
@@ -28,7 +49,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     };
 
     if (!body.message) {
-      return NextResponse.json({ error: 'message is required' }, { status: 400 });
+      return err('message is required', 400);
     }
 
     const entry = await prisma.errorLog.create({
@@ -40,9 +61,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       },
     });
 
-    return NextResponse.json({ id: entry.id });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to write error log';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return ok({ id: entry.id });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to write error log';
+    return err(message);
   }
 }
