@@ -97,8 +97,3 @@ Clean up the code to refactor components into separate folders. Maximize modular
 [ ] Set up Claude testing
 [ ] Complete phased unit testing
 
--- Part 10: Update to advanced logging w/ Axiom and Vercel --
-Overview: 
-I want to setup a good logging system on the server so that I can view logs and debug if necessary. Axiom logging seems the easiest to setup considering I'm on Vercel
-
-[ ] Set it up following AXIOM_LOG.md
