@@ -15,9 +15,13 @@
 
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { auth } from '@/auth';
 import { ok, err } from '@/lib/api';
 
 export async function GET(): Promise<NextResponse> {
+  const session = await auth();
+  if (!session) return err('Unauthorized', 401);
+
   try {
     const adminUsername = process.env.ADMIN_USERNAME ?? 'admin';
     const users = await prisma.user.findMany({

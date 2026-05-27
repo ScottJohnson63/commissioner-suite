@@ -1,18 +1,15 @@
 // tests/app/api/trending/route.test.ts
+//
+// The trending route has module-level cache state (trendingCache / trendingLastFetch).
+// To prevent one test's cached data from bleeding into the next, we reset modules
+// in beforeEach and re-import GET dynamically so each test gets a clean cache.
 
-import { GET } from '@/app/api/trending/route';
 import { NextRequest } from 'next/server';
-import { jest, describe, it, expect, beforeEach, beforeAll, afterAll } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 
+// GET is re-imported in beforeEach — declare the variable at describe scope.
+let GET: (req: NextRequest) => Promise<Response>;
 let mockFetch: jest.MockedFunction<typeof fetch>;
-
-beforeAll(() => {
-  mockFetch = jest.spyOn(global, 'fetch') as jest.MockedFunction<typeof fetch>;
-});
-
-afterAll(() => {
-  mockFetch.mockRestore();
-});
 
 function makeRequest(queryString = ''): NextRequest {
   return new NextRequest(`http://localhost:3000/api/trending${queryString}`);
@@ -27,8 +24,29 @@ const mockDrops = [
 ];
 
 describe('GET /api/trending', () => {
-  beforeEach(() => {
-    mockFetch.mockReset();
+  beforeEach(async () => {
+    // Destroy module registry so the trending route's module-level Maps are
+    // re-created empty for every test. Without this, cached data from one test
+    // is served to the next test without calling fetch.
+    jest.resetModules();
+
+    // Mock playerCache before importing the route so the route module picks up
+    // the mock when it is freshly required by resetModules.
+    jest.mock('@/lib/sleeper/playerCache', () => ({
+      getPlayerMap: jest.fn().mockResolvedValue(new Map()),
+    }));
+
+    // Re-import GET after the module reset so it runs with an empty cache.
+    const mod = await import('@/app/api/trending/route');
+    GET = mod.GET as typeof GET;
+
+    // Set up the fetch spy after the module import.
+    mockFetch = jest.spyOn(global, 'fetch') as jest.MockedFunction<typeof fetch>;
+  });
+
+  afterEach(() => {
+    mockFetch.mockRestore();
+    jest.resetModules();
   });
 
   it('returns both adds and drops when no type specified', async () => {

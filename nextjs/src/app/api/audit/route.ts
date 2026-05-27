@@ -18,9 +18,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { auth } from '@/auth';
 import { ok, err } from '@/lib/api';
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
+  const session = await auth();
+  if (!session) return err('Unauthorized', 401);
+
   const { searchParams } = req.nextUrl;
   const leagueId = searchParams.get('leagueId') ?? undefined;
   const limitParam = searchParams.get('limit');

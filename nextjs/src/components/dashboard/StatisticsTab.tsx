@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
+import Image from 'next/image';
 import type { TrendingData } from '@/types/trending';
 import { TrendingTicker } from './TrendingTicker';
 
@@ -193,8 +194,7 @@ function StatLeadersTable() {
               <span className="w-4 text-right text-[11px] tabular-nums shrink-0"
                 style={{ color: '#444' }}>{i + 1}</span>
               {leader.headshot ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={leader.headshot} alt={leader.playerDisplayName ?? ''}
+                <Image src={leader.headshot} alt={leader.playerDisplayName ?? ''}
                   width={32} height={32} className="w-8 h-8 rounded-full object-cover shrink-0"
                   style={{ background: '#1e1e20' }}
                   onError={(e) => { e.currentTarget.style.display = 'none'; }} />

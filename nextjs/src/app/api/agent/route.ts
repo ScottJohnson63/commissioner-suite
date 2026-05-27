@@ -58,6 +58,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { prisma } from '@/lib/prisma';
+import { auth } from '@/auth';
 import {
   HOURLY_LIMIT, getClientId, checkHourlyLimit, getDailyCount, incrementDaily,
 } from '@/lib/rateLimit';
@@ -792,6 +793,9 @@ async function streamGroq(systemPrompt: string, messages: { role: string; conten
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest): Promise<Response> {
+    const session = await auth();
+    if (!session) return err('Unauthorized', 401);
+
     const body = (await req.json()) as {
         messages?: { role: string; content: string }[];
         sleeperLeagueId?: string;  // Phase 2: Sleeper league ID from client

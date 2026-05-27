@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
+import Image from 'next/image';
 import type { TrendingPlayer } from '@/types/trending';
 import { SLEEPER_THUMB } from './shared';
 
@@ -88,8 +89,7 @@ export function TrendingTicker({
                   #{p.rank}
                 </span>
                 <div className="relative shrink-0" style={{ width: 22, height: 22 }}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
+                  <Image
                     src={SLEEPER_THUMB(p.player_id)}
                     alt={p.name ?? p.player_id}
                     width={22}

@@ -1,5 +1,7 @@
 'use client';
 
+import Image from 'next/image';
+
 export const SLEEPER_THUMB = (id: string) =>
   `https://sleepercdn.com/content/nfl/players/thumb/${id}.jpg`;
 
@@ -8,8 +10,7 @@ export const INNER_BG = { background: '#0e0e0f', border: '1px solid #1e1e20' } a
 
 export function PlayerAvatar({ playerId, name }: { playerId: string; name: string | null }) {
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
+    <Image
       src={SLEEPER_THUMB(playerId)}
       alt={name ?? playerId}
       width={36}

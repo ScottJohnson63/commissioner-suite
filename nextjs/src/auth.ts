@@ -41,8 +41,11 @@ import Discord from 'next-auth/providers/discord';
 import Google from 'next-auth/providers/google';
 import Credentials from 'next-auth/providers/credentials';
 import { prisma } from '@/lib/prisma';
-import bcrypt from 'bcryptjs';
-import { SLEEPER_BASE } from '@/lib/sleeper/client';
+import { validateSleeperMembership, authorizeCredentials } from '@/lib/authHelpers';
+
+// Re-export the pure helpers so callers who previously imported from @/auth
+// (e.g. the connect-sleeper API route) continue to work without changes.
+export { validateSleeperMembership, authorizeCredentials };
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 
@@ -66,61 +69,6 @@ declare module 'next-auth' {
       pendingProvider?: string;
       pendingProviderAccountId?: string;
     };
-  }
-}
-
-// ─── Sleeper helpers ──────────────────────────────────────────────────────────
-
-const CURRENT_SEASON = parseInt(process.env.NFL_SEASON ?? String(new Date().getFullYear()), 10);
-
-interface SleeperUserRaw {
-  user_id: string;
-  username: string;
-}
-
-interface SleeperLeagueRaw {
-  league_id: string;
-}
-
-/**
- * Verifies that `sleeperUsername` is a member of at least one of the leagues
- * registered in the local database.
- *
- * Validation steps:
- *   1. Resolve the username to a Sleeper user object (gets the stable user_id).
- *   2. Fetch all leagues the user is a member of for the current NFL season.
- *   3. Cross-reference with leagues stored in the DB — at least one must match.
- *
- * @param sleeperUsername  Sleeper login handle (case-insensitive).
- * @returns  `{ userId, username }` if valid, or `null` if the user cannot be
- *           found on Sleeper, has no leagues, or is not in any registered league.
- */
-export async function validateSleeperMembership(
-  sleeperUsername: string,
-): Promise<{ userId: string; username: string } | null> {
-  try {
-    const userRes = await fetch(
-      `${SLEEPER_BASE}/user/${encodeURIComponent(sleeperUsername.trim().toLowerCase())}`,
-    );
-    if (!userRes.ok) return null;
-    const user = (await userRes.json()) as SleeperUserRaw;
-    if (!user?.user_id) return null;
-
-    const leaguesRes = await fetch(
-      `${SLEEPER_BASE}/user/${user.user_id}/leagues/nfl/${CURRENT_SEASON}`,
-    );
-    if (!leaguesRes.ok) return null;
-    const leagues = (await leaguesRes.json()) as SleeperLeagueRaw[];
-
-    const dbLeagues   = await prisma.league.findMany({ select: { sleeperLeagueId: true } });
-    const dbLeagueIds = new Set(dbLeagues.map((l) => l.sleeperLeagueId));
-
-    const inLeague = (leagues ?? []).some((l) => dbLeagueIds.has(l.league_id));
-    if (!inLeague) return null;
-
-    return { userId: user.user_id, username: user.username };
-  } catch {
-    return null;
   }
 }
 
@@ -155,36 +103,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         username: { label: 'Username' },
         password: { label: 'Password', type: 'password' },
       },
-      async authorize(credentials) {
-        const username = credentials?.username as string | undefined;
-        const password = credentials?.password as string | undefined;
-
-        if (!username || !password) return null;
-
-        const user = await prisma.user.findUnique({ where: { username } });
-        if (!user?.password) return null;
-
-        const valid = await bcrypt.compare(password, user.password);
-        if (!valid) return null;
-
-        // Validate Sleeper league membership using the stored user ID (or
-        // username as a fallback if no Sleeper ID has been recorded yet).
-        const sleeperLookup = user.sleeperUserId ?? user.username;
-        if (!sleeperLookup) return null;
-
-        const sleeper = await validateSleeperMembership(sleeperLookup);
-        if (!sleeper) return null;
-
-        // Keep the stored Sleeper user ID up to date.
-        if (user.sleeperUserId !== sleeper.userId) {
-          await prisma.user.update({
-            where: { id: user.id },
-            data:  { sleeperUserId: sleeper.userId },
-          });
-        }
-
-        return { id: user.id, name: user.name, email: user.email, image: user.image };
-      },
+      authorize: authorizeCredentials,
     }),
   ],
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 import type { WaiverSuggestionsResponse } from '@/types/suggestions';
 import { SLEEPER_THUMB, PANEL_BG, PanelActionBtn, PanelSkeleton, NoLeague } from './shared';
 
@@ -65,8 +66,7 @@ export function WaiverSuggestionsPanel({
               <div key={s.playerId}
                 className="flex items-center gap-3 py-2.5 border-b last:border-b-0"
                 style={{ borderColor: '#1a1a1c' }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={SLEEPER_THUMB(s.playerId)} alt={s.name}
+                <Image src={SLEEPER_THUMB(s.playerId)} alt={s.name}
                   width={30} height={30} className="rounded-full shrink-0 object-cover"
                   style={{ width: 30, height: 30, background: '#1e1e20' }}
                   onError={(e) => { e.currentTarget.style.display = 'none'; }} />

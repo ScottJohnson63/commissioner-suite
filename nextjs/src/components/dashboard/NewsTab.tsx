@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
+import Image from 'next/image';
 import type { NewsArticle, NewsSource } from '@/types/news';
 
 const NFL_REPORTERS: {
@@ -141,8 +142,8 @@ export function NewsTab() {
                 onMouseEnter={(e) => (e.currentTarget.style.background = '#1a1a1c')}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
                 {article.imageUrl && (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img src={article.imageUrl} alt=""
+                  <Image src={article.imageUrl} alt=""
+                    width={56} height={56} unoptimized
                     className="w-14 h-14 rounded object-cover shrink-0"
                     style={{ background: '#1e1e20' }} />
                 )}
