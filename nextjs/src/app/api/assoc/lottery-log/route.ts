@@ -16,6 +16,7 @@
 //   rerun    — true if this is a re-run of a previously logged lottery
 
 import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
 
@@ -36,7 +37,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return err('leagueId and results are required', 400);
   }
 
-  await writeAuditLog('GENERATE', body.leagueId, {
+  const league = await prisma.league.findFirst({
+    where: { OR: [{ id: body.leagueId }, { sleeperLeagueId: body.leagueId }] },
+    select: { id: true },
+  });
+
+  await writeAuditLog('GENERATE', league?.id ?? body.leagueId, {
     type: 'lottery',
     rerun: body.rerun ?? false,
     totalDraws: 1_000_000,

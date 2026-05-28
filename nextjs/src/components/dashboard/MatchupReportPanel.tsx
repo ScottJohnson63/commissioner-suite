@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { MatchupReportResponse } from '@/types/projections';
-import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton, NoLeague } from './shared';
+import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton, NoLeague, PlayerAvatar } from './shared';
 
 export function MatchupReportPanel({
   leagueId, userId,
@@ -119,9 +119,14 @@ export function MatchupReportPanel({
                 <div className="rounded-lg overflow-hidden" style={{ border: '1px solid #1e1e20' }}>
                   {players.slice(0, 9).map((p) => (
                     <div key={p.playerId}
-                      className="flex items-center justify-between px-3 py-1.5 border-b last:border-b-0 gap-2"
+                      className="flex items-center justify-between px-2 py-1.5 border-b last:border-b-0 gap-2"
                       style={{ borderColor: '#1a1a1c' }}>
-                      <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <PlayerAvatar
+                          playerId={p.sleeperPlayerId}
+                          name={p.name}
+                          size={26}
+                        />
                         <span className="text-[9px] px-1 rounded shrink-0"
                           style={{ background: '#1e1e20', color: '#555' }}>
                           {p.position}

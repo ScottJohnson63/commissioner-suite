@@ -32,19 +32,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const { leagueId, standings } = body;
 
-  const league = await prisma.league.findUnique({ where: { id: leagueId } });
+  const league = await prisma.league.findFirst({
+    where: { OR: [{ id: leagueId }, { sleeperLeagueId: leagueId }] },
+  });
   if (!league) return err('League not found', 404);
 
   await Promise.all(
     standings.map((s) =>
       prisma.team.updateMany({
-        where: { leagueId, sleeperRosterId: String(s.rosterId) },
+        where: { leagueId: league.id, sleeperRosterId: String(s.rosterId) },
         data: { divisionId: s.division - 1 },
       }),
     ),
   );
 
-  await writeAuditLog('GENERATE', leagueId, {
+  await writeAuditLog('GENERATE', league.id, {
     type: 'divisions',
     teamCount: standings.length,
     divisions: standings.map((s) => ({ rosterId: s.rosterId, name: s.name, division: s.division })),

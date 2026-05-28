@@ -111,13 +111,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   try {
     // ── Data-gathering phase (demo vs. live) ───────────────────────────────────
 
-    type PlayerInfo = { name: string; position: string; team: string | null };
+    type PlayerInfo = { name: string; position: string; team: string | null; gsisId: string | null };
 
     let rosters:      SleeperRoster[];
     let teamNameMap:  Map<string, string>;
     let playerMap:    Map<string, PlayerInfo>;
     let seasonPtsMap: Map<string, number>;
     let season:       number;
+    // GSIS ID → Sleeper numeric ID for CDN image resolution (populated in demo mode)
+    const gsisToSleeperIdMap = new Map<string, string>();
 
     if (IS_DEMO) {
       // ── Demo branch ───────────────────────────────────────────────────────────
@@ -146,10 +148,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         },
       ];
 
-      // Build player map from mock data
+      // Build player map + GSIS → Sleeper ID reverse map from mock data
       playerMap = new Map<string, PlayerInfo>();
       for (const p of [...team1.players, ...team2.players]) {
-        playerMap.set(p.id, { name: p.name, position: p.position, team: p.team });
+        playerMap.set(p.id, { name: p.name, position: p.position, team: p.team, gsisId: null });
+        const sid = (p as { sleeperId?: string }).sleeperId;
+        if (sid) gsisToSleeperIdMap.set(p.id, sid);
       }
 
       // Season totals: query DB with GSIS IDs, fall back to mock values
@@ -267,7 +271,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const { pid, pts } = candidates[0];
       const info = playerMap.get(pid);
       if (!info) return null;
-      return { playerId: pid, name: info.name, position: pos, seasonPts: pts };
+      // In demo mode pid is a GSIS ID; map to Sleeper numeric ID for CDN images.
+      // In live mode pid is already the Sleeper ID so the map is empty and pid is used.
+      const sleeperPlayerId = gsisToSleeperIdMap.get(pid) ?? pid;
+      return { playerId: pid, sleeperPlayerId, name: info.name, position: pos, seasonPts: pts };
     }
 
     for (const otherRoster of rosters) {

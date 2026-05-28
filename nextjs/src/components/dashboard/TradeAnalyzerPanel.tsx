@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { TradeSuggestionsResponse } from '@/types/suggestions';
-import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton, NoLeague } from './shared';
+import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton, NoLeague, PlayerAvatar } from './shared';
 
 export function TradeAnalyzerPanel({
   leagueId, userId,
@@ -102,8 +102,13 @@ export function TradeAnalyzerPanel({
                         </p>
                         {p[side].map((pl) => (
                           <div key={pl.playerId}
-                            className="flex items-center justify-between text-[10px] gap-1">
-                            <span className="truncate"
+                            className="flex items-center gap-1.5 text-[10px]">
+                            <PlayerAvatar
+                              playerId={pl.sleeperPlayerId}
+                              name={pl.name}
+                              size={24}
+                            />
+                            <span className="truncate flex-1"
                               style={{ color: '#e8e6df' }}>{pl.name}</span>
                             <span className="tabular-nums shrink-0"
                               style={{ color: side === 'receive' ? '#80ff49' : '#555' }}>

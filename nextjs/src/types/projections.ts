@@ -1,13 +1,15 @@
 export interface PlayerProjection {
-  playerId:      string;
-  name:          string;
-  position:      string;
-  team:          string | null;
-  floor:         number;
-  ceiling:       number;
-  projected:     number;
-  defAdjustment: number;
-  weatherNote:   string | null;
+  playerId:        string;
+  /** Sleeper numeric ID — use for CDN headshots. Equals playerId in live mode. */
+  sleeperPlayerId: string;
+  name:            string;
+  position:        string;
+  team:            string | null;
+  floor:           number;
+  ceiling:         number;
+  projected:       number;
+  defAdjustment:   number;
+  weatherNote:     string | null;
 }
 
 export interface TeamProjection {

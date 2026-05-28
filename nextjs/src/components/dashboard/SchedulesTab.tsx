@@ -8,13 +8,21 @@ import type { AssocSchedule, AssocTeam } from '@/types/schedule';
 
 export function SchedulesTab({
   activeLeagueId,
+  sleeperLeagueId,
   refreshKey,
   isCommissioner,
 }: {
+  /** Internal DB id for the league — null until the league has been synced. */
   activeLeagueId: string | null;
+  /** Sleeper league id — available as soon as a league is selected in the dashboard. */
+  sleeperLeagueId: string | null;
   refreshKey: number;
   isCommissioner: boolean;
 }) {
+  // Prefer the DB id (stable, already resolved); fall back to the Sleeper id so
+  // the Generate button works even before the first sync.
+  const effectiveId = activeLeagueId ?? sleeperLeagueId;
+
   const [schedule, setSchedule]               = useState<AssocSchedule | null>(null);
   const [selectedTeamId, setSelectedTeamId]   = useState<string | null>(null);
   const [loading, setLoading]                 = useState(false);
@@ -39,27 +47,31 @@ export function SchedulesTab({
   }, []);
 
   useEffect(() => {
-    if (activeLeagueId) void fetchSchedule(activeLeagueId);
+    if (effectiveId) void fetchSchedule(effectiveId);
     else setSchedule(null);
-  }, [activeLeagueId, refreshKey, fetchSchedule]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLeagueId, sleeperLeagueId, refreshKey, fetchSchedule]);
 
   async function handleGenerate(): Promise<void> {
-    if (!activeLeagueId) return;
+    if (!effectiveId) return;
     setGenerating(true); setError(null);
     try {
-      const res = await fetch(`/api/leagues/${activeLeagueId}/schedule`, { method: 'POST' });
-      if (!res.ok) throw new Error('Schedule generation failed');
-      await fetchSchedule(activeLeagueId);
+      const res = await fetch(`/api/leagues/${effectiveId}/schedule`, { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json() as { error?: string };
+        throw new Error(body.error ?? 'Schedule generation failed');
+      }
+      await fetchSchedule(effectiveId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Generation failed');
     } finally { setGenerating(false); }
   }
 
   async function handleClear(): Promise<void> {
-    if (!activeLeagueId) return;
+    if (!effectiveId) return;
     setClearing(true); setError(null);
     try {
-      const res = await fetch(`/api/leagues/${activeLeagueId}/schedule`, { method: 'DELETE' });
+      const res = await fetch(`/api/leagues/${effectiveId}/schedule`, { method: 'DELETE' });
       if (!res.ok) {
         const body = await res.json() as { error?: string };
         throw new Error(body.error ?? 'Clear failed');
@@ -71,8 +83,8 @@ export function SchedulesTab({
   }
 
   async function handleExport(): Promise<void> {
-    if (!activeLeagueId || !schedule) return;
-    const res = await fetch(`/api/leagues/${activeLeagueId}/schedule/export`);
+    if (!effectiveId || !schedule) return;
+    const res = await fetch(`/api/leagues/${effectiveId}/schedule/export`);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -87,7 +99,7 @@ export function SchedulesTab({
       body: JSON.stringify({ homeTeamId: awayTeamId, awayTeamId: homeTeamId }),
     });
     if (!res.ok) throw new Error('Swap failed');
-    if (activeLeagueId) await fetchSchedule(activeLeagueId);
+    if (effectiveId) await fetchSchedule(effectiveId);
   }
 
   const byWeek = schedule
@@ -117,7 +129,7 @@ export function SchedulesTab({
   return (
     <div className="max-w-5xl">
       <div className="flex flex-wrap items-center gap-2 mb-6">
-        {isCommissioner && activeLeagueId && (
+        {isCommissioner && effectiveId && (
           <button
             onClick={handleGenerate}
             disabled={loading || generating}
@@ -170,15 +182,15 @@ export function SchedulesTab({
         </div>
       )}
 
-      {!loading && !schedule && activeLeagueId && (
+      {!loading && !schedule && effectiveId && (
         <p className="text-xs text-center py-20" style={{ color: '#555' }}>
           No schedule yet. Generate one above.
         </p>
       )}
 
-      {!activeLeagueId && (
+      {!effectiveId && (
         <p className="text-xs text-center py-20" style={{ color: '#555' }}>
-          Sync a league to get started.
+          Select a league to get started.
         </p>
       )}
 

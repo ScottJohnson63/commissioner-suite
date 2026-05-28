@@ -4,8 +4,47 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { generateSchedule } from '@/lib/scheduler/engine';
 import { Team } from '@/lib/scheduler/types';
+import { fetchLeagueData } from '@/lib/sleeper/sync';
 import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
+
+type LeagueWithTeams = NonNullable<Awaited<ReturnType<typeof findLeague>>>;
+
+/** Find a league by internal DB id OR Sleeper league id — whichever the caller provides. */
+async function findLeague(id: string) {
+  return prisma.league.findFirst({
+    where: { OR: [{ id }, { sleeperLeagueId: id }] },
+    include: { teams: true },
+  });
+}
+
+/**
+ * Syncs a league (and its teams) from Sleeper, treating `sleeperLeagueId` as the
+ * source of truth. Used when Generate Schedule is clicked before any prior sync.
+ */
+async function syncLeagueFromSleeper(sleeperLeagueId: string): Promise<LeagueWithTeams> {
+  const { leagueId, name, season, teams: sleeperTeams } = await fetchLeagueData(sleeperLeagueId);
+
+  const league = await prisma.league.upsert({
+    where: { sleeperLeagueId: leagueId },
+    update: { name, season },
+    create: { sleeperLeagueId: leagueId, name, season, divisionCount: 2 },
+  });
+
+  await Promise.all(
+    sleeperTeams.map((t) =>
+      prisma.team.upsert({
+        where: { leagueId_sleeperRosterId: { leagueId: league.id, sleeperRosterId: t.id } },
+        update: { name: t.name, divisionId: t.divisionId },
+        create: { leagueId: league.id, sleeperRosterId: t.id, name: t.name, divisionId: t.divisionId },
+      }),
+    ),
+  );
+
+  const refreshed = await findLeague(league.id);
+  if (!refreshed) throw new Error('League not found after sync');
+  return refreshed;
+}
 
 export async function POST(
   _req: NextRequest,
@@ -13,12 +52,39 @@ export async function POST(
 ): Promise<NextResponse> {
   const { id } = await params;
 
-  const league = await prisma.league.findUnique({
-    where: { id },
-    include: { teams: true },
-  });
+  let league = await findLeague(id);
 
-  if (!league) return err('League not found', 404);
+  // League not in DB yet — treat `id` as Sleeper league ID and perform a full sync.
+  if (!league) {
+    try {
+      league = await syncLeagueFromSleeper(id);
+    } catch (syncErr) {
+      const msg = syncErr instanceof Error ? syncErr.message : 'Unknown error';
+      return err(`Failed to sync league from Sleeper: ${msg}`);
+    }
+  }
+
+  // Teams missing (league record exists but was never populated) — sync teams only.
+  if (league.teams.length === 0) {
+    try {
+      const { teams: sleeperTeams } = await fetchLeagueData(league.sleeperLeagueId);
+      await Promise.all(
+        sleeperTeams.map((t) =>
+          prisma.team.upsert({
+            where: { leagueId_sleeperRosterId: { leagueId: league!.id, sleeperRosterId: t.id } },
+            update: { name: t.name, divisionId: t.divisionId },
+            create: { leagueId: league!.id, sleeperRosterId: t.id, name: t.name, divisionId: t.divisionId },
+          }),
+        ),
+      );
+      const refreshed = await findLeague(league.id);
+      if (!refreshed) return err('League not found after team sync', 500);
+      league = refreshed;
+    } catch (syncErr) {
+      const msg = syncErr instanceof Error ? syncErr.message : 'Unknown error';
+      return err(`Failed to load teams from Sleeper: ${msg}`);
+    }
+  }
 
   const teams: Team[] = league.teams.map((t) => ({
     id: t.id,
@@ -29,7 +95,7 @@ export async function POST(
   const seed = Math.floor(Math.random() * 1_000_000);
 
   try {
-    const schedule = generateSchedule(league.sleeperLeagueId, league.season, teams);
+    const schedule = generateSchedule(league.id, league.season, teams);
 
     const saved = await prisma.schedule.create({
       data: {
@@ -71,8 +137,11 @@ export async function GET(
 ): Promise<NextResponse> {
   const { id } = await params;
 
+  const league = await findLeague(id);
+  if (!league) return err('No schedule found', 404);
+
   const schedule = await prisma.schedule.findFirst({
-    where: { leagueId: id },
+    where: { leagueId: league.id },
     orderBy: { generatedAt: 'desc' },
     include: {
       matchups: {
@@ -93,12 +162,12 @@ export async function DELETE(
 ): Promise<NextResponse> {
   const { id } = await params;
 
-  const league = await prisma.league.findUnique({ where: { id } });
+  const league = await findLeague(id);
   if (!league) return err('League not found', 404);
 
   try {
     const schedules = await prisma.schedule.findMany({
-      where: { leagueId: id },
+      where: { leagueId: league.id },
       select: { id: true },
     });
 
@@ -115,14 +184,12 @@ export async function DELETE(
       prisma.schedule.deleteMany({ where: { id: { in: scheduleIds } } }),
     ]);
 
-    const count = schedules.length;
-
     await writeAuditLog('DELETE', league.id, {
       season: league.season,
-      schedulesDeleted: count,
+      schedulesDeleted: schedules.length,
     });
 
-    return ok({ deleted: count });
+    return ok({ deleted: schedules.length });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Delete failed';
     return err(message);

@@ -5,6 +5,47 @@ import Image from 'next/image';
 import type { WaiverSuggestionsResponse } from '@/types/suggestions';
 import { SLEEPER_THUMB, PANEL_BG, PanelActionBtn, PanelSkeleton, NoLeague } from './shared';
 
+// Two-stage image loader: DB headshot (NFL CDN) → Sleeper CDN → letter avatar.
+// Each stage only fires if the previous one returned an error or was unavailable.
+function WaiverAvatar({ playerId, headshot, name }: {
+  playerId: string;
+  headshot: string | null;
+  name: string;
+}) {
+  // Start with DB headshot when available, fall back to Sleeper CDN immediately if not.
+  const [src, setSrc]       = useState<string>(headshot ?? SLEEPER_THUMB(playerId));
+  const [showLetter, setShowLetter] = useState(false);
+
+  if (showLetter) {
+    return (
+      <div className="rounded-full flex items-center justify-center text-[10px] font-medium shrink-0"
+        style={{ width: 30, height: 30, background: '#1e1e20', color: '#555' }}>
+        {name.charAt(0).toUpperCase()}
+      </div>
+    );
+  }
+
+  return (
+    <Image
+      src={src}
+      alt={name}
+      width={30}
+      height={30}
+      className="rounded-full object-cover shrink-0"
+      style={{ width: 30, height: 30, background: '#1e1e20' }}
+      onError={() => {
+        if (headshot && src === headshot) {
+          // DB URL failed → try Sleeper CDN
+          setSrc(SLEEPER_THUMB(playerId));
+        } else {
+          // Sleeper CDN also failed (or was the first attempt) → show letter
+          setShowLetter(true);
+        }
+      }}
+    />
+  );
+}
+
 export function WaiverSuggestionsPanel({
   leagueId, userId,
 }: { leagueId: string | null; userId: string | null }) {
@@ -66,10 +107,7 @@ export function WaiverSuggestionsPanel({
               <div key={s.playerId}
                 className="flex items-center gap-3 py-2.5 border-b last:border-b-0"
                 style={{ borderColor: '#1a1a1c' }}>
-                <Image src={SLEEPER_THUMB(s.playerId)} alt={s.name}
-                  width={30} height={30} className="rounded-full shrink-0 object-cover"
-                  style={{ width: 30, height: 30, background: '#1e1e20' }}
-                  onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                <WaiverAvatar playerId={s.playerId} headshot={s.headshot} name={s.name} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs font-medium truncate" style={{ color: '#e8e6df' }}>

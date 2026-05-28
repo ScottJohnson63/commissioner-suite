@@ -2,12 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { signOut, useSession } from 'next-auth/react';
+import type { Route } from 'next';
 
 // ─── Nav definition ───────────────────────────────────────────────────────────
 
-const BASE_NAV = [
+// Route type satisfies Next.js typedRoutes — href must be a known app route.
+const BASE_NAV: { label: string; href: Route; icon: React.ReactNode }[] = [
   { label: 'Dashboard',    href: '/league/dashboard', icon: <GridIcon /> },
   { label: 'AI Assistant', href: '/league/ai',        icon: <SparkleIcon /> },
   { label: 'Schedule',     href: '/league/schedule',  icon: <CalendarIcon /> },
@@ -36,13 +38,13 @@ export function LeagueSidebar() {
   const [expanded, setExpanded] = useState(true);
   const [overflow, setOverflow] = useState<'hidden' | 'visible'>('hidden');
 
-  const NAV = [
+  const NAV: { label: string; href: Route; icon: React.ReactNode }[] = [
     ...BASE_NAV,
     ...(session?.user?.role === 'MEMBER' || session?.user?.role === 'COMMISSIONER'
-      ? [{ label: 'Members', href: '/league/members', icon: <PeopleIcon /> }]
+      ? [{ label: 'Members',      href: '/league/members' as Route, icon: <PeopleIcon /> }]
       : []),
     ...(session?.user?.role === 'MEMBER' || session?.user?.role === 'COMMISSIONER'
-      ? [{ label: 'Activity Log', href: '/league/log', icon: <LogIcon /> }]
+      ? [{ label: 'Activity Log', href: '/league/log'     as Route, icon: <LogIcon />    }]
       : []),
   ];
 

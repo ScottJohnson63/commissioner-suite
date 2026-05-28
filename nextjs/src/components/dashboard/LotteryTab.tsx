@@ -21,11 +21,14 @@ function formatLotteryCountdown(ms: number): string {
 
 export function LotteryTab({
   activeLeagueId,
+  sleeperLeagueId,
   isCommissioner,
 }: {
   activeLeagueId: string | null;
+  sleeperLeagueId: string | null;
   isCommissioner: boolean;
 }) {
+  const effectiveId = activeLeagueId ?? sleeperLeagueId;
   const [standings, setStandings]       = useState<StandingEntry[]>([]);
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState<string | null>(null);
@@ -58,17 +61,19 @@ export function LotteryTab({
     setRunning(false); setTotalDrawn(0); setLiveCounts([]);
     setDraftOrder(null); setDraftError(null);
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-    if (activeLeagueId) void load(activeLeagueId);
-  }, [activeLeagueId, load]);
+    if (effectiveId) void load(effectiveId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLeagueId, sleeperLeagueId, load]);
 
   useEffect(() => {
-    if (!results || !activeLeagueId) return;
+    if (!results || !effectiveId) return;
     void fetch('/api/assoc/lottery-log', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leagueId: activeLeagueId, results, rerun: rerunRef.current }),
+      body: JSON.stringify({ leagueId: effectiveId, results, rerun: rerunRef.current }),
     });
-  }, [results, activeLeagueId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results, activeLeagueId, sleeperLeagueId]);
 
   const worstTeams = useMemo(
     () => [...standings].sort((a, b) => b.rank - a.rank).slice(0, 3),
@@ -107,7 +112,7 @@ export function LotteryTab({
   }
 
   async function generateDraftOrder(): Promise<void> {
-    if (!results || standings.length === 0 || !activeLeagueId) return;
+    if (!results || standings.length === 0 || !effectiveId) return;
     setDraftLoading(true); setDraftError(null);
     try {
       const lotteryRosterIds = new Set(results.map((r) => r.rosterId));
@@ -128,7 +133,7 @@ export function LotteryTab({
       await fetch('/api/assoc/draft-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leagueId: activeLeagueId, draftOrder: order }),
+        body: JSON.stringify({ leagueId: effectiveId, draftOrder: order }),
       });
     } catch (e) {
       setDraftError(e instanceof Error ? e.message : 'Failed to generate draft order');
@@ -164,7 +169,7 @@ export function LotteryTab({
           ))}
         </div>
       )}
-      {!activeLeagueId && !loading && (
+      {!effectiveId && !loading && (
         <p className="text-xs text-center py-16" style={{ color: '#444' }}>
           Select a league to get started.
         </p>

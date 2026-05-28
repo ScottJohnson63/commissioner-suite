@@ -204,10 +204,15 @@ export default function LeagueDashboardPage() {
         <>
           {/* Keep SchedulesTab always mounted so fetched data survives tab switches */}
           <div style={{ display: tab === 'schedules' ? undefined : 'none' }}>
-            <SchedulesTab activeLeagueId={activeDbLeagueId} refreshKey={0} isCommissioner={isCommissioner} />
+            <SchedulesTab
+              activeLeagueId={activeDbLeagueId}
+              sleeperLeagueId={activeLeagueId}
+              refreshKey={0}
+              isCommissioner={isCommissioner}
+            />
           </div>
-          {tab === 'divisions' && <DivisionsTab activeLeagueId={activeDbLeagueId} isCommissioner={isCommissioner} />}
-          {tab === 'lottery'   && <LotteryTab   activeLeagueId={activeDbLeagueId} isCommissioner={isCommissioner} />}
+          {tab === 'divisions' && <DivisionsTab activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
+          {tab === 'lottery'   && <LotteryTab   activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
         </>
       )}
 

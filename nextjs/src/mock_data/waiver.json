@@ -1,20 +1,20 @@
 {
-  "_comment": "Mock waiver pool for DEMO_MODE=true local testing. IDs are GSIS format matching NflWeeklyStat.playerId. mockAvgPts is used as a fallback when the DB returns no data for that player (e.g. if a GSIS ID differs slightly).",
+  "_comment": "Mock waiver pool for DEMO_MODE=true. 'id' is the Sleeper numeric player ID (used for CDN headshots and live mode compatibility). 'gsisId' is the nflverse GSIS ID used to query NflWeeklyStat for stats/headshots when the DB is populated. mockAvgPts is the fallback when the DB has no data.",
   "availablePlayers": [
-    { "id": "00-0030524", "name": "Tyreek Hill",         "position": "WR", "team": "MIA", "mockAvgPts": 16.4 },
-    { "id": "00-0036198", "name": "A.J. Brown",           "position": "WR", "team": "PHI", "mockAvgPts": 15.8 },
-    { "id": "00-0031408", "name": "Mike Evans",            "position": "WR", "team": "TB",  "mockAvgPts": 14.2 },
-    { "id": "00-0036973", "name": "Jaylen Waddle",         "position": "WR", "team": "MIA", "mockAvgPts": 13.1 },
-    { "id": "00-0036889", "name": "DeVonta Smith",         "position": "WR", "team": "PHI", "mockAvgPts": 12.9 },
-    { "id": "00-0034588", "name": "Courtland Sutton",      "position": "WR", "team": "DEN", "mockAvgPts": 11.8 },
-    { "id": "00-0033699", "name": "Christian McCaffrey",   "position": "RB", "team": "SF",  "mockAvgPts": 22.4 },
-    { "id": "00-0037744", "name": "Breece Hall",           "position": "RB", "team": "NYJ", "mockAvgPts": 14.8 },
-    { "id": "00-0036911", "name": "Travis Etienne Jr.",    "position": "RB", "team": "JAX", "mockAvgPts": 13.2 },
-    { "id": "00-0036941", "name": "Tony Pollard",          "position": "RB", "team": "TEN", "mockAvgPts": 10.6 },
-    { "id": "00-0036898", "name": "Tua Tagovailoa",        "position": "QB", "team": "MIA", "mockAvgPts": 21.3 },
-    { "id": "00-0039180", "name": "Anthony Richardson",    "position": "QB", "team": "IND", "mockAvgPts": 19.8 },
-    { "id": "00-0033310", "name": "Evan Engram",           "position": "TE", "team": "JAX", "mockAvgPts": 10.2 },
-    { "id": "00-0039182", "name": "Sam LaPorta",           "position": "TE", "team": "DET", "mockAvgPts": 9.8  },
-    { "id": "00-0032752", "name": "Harrison Butker",       "position": "K",  "team": "KC",  "mockAvgPts": 9.4  }
+    { "id": "3321",  "gsisId": "00-0033040", "name": "Tyreek Hill",        "position": "WR", "team": "MIA", "mockAvgPts": 16.4 },
+    { "id": "5859",  "gsisId": "00-0035676", "name": "A.J. Brown",          "position": "WR", "team": "PHI", "mockAvgPts": 15.8 },
+    { "id": "2216",  "gsisId": "00-0031408", "name": "Mike Evans",           "position": "WR", "team": "TB",  "mockAvgPts": 14.2 },
+    { "id": "7526",  "gsisId": null,          "name": "Jaylen Waddle",        "position": "WR", "team": "MIA", "mockAvgPts": 13.1 },
+    { "id": "7525",  "gsisId": null,          "name": "DeVonta Smith",        "position": "WR", "team": "PHI", "mockAvgPts": 12.9 },
+    { "id": "5045",  "gsisId": "00-0034348", "name": "Courtland Sutton",     "position": "WR", "team": "DEN", "mockAvgPts": 11.8 },
+    { "id": "4034",  "gsisId": "00-0033280", "name": "Christian McCaffrey",  "position": "RB", "team": "SF",  "mockAvgPts": 22.4 },
+    { "id": "8155",  "gsisId": null,          "name": "Breece Hall",          "position": "RB", "team": "NYJ", "mockAvgPts": 14.8 },
+    { "id": "7543",  "gsisId": null,          "name": "Travis Etienne Jr.",   "position": "RB", "team": "JAX", "mockAvgPts": 13.2 },
+    { "id": "5967",  "gsisId": "00-0035261", "name": "Tony Pollard",         "position": "RB", "team": "TEN", "mockAvgPts": 10.6 },
+    { "id": "6768",  "gsisId": null,          "name": "Tua Tagovailoa",       "position": "QB", "team": "MIA", "mockAvgPts": 21.3 },
+    { "id": "9229",  "gsisId": null,          "name": "Anthony Richardson",   "position": "QB", "team": "IND", "mockAvgPts": 19.8 },
+    { "id": "4066",  "gsisId": "00-0033881", "name": "Evan Engram",          "position": "TE", "team": "JAX", "mockAvgPts": 10.2 },
+    { "id": "10859", "gsisId": null,          "name": "Sam LaPorta",          "position": "TE", "team": "DET", "mockAvgPts": 9.8  },
+    { "id": "4227",  "gsisId": "00-0033303", "name": "Harrison Butker",      "position": "K",  "team": "KC",  "mockAvgPts": 9.4  }
   ]
 }

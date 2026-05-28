@@ -15,6 +15,8 @@ export interface SleeperPlayerInfo {
   name: string;        // full_name (or first_name + last_name)
   position: string;   // QB | RB | WR | TE | K | DEF | …
   team: string | null; // NFL team abbreviation, null if free agent / retired
+  gsisId: string | null; // NFL GSIS ID (e.g. "00-0034796") — used to cross-reference
+                          // the local NflWeeklyStat DB which stores nflverse/GSIS IDs
 }
 
 // Module-level in-memory cache so the DB is only hit once per process restart.
@@ -94,7 +96,8 @@ function parsePlayerJson(json: string): Map<string, SleeperPlayerInfo> {
     map.set(id, {
       name,
       position: (p.position as string | undefined) ?? (p.fantasy_positions as string[] | undefined)?.[0] ?? '',
-      team: (p.team as string | null | undefined) ?? null,
+      team:     (p.team    as string | null | undefined) ?? null,
+      gsisId:   (p.gsis_id as string | null | undefined) ?? null,
     });
   }
 

@@ -11,8 +11,14 @@ export async function GET(
 ): Promise<NextResponse> {
   const { id } = await params;
 
+  // Resolve by DB id or Sleeper league id — matches the schedule route's behaviour.
+  const league = await prisma.league.findFirst({
+    where: { OR: [{ id }, { sleeperLeagueId: id }] },
+  });
+  if (!league) return err('League not found', 404);
+
   const schedule = await prisma.schedule.findFirst({
-    where: { leagueId: id },
+    where: { leagueId: league.id },
     orderBy: { generatedAt: 'desc' },
     include: {
       matchups: {
@@ -36,7 +42,7 @@ export async function GET(
 
   const csv = rows.map((r) => r.join(',')).join('\n');
 
-  await writeAuditLog('EXPORT', id, {
+  await writeAuditLog('EXPORT', league.id, {
     scheduleId: schedule.id,
     season: schedule.season,
     matchupCount: schedule.matchups.length,

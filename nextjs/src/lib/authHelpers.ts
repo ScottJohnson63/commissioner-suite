@@ -74,7 +74,7 @@ export async function validateSleeperMembership(
  * reject the sign-in attempt.
  */
 export async function authorizeCredentials(
-  credentials: Record<'username' | 'password', string> | undefined,
+  credentials: Partial<Record<'username' | 'password', unknown>> | undefined,
 ): Promise<{ id: string; name: string | null; email: string | null; image: string | null } | null> {
   const username = credentials?.username as string | undefined;
   const password = credentials?.password as string | undefined;

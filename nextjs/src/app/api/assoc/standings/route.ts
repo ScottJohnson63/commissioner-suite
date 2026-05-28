@@ -114,7 +114,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const leagueId = req.nextUrl.searchParams.get('leagueId');
   if (!leagueId) return err('leagueId is required', 400);
 
-  const league = await prisma.league.findUnique({ where: { id: leagueId } });
+  const league = await prisma.league.findFirst({
+    where: { OR: [{ id: leagueId }, { sleeperLeagueId: leagueId }] },
+  });
   if (!league) return err('League not found', 404);
 
   const { previous_league_id } = await sleeperGet<SleeperLeagueInfo>(

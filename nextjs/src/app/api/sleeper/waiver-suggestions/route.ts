@@ -59,7 +59,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   try {
     // ── Data-gathering phase (demo vs. live) ───────────────────────────────────
 
-    type PlayerInfo  = { name: string; position: string; team: string | null };
+    type PlayerInfo  = { name: string; position: string; team: string | null; gsisId: string | null };
     type RosterEntry = { roster_id: number; owner_id: string | null; players: string[] | null };
 
     let myPlayerIds:   string[];
@@ -73,7 +73,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     let week:          number;
 
     if (IS_DEMO) {
-      // ── Demo branch: fixed mock rosters, real GSIS IDs, random past week ──────
+      // ── Demo branch ────────────────────────────────────────────────────────────
+      // waiver.json uses Sleeper numeric IDs (e.g. "3321") as player IDs — the
+      // same format live mode uses. This ensures SLEEPER_THUMB(id) resolves to
+      // a valid CDN URL. A separate gsisId field (when present) is used for DB
+      // headshot / stats lookups via the nflverse-populated NflWeeklyStat table.
       season        = Number(process.env.NFL_SEASON ?? '2025');
       week          = Math.floor(Math.random() * 17) + 1;
       trendingCount = new Map();
@@ -88,13 +92,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       availableIds = pool.map((p) => p.id);
       rosteredSet  = new Set([...myPlayerIds, ...t2Ids]);
 
-      // Build local player map + mock fallback points
+      // Build local player map.
+      // Roster players (matchup.json) still carry GSIS IDs — those are only used
+      // for pts-average calculation, not headshots, so the mismatch is harmless.
       playerMap = new Map<string, PlayerInfo>();
       for (const p of [...team1, ...team2]) {
-        playerMap.set(p.id, { name: p.name, position: p.position, team: p.team });
+        playerMap.set(p.id, { name: p.name, position: p.position, team: p.team, gsisId: p.id });
       }
+      // Waiver pool uses Sleeper numeric IDs; gsisId (if present) enables DB headshot lookup.
       for (const p of pool) {
-        playerMap.set(p.id, { name: p.name, position: p.position, team: p.team });
+        const gsisId = (p as { gsisId?: string | null }).gsisId ?? null;
+        playerMap.set(p.id, { name: p.name, position: p.position, team: p.team, gsisId });
         mockAvgMap.set(p.id, p.mockAvgPts);
       }
 
@@ -148,25 +156,67 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     const allRelevantIds = [...new Set([...myPlayerIds, ...availableIds])];
 
-    let statsRows: { playerId: string; fantasyPointsPpr: number | null; position: string | null }[] = [];
-    if (allRelevantIds.length > 0) {
-      statsRows = await prisma.nflWeeklyStat.findMany({
-        where: {
-          season,
-          week:     { lte: week, gt: Math.max(0, week - 3) },
-          playerId: { in: allRelevantIds },
-        },
-        select: { playerId: true, fantasyPointsPpr: true, position: true },
-      });
+    // ── Build Sleeper ↔ GSIS ID cross-reference for available players ─────────
+    // The DB (NflWeeklyStat) stores nflverse GSIS IDs (e.g. "00-0034796").
+    // Sleeper uses its own numeric IDs (e.g. "4046"). They never coincide, so
+    // we must translate via the gsis_id field in the Sleeper player map before
+    // querying the DB for headshots.
+    const sleeperToGsis = new Map<string, string>(); // sleeperPlayerId → gsisId
+    const gsisToSleeper = new Map<string, string>(); // gsisId → sleeperPlayerId
+    for (const pid of availableIds) {
+      const info = playerMap.get(pid);
+      if (info?.gsisId) {
+        sleeperToGsis.set(pid, info.gsisId);
+        gsisToSleeper.set(info.gsisId, pid);
+      }
     }
+    const availableGsisIds = [...sleeperToGsis.values()];
 
-    // Per-player avg; demo falls back to mockAvgPts when DB has no rows
-    const playerPoints = new Map<string, number[]>();
+    // ── Two parallel DB queries ────────────────────────────────────────────────
+    // 1. Recent stats (last 3 weeks, by Sleeper ID) — scoring/avg calculation.
+    //    Rostered players' IDs are also Sleeper IDs but the scoring query only
+    //    needs points, not headshots, so the ID mismatch doesn't matter here.
+    // 2. Season-wide headshot lookup (by GSIS ID) — correct cross-reference
+    //    for the nflverse-sourced headshot URLs in the DB.
+    const [statsRows, headshotRows] = await Promise.all([
+      allRelevantIds.length > 0
+        ? prisma.nflWeeklyStat.findMany({
+            where: {
+              season,
+              week:     { lte: week, gt: Math.max(0, week - 3) },
+              playerId: { in: allRelevantIds },
+            },
+            select: { playerId: true, fantasyPointsPpr: true, position: true },
+          })
+        : Promise.resolve([]),
+      availableGsisIds.length > 0
+        ? prisma.nflWeeklyStat.findMany({
+            where: {
+              season,
+              playerId: { in: availableGsisIds },
+              headshot:  { not: null },
+            },
+            select:   { playerId: true, headshot: true },
+            distinct: ['playerId'],
+          })
+        : Promise.resolve([]),
+    ]);
+
+    // Per-player avg; demo falls back to mockAvgPts when DB has no rows.
+    // Map headshots back from GSIS IDs → Sleeper IDs so the component can use them.
+    const playerPoints   = new Map<string, number[]>();
+    const playerHeadshot = new Map<string, string>(); // sleeperPlayerId → NFL CDN URL
+
+    for (const row of headshotRows) {
+      const sleeperId = gsisToSleeper.get(row.playerId);
+      if (sleeperId && row.headshot) playerHeadshot.set(sleeperId, row.headshot);
+    }
     for (const row of statsRows) {
-      if (row.fantasyPointsPpr === null) continue;
-      const arr = playerPoints.get(row.playerId) ?? [];
-      arr.push(row.fantasyPointsPpr);
-      playerPoints.set(row.playerId, arr);
+      if (row.fantasyPointsPpr !== null) {
+        const arr = playerPoints.get(row.playerId) ?? [];
+        arr.push(row.fantasyPointsPpr);
+        playerPoints.set(row.playerId, arr);
+      }
     }
 
     function avg(pid: string): number {
@@ -240,6 +290,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       suggestions.push({
         playerId: pid, name: info.name, position: pos, team: info.team,
+        headshot: playerHeadshot.get(pid) ?? null,
         recentAvg, reason, trendingCount: trendCount, _score: score,
       });
     }

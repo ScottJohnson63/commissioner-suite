@@ -3,6 +3,7 @@ export interface WaiverSuggestion {
   name:          string;
   position:      string;
   team:          string | null;
+  headshot:      string | null;  // NFL CDN URL from DB; null when player has no DB stats yet
   recentAvg:     number;
   reason:        string;
   trendingCount: number | null;
@@ -15,10 +16,12 @@ export interface WaiverSuggestionsResponse {
 }
 
 export interface TradePlayer {
-  playerId:  string;
-  name:      string;
-  position:  string;
-  seasonPts: number;
+  playerId:        string;
+  /** Sleeper numeric ID — use for CDN headshots. Equals playerId in live mode. */
+  sleeperPlayerId: string;
+  name:            string;
+  position:        string;
+  seasonPts:       number;
 }
 
 export interface TradeProposal {

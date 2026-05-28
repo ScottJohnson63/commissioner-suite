@@ -5,11 +5,14 @@ import type { StandingEntry, StandingsResponse } from '@/types/standings';
 
 export function DivisionsTab({
   activeLeagueId,
+  sleeperLeagueId,
   isCommissioner,
 }: {
   activeLeagueId: string | null;
+  sleeperLeagueId: string | null;
   isCommissioner: boolean;
 }) {
+  const effectiveId = activeLeagueId ?? sleeperLeagueId;
   const [standings, setStandings]         = useState<StandingEntry[]>([]);
   const [loading, setLoading]             = useState(false);
   const [error, setError]                 = useState<string | null>(null);
@@ -31,17 +34,18 @@ export function DivisionsTab({
 
   useEffect(() => {
     setStandings([]); setError(null); setGenerateError(null); setGenerateOk(false);
-    if (activeLeagueId) void load(activeLeagueId);
-  }, [activeLeagueId, load]);
+    if (effectiveId) void load(effectiveId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLeagueId, sleeperLeagueId, load]);
 
   const generateDivisions = useCallback(async () => {
-    if (!activeLeagueId || standings.length === 0) return;
+    if (!effectiveId || standings.length === 0) return;
     setGenerating(true); setGenerateError(null); setGenerateOk(false);
     try {
       const res = await fetch('/api/assoc/divisions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leagueId: activeLeagueId, standings }),
+        body: JSON.stringify({ leagueId: effectiveId, standings }),
       });
       const data = await res.json() as { updated?: number; error?: string };
       if (!res.ok) throw new Error(data.error ?? 'Failed to generate divisions');
@@ -49,7 +53,8 @@ export function DivisionsTab({
     } catch (e) {
       setGenerateError(e instanceof Error ? e.message : 'Failed to generate divisions');
     } finally { setGenerating(false); }
-  }, [activeLeagueId, standings]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLeagueId, sleeperLeagueId, standings]);
 
   const div1 = standings.filter((s) => s.division === 1);
   const div2 = standings.filter((s) => s.division === 2);
@@ -84,7 +89,7 @@ export function DivisionsTab({
       )}
       {!loading && standings.length === 0 && !error && (
         <p className="text-xs text-center py-16" style={{ color: '#444' }}>
-          {activeLeagueId ? 'No standings data found for this league.' : 'Select a league to get started.'}
+          {effectiveId ? 'No standings data found for this league.' : 'Select a league to get started.'}
         </p>
       )}
       {!loading && standings.length > 0 && (

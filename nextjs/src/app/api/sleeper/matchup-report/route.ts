@@ -40,7 +40,7 @@ const IS_DEMO = process.env.DEMO_MODE === 'true';
 
 // ─── Mock data types (used only when IS_DEMO) ─────────────────────────────────
 
-interface MockPlayer { id: string; name: string; position: string; team: string }
+interface MockPlayer { id: string; sleeperId?: string; name: string; position: string; team: string }
 interface MockRoster { name: string; rosterId: number; players: MockPlayer[] }
 const mockData = MOCK_MATCHUP as unknown as { team1: MockRoster; team2: MockRoster };
 
@@ -81,6 +81,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     let effectiveSeason: number;
     let effectiveWeek:   number;
     let localPlayerMap:  Map<string, SleeperPlayerInfo>;
+    // GSIS ID → Sleeper numeric ID (populated in demo mode for CDN image resolution)
+    const gsisToSleeperIdMap = new Map<string, string>();
 
     if (IS_DEMO) {
       // ── DEMO: load mock rosters, pick random regular-season week ─────────
@@ -97,7 +99,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // Build a local player map from the mock roster so we don't hit Sleeper
       localPlayerMap = new Map<string, SleeperPlayerInfo>();
       for (const p of [...mockData.team1.players, ...mockData.team2.players]) {
-        localPlayerMap.set(p.id, { name: p.name, position: p.position, team: p.team });
+        localPlayerMap.set(p.id, { name: p.name, position: p.position, team: p.team, gsisId: p.id });
+        if (p.sleeperId) gsisToSleeperIdMap.set(p.id, p.sleeperId);
       }
     } else {
       // ── LIVE: resolve from Sleeper API ────────────────────────────────────
@@ -287,7 +290,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const ceiling   = parseFloat((rawCeiling * adj).toFixed(1));
       const projected = parseFloat((mean       * adj).toFixed(1));
 
-      return { playerId: pid, name, position: pos, team, floor, ceiling, projected, defAdjustment: adj, weatherNote };
+      // In demo mode pid is a GSIS ID; remap to Sleeper numeric ID for CDN images.
+      // In live mode pid is already the Sleeper ID, so the map is empty and we use pid.
+      const sleeperPlayerId = gsisToSleeperIdMap.get(pid) ?? pid;
+      return { playerId: pid, sleeperPlayerId, name, position: pos, team, floor, ceiling, projected, defAdjustment: adj, weatherNote };
     }
 
     const myProjections  = myPlayerIds.map((pid)  => projectPlayer(pid));
