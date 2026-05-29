@@ -8,7 +8,7 @@ async function main(): Promise<void> {
   const leagues = process.env.SLEEPER_LEAGUES?.split(',').map((id) => id.trim());
 
   if (leagues){
-    for (var leagueId of leagues){
+    for (const leagueId of leagues){
         if (!leagueId) {
             throw new Error('Set SLEEPER_LEAGUE_ID in your .env file');
         }

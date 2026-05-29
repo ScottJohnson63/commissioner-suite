@@ -79,25 +79,25 @@ export async function getPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
   return map;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parsePlayerJson(json: string): Map<string, SleeperPlayerInfo> {
-  const raw = JSON.parse(json) as Record<string, any>;
+  const raw = JSON.parse(json) as Record<string, unknown>;
   const map = new Map<string, SleeperPlayerInfo>();
 
   for (const [id, p] of Object.entries(raw)) {
     if (!p || typeof p !== 'object') continue;
+    const player = p as Record<string, unknown>;
 
     const name: string =
-      (p.full_name as string | undefined) ??
-      (p.first_name && p.last_name ? `${p.first_name as string} ${p.last_name as string}` : '');
+      (player.full_name as string | undefined) ??
+      (player.first_name && player.last_name ? `${player.first_name as string} ${player.last_name as string}` : '');
 
     if (!name.trim()) continue; // skip placeholder entries
 
     map.set(id, {
       name,
-      position: (p.position as string | undefined) ?? (p.fantasy_positions as string[] | undefined)?.[0] ?? '',
-      team:     (p.team    as string | null | undefined) ?? null,
-      gsisId:   (p.gsis_id as string | null | undefined) ?? null,
+      position: (player.position as string | undefined) ?? (player.fantasy_positions as string[] | undefined)?.[0] ?? '',
+      team:     (player.team    as string | null | undefined) ?? null,
+      gsisId:   (player.gsis_id as string | null | undefined) ?? null,
     });
   }
 
