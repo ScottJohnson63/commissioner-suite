@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server';
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
-    league: { findUnique: jest.fn() },
+    league: { findFirst: jest.fn() },
     team:   { updateMany: jest.fn() },
   },
 }));
@@ -21,7 +21,7 @@ import { POST } from '@/app/api/assoc/divisions/route';
 import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 
-const mockLeagueFindUnique = prisma.league.findUnique as jest.MockedFunction<typeof prisma.league.findUnique>;
+const mockLeagueFindFirst = prisma.league.findFirst as jest.MockedFunction<typeof prisma.league.findFirst>;
 const mockTeamUpdateMany   = prisma.team.updateMany   as jest.MockedFunction<typeof prisma.team.updateMany>;
 const mockAuditLog         = writeAuditLog            as jest.MockedFunction<typeof writeAuditLog>;
 
@@ -44,11 +44,11 @@ const fakeStandings = [
 
 describe('POST /api/assoc/divisions', () => {
   beforeEach(() => {
-    mockLeagueFindUnique.mockReset();
+    mockLeagueFindFirst.mockReset();
     mockTeamUpdateMany.mockReset();
     mockAuditLog.mockReset();
 
-    mockLeagueFindUnique.mockResolvedValue({ id: 'lg1', name: 'Test', season: 2025 } as never);
+    mockLeagueFindFirst.mockResolvedValue({ id: 'lg1', name: 'Test', season: 2025 } as never);
     mockTeamUpdateMany.mockResolvedValue({ count: 1 } as never);
     mockAuditLog.mockResolvedValue(undefined);
   });
@@ -79,7 +79,7 @@ describe('POST /api/assoc/divisions', () => {
   // WHY: If the league record doesn't exist in the DB, return 404 rather than
   //      updating teams that belong to a phantom league.
   it('returns 404 when the league is not found', async () => {
-    mockLeagueFindUnique.mockResolvedValueOnce(null as never);
+    mockLeagueFindFirst.mockResolvedValueOnce(null as never);
 
     const res = await POST(makePost({ leagueId: 'nonexistent', standings: fakeStandings }));
     expect(res.status).toBe(404);

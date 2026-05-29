@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server';
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
-    league:   { findUnique: jest.fn() },
+    league:   { findFirst: jest.fn() },
     schedule: { findFirst: jest.fn(), create: jest.fn(), delete: jest.fn() },
   },
 }));
@@ -21,13 +21,19 @@ jest.mock('@/lib/scheduler/engine', () => ({
 
 jest.mock('@/lib/audit', () => ({ writeAuditLog: jest.fn() }));
 
+jest.mock('@/lib/sleeper/sync', () => ({
+  fetchLeagueData: jest.fn(),
+}));
+
 import { GET, POST } from '@/app/api/leagues/[id]/schedule/route';
+import { fetchLeagueData } from '@/lib/sleeper/sync';
 import { prisma } from '@/lib/prisma';
 import { generateSchedule } from '@/lib/scheduler/engine';
 import { writeAuditLog } from '@/lib/audit';
 import { ScheduleError } from '@/lib/scheduler/types';
 
-const mockLeagueFindUnique = prisma.league.findUnique as jest.MockedFunction<typeof prisma.league.findUnique>;
+const mockLeagueFindFirst   = prisma.league.findFirst as jest.MockedFunction<typeof prisma.league.findFirst>;
+const mockFetchLeagueData   = fetchLeagueData         as jest.MockedFunction<typeof fetchLeagueData>;
 const mockScheduleFindFirst = prisma.schedule.findFirst as jest.MockedFunction<typeof prisma.schedule.findFirst>;
 const mockScheduleCreate    = prisma.schedule.create    as jest.MockedFunction<typeof prisma.schedule.create>;
 const mockGenerateSchedule  = generateSchedule          as jest.MockedFunction<typeof generateSchedule>;
@@ -93,7 +99,9 @@ const fakeSchedule = {
 
 describe('GET /api/leagues/[id]/schedule', () => {
   beforeEach(() => {
+    mockLeagueFindFirst.mockReset();
     mockScheduleFindFirst.mockReset();
+    mockLeagueFindFirst.mockResolvedValue(fakeLeague as never);
   });
 
   // WHY: If a schedule exists, return it with 200 so the UI can display the grid.
@@ -121,12 +129,13 @@ describe('GET /api/leagues/[id]/schedule', () => {
 
 describe('POST /api/leagues/[id]/schedule', () => {
   beforeEach(() => {
-    mockLeagueFindUnique.mockReset();
+    mockLeagueFindFirst.mockReset();
+    mockFetchLeagueData.mockReset();
     mockScheduleCreate.mockReset();
     mockGenerateSchedule.mockReset();
     mockAuditLog.mockReset();
 
-    mockLeagueFindUnique.mockResolvedValue(fakeLeague as never);
+    mockLeagueFindFirst.mockResolvedValue(fakeLeague as never);
     mockGenerateSchedule.mockReturnValue(fakeSchedule as never);
     mockScheduleCreate.mockResolvedValue(fakeSavedSchedule as never);
     mockAuditLog.mockResolvedValue(undefined);
@@ -143,13 +152,17 @@ describe('POST /api/leagues/[id]/schedule', () => {
     expect(mockGenerateSchedule).toHaveBeenCalledTimes(1);
   });
 
-  // WHY: If the league doesn't exist, return 404 rather than trying to
-  //      generate a schedule with no team data.
-  it('returns 404 when the league is not found', async () => {
-    mockLeagueFindUnique.mockResolvedValueOnce(null as never);
+  // WHY: When the league isn't in the DB the route tries to sync from Sleeper.
+  //      If Sleeper returns an error (e.g. bad league ID), return 500.
+  it('returns 500 when the league is not found and Sleeper sync fails', async () => {
+    mockLeagueFindFirst.mockResolvedValueOnce(null as never);
+    mockFetchLeagueData.mockRejectedValueOnce(new Error('Sleeper 404') as never);
 
     const res = await POST(makeReq('lg-bad', 'POST'), makeParams('lg-bad'));
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(500);
+
+    const body = await res.json() as { error: string };
+    expect(body.error).toMatch(/Failed to sync league from Sleeper/);
   });
 
   // WHY: If the team count is wrong (not 10), generateSchedule throws a

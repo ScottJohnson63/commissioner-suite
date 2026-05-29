@@ -16,8 +16,17 @@ jest.mock('@/lib/audit', () => ({
   writeAuditLog: jest.fn(),
 }));
 
+jest.mock('@/lib/prisma', () => ({
+  prisma: {
+    league: { findFirst: jest.fn() },
+  },
+}));
+
 import { POST } from '@/app/api/assoc/lottery-log/route';
+import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
+
+const mockLeagueFindFirst = prisma.league.findFirst as jest.MockedFunction<typeof prisma.league.findFirst>;
 
 const mockWriteAuditLog = writeAuditLog as jest.MockedFunction<typeof writeAuditLog>;
 
@@ -45,6 +54,8 @@ const validResult = {
 
 describe('POST /api/assoc/lottery-log', () => {
   beforeEach(() => {
+    mockLeagueFindFirst.mockReset();
+    mockLeagueFindFirst.mockResolvedValue(null as never);
     mockWriteAuditLog.mockReset();
     mockWriteAuditLog.mockResolvedValue(undefined);
   });

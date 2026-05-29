@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server';
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
-    league: { findUnique: jest.fn() },
+    league: { findFirst: jest.fn() },
   },
 }));
 
@@ -23,7 +23,7 @@ import { GET } from '@/app/api/assoc/standings/route';
 import { prisma } from '@/lib/prisma';
 import { sleeperGet } from '@/lib/sleeper/client';
 
-const mockLeagueFindUnique = prisma.league.findUnique as jest.MockedFunction<typeof prisma.league.findUnique>;
+const mockLeagueFindFirst = prisma.league.findFirst as jest.MockedFunction<typeof prisma.league.findFirst>;
 const mockSleeperGet       = sleeperGet               as jest.MockedFunction<typeof sleeperGet>;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ const fakeRosters = [
 
 describe('GET /api/assoc/standings', () => {
   beforeEach(() => {
-    mockLeagueFindUnique.mockReset();
+    mockLeagueFindFirst.mockReset();
     mockSleeperGet.mockReset();
   });
 
@@ -74,13 +74,13 @@ describe('GET /api/assoc/standings', () => {
   it('returns 400 when leagueId query param is missing', async () => {
     const res = await GET(makeGet());
     expect(res.status).toBe(400);
-    expect(mockLeagueFindUnique).not.toHaveBeenCalled();
+    expect(mockLeagueFindFirst).not.toHaveBeenCalled();
   });
 
   // WHY: If the league doesn't exist in the DB the endpoint can't proceed —
   //      return 404 to tell the client the leagueId is invalid.
   it('returns 404 when the league is not found in the DB', async () => {
-    mockLeagueFindUnique.mockResolvedValueOnce(null as never);
+    mockLeagueFindFirst.mockResolvedValueOnce(null as never);
 
     const res = await GET(makeGet('lg-nonexistent'));
     expect(res.status).toBe(404);
@@ -89,7 +89,7 @@ describe('GET /api/assoc/standings', () => {
   // WHY: A league without a previous_league_id has no last-season standings —
   //      return 404 with a clear message rather than returning empty data.
   it('returns 404 when the Sleeper league has no previous_league_id', async () => {
-    mockLeagueFindUnique.mockResolvedValueOnce(fakeLeague as never);
+    mockLeagueFindFirst.mockResolvedValueOnce(fakeLeague as never);
     mockSleeperGet.mockResolvedValueOnce({ previous_league_id: null } as never);
 
     const res = await GET(makeGet('lg1'));
@@ -98,7 +98,7 @@ describe('GET /api/assoc/standings', () => {
 
   // WHY: Happy path — all data available, returns standings sorted by rank.
   it('returns 200 with standings sorted by rank on the happy path', async () => {
-    mockLeagueFindUnique.mockResolvedValueOnce(fakeLeague as never);
+    mockLeagueFindFirst.mockResolvedValueOnce(fakeLeague as never);
     mockSleeperGet
       .mockResolvedValueOnce(sleeperLeagueInfo)         // league info
       .mockResolvedValueOnce(fakeUsers)                  // users
@@ -119,7 +119,7 @@ describe('GET /api/assoc/standings', () => {
   // WHY: The championship winner (rank 1) must have isChampion: true so the UI
   //      can display a trophy icon.
   it('marks the rank-1 team as champion', async () => {
-    mockLeagueFindUnique.mockResolvedValueOnce(fakeLeague as never);
+    mockLeagueFindFirst.mockResolvedValueOnce(fakeLeague as never);
     mockSleeperGet
       .mockResolvedValueOnce(sleeperLeagueInfo)
       .mockResolvedValueOnce(fakeUsers)

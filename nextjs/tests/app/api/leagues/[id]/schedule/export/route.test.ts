@@ -10,6 +10,7 @@ import { NextRequest } from 'next/server';
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
+    league:   { findFirst: jest.fn() },
     schedule: { findFirst: jest.fn() },
   },
 }));
@@ -20,8 +21,9 @@ import { GET } from '@/app/api/leagues/[id]/schedule/export/route';
 import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 
-const mockFindFirst = prisma.schedule.findFirst as jest.MockedFunction<typeof prisma.schedule.findFirst>;
-const mockAuditLog  = writeAuditLog             as jest.MockedFunction<typeof writeAuditLog>;
+const mockLeagueFindFirst  = prisma.league.findFirst   as jest.MockedFunction<typeof prisma.league.findFirst>;
+const mockScheduleFindFirst = prisma.schedule.findFirst as jest.MockedFunction<typeof prisma.schedule.findFirst>;
+const mockAuditLog          = writeAuditLog             as jest.MockedFunction<typeof writeAuditLog>;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -34,6 +36,8 @@ function makeReq(id: string): NextRequest {
 }
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
+
+const fakeLeague = { id: 'lg1', name: 'Test League', season: 2025, sleeperLeagueId: 'sleeper-999' };
 
 const fakeSchedule = {
   id: 'sched-1',
@@ -49,15 +53,17 @@ const fakeSchedule = {
 
 describe('GET /api/leagues/[id]/schedule/export', () => {
   beforeEach(() => {
-    mockFindFirst.mockReset();
+    mockLeagueFindFirst.mockReset();
+    mockScheduleFindFirst.mockReset();
     mockAuditLog.mockReset();
+    mockLeagueFindFirst.mockResolvedValue(fakeLeague as never);
     mockAuditLog.mockResolvedValue(undefined);
   });
 
   // WHY: A valid schedule must be exported as CSV with the correct Content-Type
   //      header so the browser triggers a file download.
   it('returns 200 with text/csv content-type when a schedule exists', async () => {
-    mockFindFirst.mockResolvedValueOnce(fakeSchedule as never);
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSchedule as never);
 
     const res = await GET(makeReq('lg1'), makeParams('lg1'));
     expect(res.status).toBe(200);
@@ -67,7 +73,7 @@ describe('GET /api/leagues/[id]/schedule/export', () => {
   // WHY: The CSV body must include a header row and data rows. Verifying the
   //      column headers ensures the downstream CSV parser gets the right shape.
   it('includes a CSV header row (week,home,away,type)', async () => {
-    mockFindFirst.mockResolvedValueOnce(fakeSchedule as never);
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSchedule as never);
 
     const res = await GET(makeReq('lg1'), makeParams('lg1'));
     const text = await res.text();
@@ -80,7 +86,7 @@ describe('GET /api/leagues/[id]/schedule/export', () => {
   // WHY: Each matchup in the schedule must appear as a data row in the CSV
   //      with the correct team names and matchup type.
   it('includes one data row per matchup with correct values', async () => {
-    mockFindFirst.mockResolvedValueOnce(fakeSchedule as never);
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSchedule as never);
 
     const res = await GET(makeReq('lg1'), makeParams('lg1'));
     const text = await res.text();
@@ -94,7 +100,7 @@ describe('GET /api/leagues/[id]/schedule/export', () => {
   // WHY: Content-Disposition must be set so the browser names the file
   //      correctly when it prompts the user to save it.
   it('sets Content-Disposition attachment header with the season', async () => {
-    mockFindFirst.mockResolvedValueOnce(fakeSchedule as never);
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSchedule as never);
 
     const res = await GET(makeReq('lg1'), makeParams('lg1'));
     const disposition = res.headers.get('content-disposition');
@@ -106,7 +112,7 @@ describe('GET /api/leagues/[id]/schedule/export', () => {
   // WHY: No schedule found must return 404 so the UI knows there is nothing
   //      to download and can prompt the user to generate one first.
   it('returns 404 when no schedule exists', async () => {
-    mockFindFirst.mockResolvedValueOnce(null as never);
+    mockScheduleFindFirst.mockResolvedValueOnce(null as never);
 
     const res = await GET(makeReq('lg1'), makeParams('lg1'));
     expect(res.status).toBe(404);
@@ -115,7 +121,7 @@ describe('GET /api/leagues/[id]/schedule/export', () => {
   // WHY: An EXPORT audit log entry must be written on every successful export
   //      so the Activity Log shows download history.
   it('writes an EXPORT audit log entry', async () => {
-    mockFindFirst.mockResolvedValueOnce(fakeSchedule as never);
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSchedule as never);
 
     await GET(makeReq('lg1'), makeParams('lg1'));
 
