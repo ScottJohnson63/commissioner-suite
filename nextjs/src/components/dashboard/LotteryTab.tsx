@@ -57,6 +57,7 @@ export function LotteryTab({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setStandings([]); setError(null); setResults(null);
     setRunning(false); setTotalDrawn(0); setLiveCounts([]);
     setDraftOrder(null); setDraftError(null);

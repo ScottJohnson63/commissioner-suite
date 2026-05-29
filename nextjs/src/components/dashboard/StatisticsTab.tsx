@@ -104,6 +104,7 @@ function StatLeadersTable() {
     }
   }, []);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchLeaders(statKey, position); }, [statKey, position, fetchLeaders]);
 
   const cat = STAT_CATEGORIES.find((c) => c.key === statKey) ?? STAT_CATEGORIES[0];
@@ -233,16 +234,14 @@ function StatLeadersTable() {
 export function StatisticsTab({
   trending,
   trendingLoading,
-  trendingError,
-  onRetryTrending,
+  trendingError: _trendingError,
+  onRetryTrending: _onRetryTrending,
 }: {
   trending: TrendingData | null;
   trendingLoading: boolean;
   trendingError: string | null;
   onRetryTrending: () => void;
 }) {
-  void trendingError;
-  void onRetryTrending;
 
   return (
     <div>

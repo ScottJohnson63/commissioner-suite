@@ -52,8 +52,10 @@ export function LeagueSidebar() {
   useEffect(() => {
     const saved = localStorage.getItem('sidebar_expanded');
     if (saved !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setExpanded(saved === 'true');
     } else {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setExpanded(window.innerWidth >= 768);
     }
   }, []);
@@ -61,6 +63,7 @@ export function LeagueSidebar() {
   // Allow tooltips to extend outside the aside once the collapse animation finishes
   useEffect(() => {
     if (expanded) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setOverflow('hidden');
     } else {
       const t = setTimeout(() => setOverflow('visible'), 210);
