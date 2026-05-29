@@ -142,7 +142,7 @@ function ModelBadge({ model }: { model: ModelUsed }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AIPage() {
-  const { data: session } = useSession();
+  useSession();
   const { sleeperUser, activeLeagueId, setActiveLeagueId } = useSleeperData();
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -244,18 +244,18 @@ export default function AIPage() {
       // ── Stream text ────────────────────────────────────────────────────────
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let fullText = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        fullText += decoder.decode(value, { stream: true });
+        const chunk = decoder.decode(value, { stream: true });
 
         setMessages((prev) => {
           const updated = [...prev];
+          const last = updated[updated.length - 1];
           updated[updated.length - 1] = {
-            role: 'assistant',
-            content: fullText,
+            ...last,
+            content: (last.content as string) + chunk,
             loading: false,
           };
           return updated;
