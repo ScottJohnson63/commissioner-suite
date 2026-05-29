@@ -92,8 +92,14 @@ Clean up the code to refactor components into separate folders. Maximize modular
 [x] Draft plan to implement a full test suite, including automated UI tests. Should include 100% code coverage is possible. See nextjs/TEST_PLAN.md
 [x] If unit tests are added leave detailed comments for each part of the unit test so that I can personally review.
 [x] Add detailed documentation for all methods
-[ ] Remove sync league features & fix Schedules tab (might be same issue)
+[x] Remove sync league features & fix Schedules tab (might be same issue)
 [x] Implement BEST_PRACTICES_REPORT.md
+
+-- Part 10: More Quality Updates -- 
+Overall: 
+Improve  application infrastructure
+
+[ ] Setup GitHub Pipeline
+[ ] Load test it
 [ ] Set up Claude testing
 [ ] Complete phased unit testing
-
