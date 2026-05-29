@@ -33,7 +33,7 @@ describe('GET /api/trending', () => {
     // Mock playerCache before importing the route so the route module picks up
     // the mock when it is freshly required by resetModules.
     jest.mock('@/lib/sleeper/playerCache', () => ({
-      getPlayerMap: jest.fn().mockResolvedValue(new Map()),
+      getPlayerMap: jest.fn<() => Promise<Map<string, unknown>>>().mockResolvedValue(new Map()),
     }));
 
     // Re-import GET after the module reset so it runs with an empty cache.

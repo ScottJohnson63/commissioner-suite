@@ -21,8 +21,8 @@ jest.mock('@/lib/prisma', () => ({
 describe('getPlayerMap()', () => {
   let mockFetch:      jest.MockedFunction<typeof fetch>;
   let getPlayerMap:   () => Promise<Map<string, unknown>>;
-  let mockFindUnique: jest.MockedFunction<(...args: unknown[]) => unknown>;
-  let mockUpsert:     jest.MockedFunction<(...args: unknown[]) => unknown>;
+  let mockFindUnique: jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+  let mockUpsert:     jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
 
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -48,8 +48,8 @@ describe('getPlayerMap()', () => {
 
     // Re-import the now-fresh prisma mock reference.
     const { prisma } = await import('@/lib/prisma');
-    mockFindUnique = prisma.sleeperCache.findUnique as jest.MockedFunction<(...args: unknown[]) => unknown>;
-    mockUpsert     = prisma.sleeperCache.upsert     as jest.MockedFunction<(...args: unknown[]) => unknown>;
+    mockFindUnique = prisma.sleeperCache.findUnique as jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+    mockUpsert     = prisma.sleeperCache.upsert     as jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
     mockFindUnique.mockReset();
     mockUpsert.mockReset();
   });
@@ -211,7 +211,7 @@ describe('parsePlayerJson edge cases (via getPlayerMap)', () => {
     mockFetch = jest.spyOn(global, 'fetch') as jest.MockedFunction<typeof fetch>;
 
     const { prisma } = await import('@/lib/prisma');
-    (prisma.sleeperCache.findUnique as jest.MockedFunction<(...args: unknown[]) => unknown>).mockResolvedValue(null);
+    (prisma.sleeperCache.findUnique as jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>).mockResolvedValue(null);
     (prisma.sleeperCache.upsert     as jest.MockedFunction<(...args: unknown[]) => unknown>).mockResolvedValue({} as never);
 
     const mod = await import('@/lib/sleeper/playerCache');

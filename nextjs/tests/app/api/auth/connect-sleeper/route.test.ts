@@ -49,7 +49,7 @@ const mockAcctFind    = prisma.account.findUnique   as jest.MockedFunction<typeo
 const mockUserCreate  = prisma.user.create          as jest.MockedFunction<typeof prisma.user.create>;
 const mockUserFind    = prisma.user.findUnique      as jest.MockedFunction<typeof prisma.user.findUnique>;
 const mockUserUpdate  = prisma.user.update          as jest.MockedFunction<typeof prisma.user.update>;
-const mockTransaction = prisma.$transaction         as jest.MockedFunction<typeof prisma.$transaction>;
+const mockTransaction = prisma.$transaction         as jest.Mock;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -182,10 +182,10 @@ describe('POST /api/auth/connect-sleeper', () => {
       // Provide a minimal tx object with the methods the callback needs.
       const newUser = { id: 'user-new-1' };
       const tx = {
-        user:    { create: jest.fn().mockResolvedValue(newUser) },
-        account: { create: jest.fn().mockResolvedValue({}) },
+        user:    { create: jest.fn<() => Promise<unknown>>().mockResolvedValue(newUser) },
+        account: { create: jest.fn<() => Promise<unknown>>().mockResolvedValue({}) },
       };
-      return (cb as (tx: typeof tx) => Promise<unknown>)(tx);
+      return (cb as (tx: unknown) => Promise<unknown>)(tx);
     });
 
     const res = await POST(makeReq({ sleeperUsername: 'alice' }));

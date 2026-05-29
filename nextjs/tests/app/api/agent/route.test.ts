@@ -51,7 +51,7 @@ jest.mock('@/lib/prisma', () => ({
 // Groq SDK mock — handles both Pass 1 (non-streaming JSON) and Pass 2 (stream).
 // __esModule: true is required so TypeScript's __importDefault doesn't double-wrap
 // the mock, which would make `groq_sdk_1.default` a plain object instead of a constructor.
-const mockGroqCreate = jest.fn();
+const mockGroqCreate = jest.fn<(params: unknown) => Promise<unknown>>();
 jest.mock('groq-sdk', () => ({
   __esModule: true,
   default: jest.fn().mockImplementation(() => ({
@@ -61,7 +61,7 @@ jest.mock('groq-sdk', () => ({
 
 // Gemini SDK mock — used for the fallback streaming path.
 // __esModule: true prevents the same double-wrapping issue as groq-sdk.
-const mockSendMessageStream = jest.fn();
+const mockSendMessageStream = jest.fn<() => Promise<unknown>>();
 const mockStartChat = jest.fn().mockReturnValue({ sendMessageStream: mockSendMessageStream });
 const mockGetGenerativeModel = jest.fn().mockReturnValue({ startChat: mockStartChat });
 jest.mock('@google/generative-ai', () => ({
