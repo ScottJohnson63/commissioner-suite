@@ -47,6 +47,7 @@ export function SchedulesTab({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (effectiveId) void fetchSchedule(effectiveId);
     else setSchedule(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps

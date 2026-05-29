@@ -74,6 +74,7 @@ export function NewsTab() {
     }
   }, []);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchNews(activeSource); }, [activeSource, fetchNews]);
 
   return (

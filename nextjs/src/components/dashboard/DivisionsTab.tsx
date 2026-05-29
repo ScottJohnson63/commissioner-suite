@@ -33,6 +33,7 @@ export function DivisionsTab({
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setStandings([]); setError(null); setGenerateError(null); setGenerateOk(false);
     if (effectiveId) void load(effectiveId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
