@@ -149,7 +149,7 @@ export function ScheduleGrid({ weeks, onSwap }: Props) {
   function toggleWeek(week: number): void {
     setExpandedWeeks((prev) => {
       const next = new Set(prev);
-      next.has(week) ? next.delete(week) : next.add(week);
+      if (next.has(week)) { next.delete(week); } else { next.add(week); }
       return next;
     });
   }

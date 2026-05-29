@@ -711,12 +711,6 @@ function buildDataContext(plan: QueryPlan, hasLeague: boolean): string {
 
 // ── Model helpers ─────────────────────────────────────────────────────────────
 
-function isGeminiRateLimitError(err: unknown): boolean {
-    if (!(err instanceof Error)) return false;
-    const msg = err.message.toLowerCase();
-    return msg.includes('429') || msg.includes('quota') || msg.includes('resource_exhausted') || msg.includes('rate limit');
-}
-
 function isGroqRateLimitError(err: unknown): boolean {
     if (!(err instanceof Error)) return false;
     const msg = err.message.toLowerCase();

@@ -46,7 +46,6 @@ export function useSleeperData() {
         if (league) setActiveLeagueIdInner(league.leagueId);
       })
       .catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user?.sleeperUserId, session?.user?.username]);
 
   function setActiveLeagueId(id: string) {
