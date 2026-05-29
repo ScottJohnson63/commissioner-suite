@@ -5,46 +5,46 @@ import type { MatchupPair, MatchupTeam } from '@/app/api/sleeper/matchups/route'
 
 // ─── Matchup card ─────────────────────────────────────────────────────────────
 
+function Team({ team, winner, played }: { team: MatchupTeam; winner: boolean; played: boolean }) {
+  return (
+    <div className={`flex items-center justify-between gap-3 px-4 py-3 ${winner ? 'rounded-t-lg' : 'rounded-b-lg'}`}
+      style={{ background: winner && played ? 'rgba(128,255,73,0.06)' : 'transparent' }}>
+      <div className="min-w-0">
+        <p className="text-sm font-medium truncate" style={{ color: winner && played ? '#80ff49' : '#e8e6df' }}>
+          {team.teamName}
+        </p>
+        {team.teamName !== team.displayName && (
+          <p className="text-[11px] truncate" style={{ color: '#555' }}>{team.displayName}</p>
+        )}
+        <p className="text-[11px] mt-0.5" style={{ color: '#444' }}>
+          {team.wins}–{team.losses}
+        </p>
+      </div>
+      <div className="text-right shrink-0">
+        {played ? (
+          <span className="text-lg font-semibold tabular-nums"
+            style={{ color: winner ? '#80ff49' : '#888' }}>
+            {team.points.toFixed(2)}
+          </span>
+        ) : (
+          <span className="text-xs" style={{ color: '#444' }}>TBD</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MatchupCard({ pair }: { pair: MatchupPair }) {
   const played = pair.home.points > 0 || pair.away.points > 0;
   const homeWins = played && pair.home.points > pair.away.points;
   const awayWins = played && pair.away.points > pair.home.points;
 
-  function Team({ team, winner }: { team: MatchupTeam; winner: boolean }) {
-    return (
-      <div className={`flex items-center justify-between gap-3 px-4 py-3 ${winner ? 'rounded-t-lg' : 'rounded-b-lg'}`}
-        style={{ background: winner && played ? 'rgba(128,255,73,0.06)' : 'transparent' }}>
-        <div className="min-w-0">
-          <p className="text-sm font-medium truncate" style={{ color: winner && played ? '#80ff49' : '#e8e6df' }}>
-            {team.teamName}
-          </p>
-          {team.teamName !== team.displayName && (
-            <p className="text-[11px] truncate" style={{ color: '#555' }}>{team.displayName}</p>
-          )}
-          <p className="text-[11px] mt-0.5" style={{ color: '#444' }}>
-            {team.wins}–{team.losses}
-          </p>
-        </div>
-        <div className="text-right shrink-0">
-          {played ? (
-            <span className="text-lg font-semibold tabular-nums"
-              style={{ color: winner ? '#80ff49' : '#888' }}>
-              {team.points.toFixed(2)}
-            </span>
-          ) : (
-            <span className="text-xs" style={{ color: '#444' }}>TBD</span>
-          )}
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="rounded-xl overflow-hidden" style={{ border: '1px solid #1e1e20', background: '#141415' }}>
       <div className="border-b" style={{ borderColor: '#1e1e20' }}>
-        <Team team={pair.home} winner={homeWins} />
+        <Team team={pair.home} winner={homeWins} played={played} />
       </div>
-      <Team team={pair.away} winner={awayWins} />
+      <Team team={pair.away} winner={awayWins} played={played} />
     </div>
   );
 }
@@ -64,6 +64,7 @@ export default function SchedulePage() {
   useEffect(() => {
     const id = localStorage.getItem('sleeper_active_league');
     const name = localStorage.getItem('sleeper_active_league_name') ?? '';
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!id) { setNoLeague(true); return; }
     setLeagueId(id);
     setLeagueName(name);
@@ -89,6 +90,7 @@ export default function SchedulePage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (leagueId) void fetchMatchups(leagueId, week);
   }, [leagueId, week, fetchMatchups]);
 
