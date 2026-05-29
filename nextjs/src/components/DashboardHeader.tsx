@@ -10,7 +10,7 @@ interface Props {
   leagueId: string;
 }
 
-export function DashboardHeader({ leagueName, season, scheduleId: _scheduleId, leagueId }: Props) {
+export function DashboardHeader({ leagueName, season, leagueId }: Props) {
   const router = useRouter();
 
   async function handleRegenerate(): Promise<void> {

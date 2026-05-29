@@ -234,8 +234,6 @@ function StatLeadersTable() {
 export function StatisticsTab({
   trending,
   trendingLoading,
-  trendingError: _trendingError,
-  onRetryTrending: _onRetryTrending,
 }: {
   trending: TrendingData | null;
   trendingLoading: boolean;

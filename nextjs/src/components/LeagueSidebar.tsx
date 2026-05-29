@@ -55,7 +55,6 @@ export function LeagueSidebar() {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setExpanded(saved === 'true');
     } else {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setExpanded(window.innerWidth >= 768);
     }
   }, []);
