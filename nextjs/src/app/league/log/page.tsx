@@ -141,6 +141,7 @@ export default function LeagueLogPage() {
     }
   }, []);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchLogs(); }, [fetchLogs]);
 
   const filtered = filter === 'ALL' ? logs : logs.filter((l) => l.action === filter);

@@ -48,6 +48,7 @@ export default function LeagueDashboardPage() {
     }
   }, []);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchTrending(); }, [fetchTrending]);
 
   useEffect(() => {

@@ -49,6 +49,7 @@ export default function GlobalErrorLogPage() {
     }
   }, []);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (isAdmin) void fetchLogs(); }, [isAdmin, fetchLogs]);
 
   if (status === 'loading') return null;
