@@ -10,7 +10,8 @@ import { NextRequest } from 'next/server';
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
-    league: { findFirst: jest.fn() },
+    league:          { findFirst: jest.fn() },
+    sleeperRanking:  { findMany: jest.fn() },
   },
 }));
 
@@ -23,8 +24,9 @@ import { GET } from '@/app/api/assoc/standings/route';
 import { prisma } from '@/lib/prisma';
 import { sleeperGet } from '@/lib/sleeper/client';
 
-const mockLeagueFindFirst = prisma.league.findFirst as jest.MockedFunction<typeof prisma.league.findFirst>;
-const mockSleeperGet       = sleeperGet               as jest.MockedFunction<typeof sleeperGet>;
+const mockLeagueFindFirst      = prisma.league.findFirst         as jest.MockedFunction<typeof prisma.league.findFirst>;
+const mockSleeperRankingFindMany = prisma.sleeperRanking.findMany as jest.MockedFunction<typeof prisma.sleeperRanking.findMany>;
+const mockSleeperGet             = sleeperGet                     as jest.MockedFunction<typeof sleeperGet>;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -67,6 +69,8 @@ const fakeRosters = [
 describe('GET /api/assoc/standings', () => {
   beforeEach(() => {
     mockLeagueFindFirst.mockReset();
+    mockSleeperRankingFindMany.mockReset();
+    mockSleeperRankingFindMany.mockResolvedValue([] as never);
     mockSleeperGet.mockReset();
   });
 
