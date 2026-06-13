@@ -69,15 +69,17 @@ model VerificationToken {
 }
 
 model League {
-  id              String     @id @default(cuid())
-  sleeperLeagueId String     @unique
-  name            String     @default("")   // add this
-  season          Int
-  divisionCount   Int        @default(2)
-  createdAt       DateTime   @default(now())
-  teams           Team[]
-  schedules       Schedule[]
-  auditLogs       AuditLog[]
+  id                String           @id @default(cuid())
+  sleeperLeagueId   String           @unique
+  name              String           @default("")   // add this
+  season            Int
+  divisionCount     Int              @default(2)
+  createdAt         DateTime         @default(now())
+  rankedSeasonIds   String           @default("[]") // JSON array of Sleeper league IDs already synced for rankings
+  teams             Team[]
+  schedules         Schedule[]
+  auditLogs         AuditLog[]
+  rankings          SleeperRanking[]
 }
 
 model Team {
@@ -145,6 +147,24 @@ model ErrorLog {
   createdAt DateTime @default(now())
 
   @@index([createdAt])
+}
+
+model SleeperRanking {
+  id            String   @id @default(cuid())
+  leagueId      String
+  sleeperUserId String
+  displayName   String
+  teamName      String?
+  totalWins     Int      @default(0)
+  totalLosses   Int      @default(0)
+  totalTies     Int      @default(0)
+  winPct        Float    @default(0)
+  seasonsPlayed Int      @default(0)
+  syncedAt      DateTime @default(now())
+  league        League   @relation(fields: [leagueId], references: [id])
+
+  @@unique([leagueId, sleeperUserId])
+  @@index([leagueId, winPct])
 }
 
 model SleeperCache {

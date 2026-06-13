@@ -3,6 +3,8 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { StandingEntry, StandingsResponse } from '@/types/standings';
 
+type DivisionsResponse = StandingsResponse & { error?: string };
+
 export function DivisionsTab({
   activeLeagueId,
   sleeperLeagueId,
@@ -14,6 +16,7 @@ export function DivisionsTab({
 }) {
   const effectiveId = activeLeagueId ?? sleeperLeagueId;
   const [standings, setStandings]         = useState<StandingEntry[]>([]);
+  const [rankedByAllTime, setRankedByAllTime] = useState(false);
   const [loading, setLoading]             = useState(false);
   const [error, setError]                 = useState<string | null>(null);
   const [generating, setGenerating]       = useState(false);
@@ -24,9 +27,10 @@ export function DivisionsTab({
     setLoading(true); setError(null);
     try {
       const res  = await fetch(`/api/assoc/standings?leagueId=${encodeURIComponent(leagueId)}`);
-      const data = await res.json() as StandingsResponse & { error?: string };
+      const data = await res.json() as DivisionsResponse;
       if (!res.ok) throw new Error(data.error ?? 'Failed to load standings');
       setStandings(data.standings);
+      setRankedByAllTime(data.rankedByAllTime ?? false);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load standings');
     } finally { setLoading(false); }
@@ -34,7 +38,7 @@ export function DivisionsTab({
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setStandings([]); setError(null); setGenerateError(null); setGenerateOk(false);
+    setStandings([]); setRankedByAllTime(false); setError(null); setGenerateError(null); setGenerateOk(false);
     if (effectiveId) void load(effectiveId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLeagueId, sleeperLeagueId, load]);
@@ -106,7 +110,9 @@ export function DivisionsTab({
                   <p className="text-[10px] uppercase tracking-widest font-medium"
                     style={{ color: accent }}>Division {divId}</p>
                   <span className="text-[10px]" style={{ color: '#444' }}>
-                    {teams.length} teams · {divId === 1 ? 'odd ranks' : 'even ranks'}
+                    {teams.length} teams · {rankedByAllTime
+                      ? (divId === 1 ? 'higher win %' : 'lower win %')
+                      : (divId === 1 ? 'odd ranks' : 'even ranks')}
                   </span>
                 </div>
                 <div>
@@ -128,6 +134,11 @@ export function DivisionsTab({
                           <span className="ml-1" style={{ color: '#555' }}>({team.ownerName})</span>
                         )}
                       </span>
+                      {team.winPct !== undefined && (
+                        <span className="text-[10px] tabular-nums shrink-0" style={{ color: '#555' }}>
+                          {(team.winPct * 100).toFixed(1)}%
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -138,7 +149,10 @@ export function DivisionsTab({
       )}
       {!loading && standings.length > 0 && (
         <p className="mt-4 text-[10px]" style={{ color: '#444' }}>
-          ♛ Champion · Rankings from final bracket results
+          ♛ Champion ·{' '}
+          {rankedByAllTime
+            ? 'Divisions seeded by all-time win % — sync rankings each September to refresh'
+            : 'Divisions seeded by final bracket results'}
         </p>
       )}
       {!loading && standings.length > 0 && isCommissioner && (

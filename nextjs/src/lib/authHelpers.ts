@@ -11,7 +11,7 @@ import { prisma } from '@/lib/prisma';
 import bcrypt from 'bcryptjs';
 import { SLEEPER_BASE } from '@/lib/sleeper/client';
 
-const CURRENT_SEASON = parseInt(process.env.NFL_SEASON ?? String(new Date().getFullYear()), 10);
+const CURRENT_SEASON = parseInt(process.env.NFL_SEASON || String(new Date().getFullYear()), 10);
 
 interface SleeperUserRaw {
   user_id:  string;

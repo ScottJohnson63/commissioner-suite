@@ -126,11 +126,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return err('No previous season found for this league', 404);
   }
 
-  const [users, rosters, winners, losers] = await Promise.all([
+  // Fetch Sleeper bracket/roster data and cached all-time rankings in parallel.
+  const [users, rosters, winners, losers, cachedRankings] = await Promise.all([
     sleeperGet<SleeperUser[]>(`/league/${previous_league_id}/users`),
     sleeperGet<SleeperRoster[]>(`/league/${previous_league_id}/rosters`),
     sleeperGet<BracketMatch[]>(`/league/${previous_league_id}/winners_bracket`),
     sleeperGet<BracketMatch[]>(`/league/${previous_league_id}/losers_bracket`),
+    prisma.sleeperRanking.findMany({ where: { leagueId: league.id } }),
   ]);
 
   const userMap = new Map(users.map((u) => [u.user_id, u]));
@@ -140,25 +142,61 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return [r.roster_id, {
         name: u?.metadata?.team_name ?? u?.display_name ?? `Team ${r.roster_id}`,
         ownerName: u?.display_name ?? null,
+        ownerId: r.owner_id ?? null,
       }];
     }),
   );
 
   const rankMap = rankFromBrackets(winners, losers);
 
+  // Build win-pct lookup keyed by Sleeper user ID if cached rankings exist.
+  const winPctByUserId = new Map(cachedRankings.map((r) => [r.sleeperUserId, r.winPct]));
+  const rankedByAllTime = cachedRankings.length > 0;
+
+  // When all-time rankings are available, assign divisions by win% (top half =
+  // div 1, bottom half = div 2). Fall back to odd/even bracket rank otherwise.
+  let allTimeEntries: Array<{ rosterId: number; winPct: number }> = [];
+  if (rankedByAllTime) {
+    allTimeEntries = Array.from(rankMap.keys())
+      .map((rosterId) => {
+        const info = rosterInfo.get(rosterId);
+        const wp = info?.ownerId ? (winPctByUserId.get(info.ownerId) ?? 0.5) : 0.5;
+        return { rosterId, winPct: wp };
+      })
+      .sort((a, b) => b.winPct - a.winPct);
+
+    const midpoint = Math.ceil(allTimeEntries.length / 2);
+    allTimeEntries = allTimeEntries.map((e, i) => ({
+      ...e,
+      division: (i < midpoint ? 1 : 2) as 1 | 2,
+    })) as typeof allTimeEntries;
+  }
+
+  const divisionByRosterId = new Map(
+    (allTimeEntries as Array<{ rosterId: number; winPct: number; division?: 1 | 2 }>)
+      .map((e) => [e.rosterId, e.division as 1 | 2]),
+  );
+
   const standings: StandingEntry[] = Array.from(rankMap.entries())
     .sort(([, a], [, b]) => a - b)
     .map(([rosterId, rank]) => {
       const info = rosterInfo.get(rosterId);
+      const winPct = rankedByAllTime && info?.ownerId
+        ? (winPctByUserId.get(info.ownerId) ?? undefined)
+        : undefined;
+      const division = rankedByAllTime
+        ? (divisionByRosterId.get(rosterId) ?? (rank % 2 === 1 ? 1 : 2) as 1 | 2)
+        : (rank % 2 === 1 ? 1 : 2) as 1 | 2;
       return {
         rank,
         rosterId,
         name: info?.name ?? `Team ${rosterId}`,
         ownerName: info?.ownerName ?? null,
         isChampion: rank === 1,
-        division: (rank % 2 === 1 ? 1 : 2) as 1 | 2,
+        division,
+        winPct,
       };
     });
 
-  return ok({ standings });
+  return ok({ standings, rankedByAllTime });
 }

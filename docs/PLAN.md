@@ -99,7 +99,15 @@ Clean up the code to refactor components into separate folders. Maximize modular
 Overall: 
 Improve  application infrastructure
 
-[ ] Setup GitHub Pipeline
+[x] Setup GitHub Pipeline
 [ ] Load test it
 [ ] Set up Claude testing
 [ ] Complete phased unit testing
+
+-- Part 11: Feature updates --
+Overall: 
+Match league requirements
+
+[ ] Fix divisions page
+[ ] Fix lottery page
+[ ] Remove league/schedule page and associated unit tests

@@ -68,6 +68,9 @@ declare module 'next-auth' {
       /** Only populated when pendingOAuth === true */
       pendingProvider?: string;
       pendingProviderAccountId?: string;
+      pendingTokenType?: string | null;
+      pendingScope?: string | null;
+      pendingExpiresAt?: number | null;
     };
   }
 }
@@ -227,8 +230,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         session.user.id                      = '';
         session.user.role                    = 'MEMBER';
         session.user.username                = null;
-        session.user.pendingProvider         = token.pendingProvider         as string | undefined;
+        session.user.pendingProvider          = token.pendingProvider          as string | undefined;
         session.user.pendingProviderAccountId = token.pendingProviderAccountId as string | undefined;
+        session.user.pendingTokenType         = (token.pendingTokenType  as string | null | undefined) ?? null;
+        session.user.pendingScope             = (token.pendingScope      as string | null | undefined) ?? null;
+        session.user.pendingExpiresAt         = (token.pendingExpiresAt  as number | null | undefined) ?? null;
       } else {
         session.user.id          = (token.id          as string | null) ?? '';
         session.user.role        = (token.role        as string)        ?? 'MEMBER';

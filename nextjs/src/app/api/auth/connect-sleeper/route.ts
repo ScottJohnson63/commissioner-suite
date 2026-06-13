@@ -35,8 +35,10 @@ import { ok, err } from '@/lib/api';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME ?? 'admin';
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // Read the raw (decrypted) JWT — the only place pending OAuth profile data lives.
-  const token = await getToken({ req });
+  // secureCookie must match how NextAuth set the cookie:
+  // production (HTTPS) → "__Secure-authjs.session-token"
+  // development        → "authjs.session-token"
+  const token = await getToken({ req, secureCookie: process.env.NODE_ENV === 'production' });
 
   if (!token) {
     return err('Unauthorized', 401);
@@ -80,14 +82,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const result = await prisma.$transaction(async (tx) => {
       const newUser = await tx.user.create({
         data: {
-          name:         (token.pendingName  as string | null) ?? null,
-          email:        (token.pendingEmail as string | null) ?? null,
-          image:        (token.pendingImage as string | null) ?? null,
-          username:     sleeper.username,   // Sleeper username becomes the app username
+          name:          (token.name    as string | null) ?? null,
+          email:         (token.email   as string | null) ?? null,
+          image:         (token.picture as string | null) ?? null,
+          username:      sleeper.username,
           sleeperUserId: sleeper.userId,
-          role:         'MEMBER',
-          // username has @default(cuid()) as a Prisma-layer fallback; providing
-          // the real Sleeper username here overrides it.
+          role:          'MEMBER',
         },
       });
 

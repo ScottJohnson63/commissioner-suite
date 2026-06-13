@@ -1,0 +1,1 @@
+ALTER TABLE "League" ADD COLUMN "rankedSeasonIds" TEXT NOT NULL DEFAULT '[]';
