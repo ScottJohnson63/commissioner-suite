@@ -78,35 +78,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return ok({ ok: true, userId: existingAccount.userId });
     }
 
-    // Create User then Account in a transaction
-    const result = await prisma.$transaction(async (tx) => {
-      const newUser = await tx.user.create({
-        data: {
-          name:          (token.name    as string | null) ?? null,
-          email:         (token.email   as string | null) ?? null,
-          image:         (token.picture as string | null) ?? null,
-          username:      sleeper.username,
-          sleeperUserId: sleeper.userId,
-          role:          'MEMBER',
-        },
-      });
-
-      await tx.account.create({
-        data: {
-          userId:           newUser.id,
-          type:             'oauth',
-          provider,
-          providerAccountId,
-          token_type:       (token.pendingTokenType  as string | null) ?? null,
-          scope:            (token.pendingScope       as string | null) ?? null,
-          expires_at:       (token.pendingExpiresAt   as number | null) ?? null,
-        },
-      });
-
-      return newUser;
+    // Create User then Account sequentially.
+    // (Interactive transactions are not supported by the libsql driver adapter.)
+    const newUser = await prisma.user.create({
+      data: {
+        name:          (token.name    as string | null) ?? null,
+        email:         (token.email   as string | null) ?? null,
+        image:         (token.picture as string | null) ?? null,
+        username:      sleeper.username,
+        sleeperUserId: sleeper.userId,
+        role:          'MEMBER',
+      },
     });
 
-    return ok({ ok: true, userId: result.id });
+    await prisma.account.create({
+      data: {
+        userId:           newUser.id,
+        type:             'oauth',
+        provider,
+        providerAccountId,
+        token_type:       (token.pendingTokenType  as string | null) ?? null,
+        scope:            (token.pendingScope       as string | null) ?? null,
+        expires_at:       (token.pendingExpiresAt   as number | null) ?? null,
+      },
+    });
+
+    return ok({ ok: true, userId: newUser.id });
   }
 
   // ── Path B: Existing credentials/admin user reconnecting their Sleeper ───────
