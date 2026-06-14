@@ -38,7 +38,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // secureCookie must match how NextAuth set the cookie:
   // production (HTTPS) → "__Secure-authjs.session-token"
   // development        → "authjs.session-token"
-  const token = await getToken({ req, secureCookie: process.env.NODE_ENV === 'production' });
+  const token = await getToken({
+    req,
+    secret:       process.env.AUTH_SECRET,
+    secureCookie: process.env.NODE_ENV === 'production',
+  });
 
   if (!token) {
     return err('Unauthorized', 401);
