@@ -32,9 +32,8 @@ jest.mock('@/auth', () => ({
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
-    account:  { findUnique: jest.fn() },
+    account:  { findUnique: jest.fn(), create: jest.fn() },
     user:     { create: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
-    $transaction: jest.fn(),
   },
 }));
 
@@ -46,10 +45,10 @@ import { prisma } from '@/lib/prisma';
 const mockGetToken    = getToken                    as jest.MockedFunction<typeof getToken>;
 const mockValidate    = validateSleeperMembership   as jest.MockedFunction<typeof validateSleeperMembership>;
 const mockAcctFind    = prisma.account.findUnique   as jest.MockedFunction<typeof prisma.account.findUnique>;
+const mockAcctCreate  = prisma.account.create       as jest.MockedFunction<typeof prisma.account.create>;
 const mockUserCreate  = prisma.user.create          as jest.MockedFunction<typeof prisma.user.create>;
 const mockUserFind    = prisma.user.findUnique      as jest.MockedFunction<typeof prisma.user.findUnique>;
 const mockUserUpdate  = prisma.user.update          as jest.MockedFunction<typeof prisma.user.update>;
-const mockTransaction = prisma.$transaction         as jest.Mock;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -93,10 +92,10 @@ describe('POST /api/auth/connect-sleeper', () => {
     mockGetToken.mockReset();
     mockValidate.mockReset();
     mockAcctFind.mockReset();
+    mockAcctCreate.mockReset();
     mockUserCreate.mockReset();
     mockUserFind.mockReset();
     mockUserUpdate.mockReset();
-    mockTransaction.mockReset();
   });
 
   // ── Common guards ──────────────────────────────────────────────────────────
@@ -167,35 +166,28 @@ describe('POST /api/auth/connect-sleeper', () => {
 
     expect(res.status).toBe(200);
     expect(json.userId).toBe('user-db-existing');
-    // Transaction must NOT have been called — we short-circuit on the race.
-    expect(mockTransaction).not.toHaveBeenCalled();
+    // User/Account create must NOT have been called — we short-circuit on the race.
+    expect(mockUserCreate).not.toHaveBeenCalled();
+    expect(mockAcctCreate).not.toHaveBeenCalled();
   });
 
-  // WHY: The happy Path A creates a User+Account in a transaction and returns
+  // WHY: The happy Path A creates a User then Account sequentially and returns
   //      { ok: true, userId } so the client can trigger session.update().
-  it('[Path A] creates user+account in a transaction and returns userId', async () => {
+  it('[Path A] creates user+account and returns userId', async () => {
     mockGetToken.mockResolvedValueOnce(pendingToken as never);
     mockValidate.mockResolvedValueOnce(sleeperOk);
     mockAcctFind.mockResolvedValueOnce(null); // no existing account
-    // Simulate the transaction executing its callback and returning the new user.
-    mockTransaction.mockImplementationOnce(async (cb) => {
-      // Provide a minimal tx object with the methods the callback needs.
-      const newUser = { id: 'user-new-1' };
-      const tx = {
-        user:    { create: jest.fn<() => Promise<unknown>>().mockResolvedValue(newUser) },
-        account: { create: jest.fn<() => Promise<unknown>>().mockResolvedValue({}) },
-      };
-      return (cb as (tx: unknown) => Promise<unknown>)(tx);
-    });
+    mockUserCreate.mockResolvedValueOnce({ id: 'user-new-1' } as never);
+    mockAcctCreate.mockResolvedValueOnce({} as never);
 
     const res = await POST(makeReq({ sleeperUsername: 'alice' }));
-    // ok() returns data directly (no { data: ... } wrapper)
     const json = await res.json() as { ok: boolean; userId: string };
 
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(json.userId).toBe('user-new-1');
-    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockUserCreate).toHaveBeenCalledTimes(1);
+    expect(mockAcctCreate).toHaveBeenCalledTimes(1);
   });
 
   // ── Path B: Existing user reconnecting ────────────────────────────────────
