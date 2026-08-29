@@ -58,7 +58,8 @@ export function WaiverSuggestionsPanel({
     setLoading(true); setError(null);
     try {
       const res = await fetch(
-        `/api/sleeper/waiver-suggestions?leagueId=${leagueId}&userId=${userId}&season=2025`,
+        // No season param: the server uses NFL_SEASON, which is the live Sleeper season.
+        `/api/sleeper/waiver-suggestions?leagueId=${leagueId}&userId=${userId}`,
       );
       if (!res.ok) throw new Error('Failed to load suggestions');
       setData(await res.json() as WaiverSuggestionsResponse);

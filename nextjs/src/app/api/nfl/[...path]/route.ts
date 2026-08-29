@@ -1,54 +1,27 @@
 // src/app/api/nfl/[...path]/route.ts
 //
-// Internal NFL statistics API — proxies queries against the local NflWeeklyStat
-// database table populated by nfl_data_py (see the Python FastAPI service).
+// Internal NFL statistics API — reads the local NflWeeklyStat table, which the
+// nflverse sync jobs in python/scripts populate on a fixed schedule.
 //
 // Supported endpoints (path segment after /api/nfl/):
 //
-//   weekly  — GET /api/nfl/weekly?season=&week=&position=&limit=
-//               Returns raw per-player weekly stat rows, ordered by week desc
-//               then fantasy points desc. Useful for game-log displays.
-//
-//   players — GET /api/nfl/players?season=&position=
-//               Returns the distinct set of players who have stats in a given
-//               season, ordered alphabetically. Used to populate player pickers.
-//
 //   leaders — GET /api/nfl/leaders?season=&stat=&position=&limit=
 //               Aggregates season totals for a given stat column and returns
-//               the top N players by that stat. Designed for the Statistics tab
+//               the top N players by that stat. Drives the Statistics tab
 //               leaderboards. Only columns in ALLOWED_STAT_COLS may be queried
 //               (SQL injection prevention — the column name is interpolated
 //               directly into a raw query because Prisma does not support
 //               dynamic aggregate columns).
 //
-// All endpoints read from the local Turso DB; no external API calls are made.
+// Reads the Turso DB only; no external API calls happen on the request path.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { ok, err } from '@/lib/api';
+// The allowlist lives with the stat catalog so the API and the Statistics
+// dropdown can never disagree about which columns exist.
+import { ALLOWED_STAT_COLS } from '@/lib/nflStats';
 
-// Allowlist of stat columns for the /leaders endpoint.
-// The column name is interpolated directly into raw SQL ($queryRawUnsafe),
-// so it must be validated against this set before use — never trust user input.
-const ALLOWED_STAT_COLS = new Set([
-  // Fantasy
-  'fantasyPointsPpr', 'fantasyPoints',
-  // Passing
-  'passingYards', 'passingTds', 'passingInterceptions', 'completions', 'attempts',
-  'passingAirYards', 'passingYardsAfterCatch', 'passingFirstDowns', 'sacksSuffered',
-  'passingEpa', 'passingCpoe', 'pacr',
-  // Rushing
-  'rushingYards', 'rushingTds', 'carries', 'rushingFirstDowns', 'rushingEpa',
-  // Receiving
-  'receivingYards', 'receivingTds', 'receptions', 'targets',
-  'receivingAirYards', 'receivingYardsAfterCatch', 'receivingFirstDowns', 'receivingEpa',
-  'targetShare', 'airYardsShare', 'wopr', 'racr',
-  // Defense
-  'defTacklesSolo', 'defTacklesForLoss', 'defSacks', 'defQbHits',
-  'defInterceptions', 'defPassDefended', 'defFumblesForced', 'defTds',
-  // Kicking
-  'fgMade', 'fgAtt', 'patMade',
-]);
 
 interface StatLeaderRow {
   playerId: string;
@@ -70,58 +43,34 @@ export async function GET(
 
   try {
     switch (endpoint) {
-      case 'weekly': {
-        const season = Number(searchParams.get('season') ?? '2025');
-        const week = searchParams.get('week')
-          ? Number(searchParams.get('week'))
-          : undefined;
-        const position = searchParams.get('position') ?? undefined;
-        const limit = searchParams.get('limit')
-          ? Math.min(Number(searchParams.get('limit')), 200)
-          : undefined;
-
-        const stats = await prisma.nflWeeklyStat.findMany({
-          where: {
-            season,
-            ...(week !== undefined && { week }),
-            ...(position !== undefined && { position }),
-          },
-          orderBy: [{ week: 'desc' }, { fantasyPointsPpr: 'desc' }],
-          ...(limit !== undefined && { take: limit }),
-        });
-
-        return ok(stats);
-      }
-
-      case 'players': {
-        const season = Number(searchParams.get('season') ?? '2025');
-        const position = searchParams.get('position') ?? undefined;
-
-        const players = await prisma.nflWeeklyStat.findMany({
-          where: {
-            season,
-            ...(position !== undefined && { position }),
-          },
-          distinct: ['playerId'],
-          select: {
-            playerId: true,
-            playerName: true,
-            playerDisplayName: true,
-            position: true,
-            positionGroup: true,
-            team: true,
-            headshot: true,
-          },
-          orderBy: { playerDisplayName: 'asc' },
-        });
-
-        return ok(players);
+      // ── Seasons that actually have rows ────────────────────────────────────
+      // GET /api/nfl/seasons  →  [2025, 2024, 2023]
+      //
+      // Drives the Statistics tab's season picker. Reading this from the table
+      // rather than from NFL_SEASON matters: NFL_SEASON is the *current* season
+      // for Sleeper's sake, and in the months before kickoff no stats exist for
+      // it yet — defaulting to it would render an empty leaderboard.
+      case 'seasons': {
+        const rows = await prisma.$queryRaw<{ season: number }[]>`
+          SELECT DISTINCT season FROM NflWeeklyStat ORDER BY season DESC
+        `;
+        return ok(rows.map((r) => Number(r.season)));
       }
 
       // ── Season stat leaders (aggregated totals) ─────────────────────────────
-      // GET /api/nfl/leaders?season=2025&stat=passingYards&position=QB&limit=25
+      // GET /api/nfl/leaders?stat=passingYards&position=QB&limit=25[&season=2025]
       case 'leaders': {
-        const season  = Number(searchParams.get('season') ?? '2025');
+        // Omitting `season` means "the newest one with data", so the page keeps
+        // working across a rollover without a redeploy.
+        const requested = searchParams.get('season');
+        const latest = requested
+          ? null
+          : await prisma.$queryRaw<{ season: number }[]>`
+              SELECT MAX(season) AS season FROM NflWeeklyStat
+            `;
+        const season = requested
+          ? Number(requested)
+          : Number(latest?.[0]?.season ?? new Date().getFullYear());
         const rawStat = searchParams.get('stat') ?? 'fantasyPointsPpr';
         const pos     = searchParams.get('position')?.toUpperCase() ?? '';
         const limit   = Math.min(Number(searchParams.get('limit') ?? '25'), 100);

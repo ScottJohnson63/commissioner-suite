@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from 'react';
 import Image from 'next/image';
 import type { TrendingData } from '@/types/trending';
 import { TrendingTicker } from './TrendingTicker';
+import { STAT_CATEGORIES, STAT_GROUPS } from '@/lib/nflStats';
 
 interface StatLeader {
   playerId: string;
@@ -15,58 +16,7 @@ interface StatLeader {
   gamesPlayed: number;
 }
 
-const STAT_CATEGORIES: { key: string; label: string; unit: string; decimals: number; group: string }[] = [
-  // Fantasy
-  { key: 'fantasyPointsPpr',         label: 'Fantasy Points (PPR)', unit: 'pts', decimals: 1, group: 'Fantasy'   },
-  { key: 'fantasyPoints',            label: 'Fantasy Points (STD)', unit: 'pts', decimals: 1, group: 'Fantasy'   },
-  // Passing
-  { key: 'passingYards',             label: 'Passing Yards',        unit: 'yds', decimals: 0, group: 'Passing'   },
-  { key: 'passingTds',               label: 'Passing TDs',          unit: 'TD',  decimals: 0, group: 'Passing'   },
-  { key: 'passingInterceptions',     label: 'Interceptions',        unit: '',    decimals: 0, group: 'Passing'   },
-  { key: 'completions',              label: 'Completions',          unit: '',    decimals: 0, group: 'Passing'   },
-  { key: 'attempts',                 label: 'Pass Attempts',        unit: '',    decimals: 0, group: 'Passing'   },
-  { key: 'passingAirYards',          label: 'Air Yards',            unit: 'yds', decimals: 0, group: 'Passing'   },
-  { key: 'passingYardsAfterCatch',   label: 'YAC',                  unit: 'yds', decimals: 0, group: 'Passing'   },
-  { key: 'passingFirstDowns',        label: 'Pass 1st Downs',       unit: '',    decimals: 0, group: 'Passing'   },
-  { key: 'sacksSuffered',            label: 'Sacks Taken',          unit: '',    decimals: 0, group: 'Passing'   },
-  { key: 'passingEpa',               label: 'Passing EPA',          unit: '',    decimals: 1, group: 'Passing'   },
-  { key: 'passingCpoe',              label: 'CPOE',                 unit: '%',   decimals: 1, group: 'Passing'   },
-  { key: 'pacr',                     label: 'PACR',                 unit: '',    decimals: 2, group: 'Passing'   },
-  // Rushing
-  { key: 'rushingYards',             label: 'Rushing Yards',        unit: 'yds', decimals: 0, group: 'Rushing'   },
-  { key: 'rushingTds',               label: 'Rushing TDs',          unit: 'TD',  decimals: 0, group: 'Rushing'   },
-  { key: 'carries',                  label: 'Carries',              unit: '',    decimals: 0, group: 'Rushing'   },
-  { key: 'rushingFirstDowns',        label: 'Rush 1st Downs',       unit: '',    decimals: 0, group: 'Rushing'   },
-  { key: 'rushingEpa',               label: 'Rushing EPA',          unit: '',    decimals: 1, group: 'Rushing'   },
-  // Receiving
-  { key: 'receivingYards',           label: 'Receiving Yards',      unit: 'yds', decimals: 0, group: 'Receiving' },
-  { key: 'receivingTds',             label: 'Receiving TDs',        unit: 'TD',  decimals: 0, group: 'Receiving' },
-  { key: 'receptions',               label: 'Receptions',           unit: '',    decimals: 0, group: 'Receiving' },
-  { key: 'targets',                  label: 'Targets',              unit: '',    decimals: 0, group: 'Receiving' },
-  { key: 'receivingAirYards',        label: 'Air Yards',            unit: 'yds', decimals: 0, group: 'Receiving' },
-  { key: 'receivingYardsAfterCatch', label: 'YAC',                  unit: 'yds', decimals: 0, group: 'Receiving' },
-  { key: 'receivingFirstDowns',      label: 'Rec 1st Downs',        unit: '',    decimals: 0, group: 'Receiving' },
-  { key: 'receivingEpa',             label: 'Rec EPA',              unit: '',    decimals: 1, group: 'Receiving' },
-  { key: 'targetShare',              label: 'Target Share',         unit: '%',   decimals: 1, group: 'Receiving' },
-  { key: 'airYardsShare',            label: 'Air Yards Share',      unit: '%',   decimals: 1, group: 'Receiving' },
-  { key: 'wopr',                     label: 'WOPR',                 unit: '',    decimals: 2, group: 'Receiving' },
-  { key: 'racr',                     label: 'RACR',                 unit: '',    decimals: 2, group: 'Receiving' },
-  // Defense
-  { key: 'defTacklesSolo',           label: 'Solo Tackles',         unit: '',    decimals: 0, group: 'Defense'   },
-  { key: 'defTacklesForLoss',        label: 'TFL',                  unit: '',    decimals: 1, group: 'Defense'   },
-  { key: 'defSacks',                 label: 'Sacks',                unit: '',    decimals: 1, group: 'Defense'   },
-  { key: 'defQbHits',                label: 'QB Hits',              unit: '',    decimals: 0, group: 'Defense'   },
-  { key: 'defInterceptions',         label: 'INTs',                 unit: '',    decimals: 0, group: 'Defense'   },
-  { key: 'defPassDefended',          label: 'Pass Breakups',        unit: '',    decimals: 0, group: 'Defense'   },
-  { key: 'defFumblesForced',         label: 'Forced Fumbles',       unit: '',    decimals: 0, group: 'Defense'   },
-  { key: 'defTds',                   label: 'Def TDs',              unit: 'TD',  decimals: 0, group: 'Defense'   },
-  // Kicking
-  { key: 'fgMade',                   label: 'FG Made',              unit: '',    decimals: 0, group: 'Kicking'   },
-  { key: 'fgAtt',                    label: 'FG Attempts',          unit: '',    decimals: 0, group: 'Kicking'   },
-  { key: 'patMade',                  label: 'PAT Made',             unit: '',    decimals: 0, group: 'Kicking'   },
-];
 
-const STAT_GROUPS = [...new Set(STAT_CATEGORIES.map((c) => c.group))];
 const POSITIONS   = ['All', 'QB', 'RB', 'WR', 'TE', 'DEF', 'K'];
 
 const STAT_SITES: { label: string; url: string; desc: string }[] = [
@@ -84,17 +34,23 @@ const STAT_SITES: { label: string; url: string; desc: string }[] = [
 
 function StatLeadersTable() {
   const [statKey, setStatKey]   = useState('fantasyPointsPpr');
+  // Populated from the table, newest first. Null until loaded, so the first
+  // leaders fetch can let the server pick rather than guessing a year.
+  const [seasons, setSeasons]   = useState<number[]>([]);
+  const [season, setSeason]     = useState<number | null>(null);
   const [position, setPosition] = useState('All');
   const [leaders, setLeaders]   = useState<StatLeader[]>([]);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
 
-  const fetchLeaders = useCallback(async (stat: string, pos: string) => {
+  const fetchLeaders = useCallback(async (stat: string, pos: string, yr: number | null) => {
     setLoading(true);
     setError(null);
     try {
       const posParam = pos !== 'All' ? `&position=${pos}` : '';
-      const res = await fetch(`/api/nfl/leaders?season=2025&stat=${stat}&limit=25${posParam}`);
+      // No season param on the first load — the server answers with its newest.
+      const yrParam = yr ? `&season=${yr}` : '';
+      const res = await fetch(`/api/nfl/leaders?stat=${stat}&limit=25${posParam}${yrParam}`);
       if (!res.ok) throw new Error('Failed to load stats');
       setLeaders(await res.json() as StatLeader[]);
     } catch (err) {
@@ -105,7 +61,18 @@ function StatLeadersTable() {
   }, []);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { void fetchLeaders(statKey, position); }, [statKey, position, fetchLeaders]);
+  useEffect(() => { void fetchLeaders(statKey, position, season); }, [statKey, position, season, fetchLeaders]);
+
+  useEffect(() => {
+    void fetch('/api/nfl/seasons')
+      .then((r) => (r.ok ? (r.json() as Promise<number[]>) : null))
+      .then((data) => {
+        if (!Array.isArray(data) || data.length === 0) return;
+        setSeasons(data);
+        setSeason((current) => current ?? data[0]);
+      })
+      .catch(() => { /* the picker stays hidden; leaders still load */ });
+  }, []);
 
   const cat = STAT_CATEGORIES.find((c) => c.key === statKey) ?? STAT_CATEGORIES[0];
 
@@ -123,8 +90,23 @@ function StatLeadersTable() {
 
         <div className="flex items-center gap-3">
           <p className="text-[10px] uppercase tracking-widest flex-1" style={{ color: '#80ff49' }}>
-            NFL Stat Leaders · 2025
+            NFL Stat Leaders{season ? ` · ${season}` : ''}
           </p>
+
+          {/* Only worth showing once more than one season has been synced. */}
+          {seasons.length > 1 && (
+            <div className="relative shrink-0">
+              <select
+                value={season ?? seasons[0]}
+                onChange={(e) => setSeason(Number(e.target.value))}
+                className="appearance-none text-xs pl-2.5 pr-7 py-1.5 rounded border cursor-pointer"
+                style={{ background: '#0e0e0f', borderColor: '#2a2a2c', color: '#e8e6df' }}
+                aria-label="Season"
+              >
+                {seasons.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+          )}
           <div className="relative shrink-0">
             <select
               value={statKey}

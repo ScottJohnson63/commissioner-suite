@@ -4,96 +4,127 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { GET } from '@/app/api/nfl/[...path]/route';
 import { NextRequest } from 'next/server';
 
-// Mock Prisma
 jest.mock('@/lib/prisma', () => ({
   prisma: {
-    nflWeeklyStat: {
-      findMany: jest.fn(),
-    },
+    $queryRawUnsafe: jest.fn(),
   },
 }));
 
 import { prisma } from '@/lib/prisma';
 
-const mockFindMany = prisma.nflWeeklyStat.findMany as jest.MockedFunction<
-  typeof prisma.nflWeeklyStat.findMany
+const mockQueryRaw = prisma.$queryRawUnsafe as jest.MockedFunction<
+  typeof prisma.$queryRawUnsafe
 >;
 
 function makeRequest(path: string): NextRequest {
   return new NextRequest(`http://localhost:3000/api/nfl/${path}`);
 }
 
-const mockStats = [
+const mockLeaders = [
   {
-    id: '1',
     playerId: '4046',
-    playerName: 'Tom Brady',
     playerDisplayName: 'Tom Brady',
     position: 'QB',
-    positionGroup: 'QB',
-    season: 2025,
-    week: 5,
-    passingYards: 320,
-    fantasyPointsPpr: 28.5,
+    team: 'TB',
+    headshot: null,
+    statValue: 4200,
+    gamesPlayed: 17,
   },
 ];
 
-describe('GET /api/nfl/weekly', () => {
+describe('GET /api/nfl/leaders', () => {
   beforeEach(() => {
-    mockFindMany.mockReset();
+    mockQueryRaw.mockReset();
   });
 
-  it('returns weekly stats for a season', async () => {
-    mockFindMany.mockResolvedValueOnce(mockStats as any);
+  it('returns aggregated leaders for the requested stat', async () => {
+    mockQueryRaw.mockResolvedValueOnce(mockLeaders as never);
 
-    const res = await GET(makeRequest('weekly?season=2025'), {
-      params: Promise.resolve({ path: ['weekly'] }),
+    const res = await GET(makeRequest('leaders?season=2025&stat=passingYards'), {
+      params: Promise.resolve({ path: ['leaders'] }),
     });
 
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toHaveLength(1);
-    expect(body[0].playerName).toBe('Tom Brady');
-    expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { season: 2025 },
-      }),
+    expect(body[0].playerDisplayName).toBe('Tom Brady');
+    // season and limit are bound parameters, never interpolated.
+    expect(mockQueryRaw).toHaveBeenCalledWith(
+      expect.stringContaining('SUM(passingYards)'),
+      2025,
+      25,
     );
   });
 
-  it('filters by week when provided', async () => {
-    mockFindMany.mockResolvedValueOnce(mockStats as any);
+  it('rejects a stat column that is not on the allowlist', async () => {
+    const res = await GET(
+      makeRequest('leaders?season=2025&stat=password'),
+      { params: Promise.resolve({ path: ['leaders'] }) },
+    );
 
-    await GET(makeRequest('weekly?season=2025&week=5'), {
-      params: Promise.resolve({ path: ['weekly'] }),
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toMatch(/Invalid stat column/);
+    expect(mockQueryRaw).not.toHaveBeenCalled();
+  });
+
+  it('ignores a position that is not a short alpha abbreviation', async () => {
+    mockQueryRaw.mockResolvedValueOnce([] as never);
+
+    await GET(makeRequest("leaders?season=2025&position=QB'%20OR%201=1--"), {
+      params: Promise.resolve({ path: ['leaders'] }),
     });
 
-    expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { season: 2025, week: 5 },
-      }),
+    expect(mockQueryRaw).toHaveBeenCalledWith(
+      expect.not.stringContaining('OR 1=1'),
+      2025,
+      25,
     );
   });
 
-  it('filters by position when provided', async () => {
-    mockFindMany.mockResolvedValueOnce(mockStats as any);
+  it('applies a valid position filter', async () => {
+    mockQueryRaw.mockResolvedValueOnce([] as never);
 
-    await GET(makeRequest('weekly?season=2025&position=QB'), {
-      params: Promise.resolve({ path: ['weekly'] }),
+    await GET(makeRequest('leaders?season=2025&position=qb'), {
+      params: Promise.resolve({ path: ['leaders'] }),
     });
 
-    expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { season: 2025, position: 'QB' },
-      }),
+    expect(mockQueryRaw).toHaveBeenCalledWith(
+      expect.stringContaining("AND position = 'QB'"),
+      2025,
+      25,
     );
   });
 
-  it('returns 500 when Prisma throws', async () => {
-    mockFindMany.mockRejectedValueOnce(new Error('DB connection failed'));
+  it('caps the limit at 100', async () => {
+    mockQueryRaw.mockResolvedValueOnce([] as never);
 
-    const res = await GET(makeRequest('weekly?season=2025'), {
-      params: Promise.resolve({ path: ['weekly'] }),
+    await GET(makeRequest('leaders?season=2025&limit=5000'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    expect(mockQueryRaw).toHaveBeenCalledWith(expect.any(String), 2025, 100);
+  });
+
+  it('normalises bigint counts returned by Turso', async () => {
+    mockQueryRaw.mockResolvedValueOnce([
+      { ...mockLeaders[0], statValue: BigInt(4200), gamesPlayed: BigInt(17) },
+    ] as never);
+
+    const res = await GET(makeRequest('leaders?season=2025'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    const body = await res.json();
+    expect(body[0].statValue).toBe(4200);
+    expect(body[0].gamesPlayed).toBe(17);
+  });
+
+  it('returns 500 when the query throws', async () => {
+    mockQueryRaw.mockRejectedValueOnce(new Error('DB connection failed'));
+
+    const res = await GET(makeRequest('leaders?season=2025'), {
+      params: Promise.resolve({ path: ['leaders'] }),
     });
 
     expect(res.status).toBe(500);
@@ -101,33 +132,11 @@ describe('GET /api/nfl/weekly', () => {
     expect(body.error).toMatch(/DB connection failed/);
   });
 
-  it('returns 404 for unknown endpoint', async () => {
-    const res = await GET(makeRequest('unknown'), {
-      params: Promise.resolve({ path: ['unknown'] }),
+  it('returns 404 for an unknown endpoint', async () => {
+    const res = await GET(makeRequest('weekly'), {
+      params: Promise.resolve({ path: ['weekly'] }),
     });
 
     expect(res.status).toBe(404);
-  });
-});
-
-describe('GET /api/nfl/players', () => {
-  beforeEach(() => {
-    mockFindMany.mockReset();
-  });
-
-  it('returns distinct players for a season', async () => {
-    mockFindMany.mockResolvedValueOnce(mockStats as any);
-
-    const res = await GET(makeRequest('players?season=2025'), {
-      params: Promise.resolve({ path: ['players'] }),
-    });
-
-    expect(res.status).toBe(200);
-    expect(mockFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        distinct: ['playerId'],
-        where: { season: 2025 },
-      }),
-    );
   });
 });
