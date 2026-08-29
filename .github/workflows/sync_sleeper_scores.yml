@@ -13,6 +13,10 @@ on:
         description: 'Override week number (leave blank for auto)'
         required: false
         default: ''
+      league_id:
+        description: 'Sleeper league ID to sync (leave blank for every league)'
+        required: false
+        default: ''
 
 jobs:
   sync:
@@ -47,6 +51,7 @@ jobs:
           NFL_SEASON: "2025"
           FORCE: ${{ github.event.inputs.force || 'false' }}
           WEEK: ${{ github.event.inputs.week || '' }}
+          LEAGUE_ID: ${{ github.event.inputs.league_id || '' }}
         run: |
           cd python
           python scripts/sync_sleeper_scores.py
