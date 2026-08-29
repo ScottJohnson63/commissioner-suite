@@ -23,6 +23,32 @@ interface SleeperLeagueRaw {
 }
 
 /**
+ * Resolves a Sleeper username to its stable user_id, with no league check.
+ *
+ * Commissioners link their Sleeper account without having to be a member of a
+ * registered league — they may be running a league they do not play in — but
+ * the id still has to be looked up and stored, which is what this is for.
+ *
+ * Returns null (never throws) when the username does not exist or Sleeper is
+ * unreachable.
+ */
+export async function resolveSleeperUser(
+  sleeperUsername: string,
+): Promise<{ userId: string; username: string } | null> {
+  try {
+    const res = await fetch(
+      `${SLEEPER_BASE}/user/${encodeURIComponent(sleeperUsername.trim().toLowerCase())}`,
+    );
+    if (!res.ok) return null;
+    const user = (await res.json()) as SleeperUserRaw;
+    if (!user?.user_id) return null;
+    return { userId: user.user_id, username: user.username };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Verifies that `sleeperUsername` is a member of at least one league
  * registered in the local database.
  *

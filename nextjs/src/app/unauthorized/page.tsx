@@ -17,7 +17,7 @@ export default function UnauthorizedPage() {
           You don&apos;t have access to this page.
         </p>
         <Link
-          href="/"
+          href="/login"
           className="inline-block px-5 py-2.5 rounded text-sm font-medium"
           style={{ background: '#80ff49', color: '#0e0e0f' }}
         >

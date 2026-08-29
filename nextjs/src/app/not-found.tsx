@@ -32,7 +32,7 @@ export default async function NotFound() {
             </Link>
           )}
           <Link
-            href="/"
+            href="/login"
             className="px-4 py-2 rounded text-sm border transition-colors"
             style={{ borderColor: '#2a2a2c', color: '#888' }}
           >
