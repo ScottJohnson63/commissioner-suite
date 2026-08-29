@@ -1,22 +1,37 @@
 // tests/unit/lib/sleeper/sync.test.ts
 //
 // Replaces the old console-script at src/lib/sleeper/sync.test.ts.
-// Tests fetchLeagueData() in src/lib/sleeper/sync.ts.
-// Mocks sleeperGet so no real HTTP calls are made.
+// Tests fetchLeagueData() and syncLeague() in src/lib/sleeper/sync.ts.
+// Mocks sleeperGet, prisma, and the audit log so nothing leaves the process.
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 
 // Mock the Sleeper client module before importing the module under test.
 // jest.mock is hoisted, so it runs before any imports.
 jest.mock('@/lib/sleeper/client', () => ({
-  SLEEPER_BASE: 'https://api.sleeper.app/v1',
+  // Keep SLEEPER_BASE and the SLEEPER_TTL table real; only the fetch is faked.
+  ...jest.requireActual<typeof import('@/lib/sleeper/client')>('@/lib/sleeper/client'),
   sleeperGet: jest.fn(),
 }));
 
-import { fetchLeagueData } from '@/lib/sleeper/sync';
-import { sleeperGet } from '@/lib/sleeper/client';
+jest.mock('@/lib/prisma', () => ({
+  prisma: {
+    league: { upsert: jest.fn() },
+    team:   { upsert: jest.fn() },
+  },
+}));
 
-const mockSleeperGet = sleeperGet as jest.MockedFunction<typeof sleeperGet>;
+jest.mock('@/lib/audit', () => ({ writeAuditLog: jest.fn() }));
+
+import { fetchLeagueData, syncLeague } from '@/lib/sleeper/sync';
+import { sleeperGet } from '@/lib/sleeper/client';
+import { prisma } from '@/lib/prisma';
+import { writeAuditLog } from '@/lib/audit';
+
+const mockSleeperGet   = sleeperGet    as jest.MockedFunction<typeof sleeperGet>;
+const mockLeagueUpsert = prisma.league.upsert as jest.MockedFunction<typeof prisma.league.upsert>;
+const mockTeamUpsert   = prisma.team.upsert   as jest.MockedFunction<typeof prisma.team.upsert>;
+const mockAuditLog     = writeAuditLog as jest.MockedFunction<typeof writeAuditLog>;
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -188,5 +203,62 @@ describe('fetchLeagueData()', () => {
 
     await fetchLeagueData('999');
     expect(mockSleeperGet).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('syncLeague()', () => {
+  beforeEach(() => {
+    mockLeagueUpsert.mockReset();
+    mockTeamUpsert.mockReset();
+    mockAuditLog.mockReset();
+
+    mockSleeperGet.mockReset();
+    mockSleeperGet
+      .mockResolvedValueOnce(leaguePayload as never)
+      .mockResolvedValueOnce(rostersPayload as never)
+      .mockResolvedValueOnce(usersPayload as never);
+
+    mockLeagueUpsert.mockResolvedValue({ id: 'db-lg-1' } as never);
+    mockTeamUpsert.mockResolvedValue({} as never);
+    mockAuditLog.mockResolvedValue(undefined as never);
+  });
+
+  // WHY: The League row is keyed on sleeperLeagueId so repeated syncs update
+  //      rather than duplicate.
+  it('upserts the league keyed on sleeperLeagueId', async () => {
+    await syncLeague('999');
+
+    expect(mockLeagueUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { sleeperLeagueId: '999' } }),
+    );
+  });
+
+  // WHY: Every roster must land as a Team row, or the schedule generator will
+  //      build a bracket that is missing managers.
+  it('upserts one team per roster', async () => {
+    const result = await syncLeague('999');
+
+    expect(mockTeamUpsert).toHaveBeenCalledTimes(rostersPayload.length);
+    expect(result.teamCount).toBe(rostersPayload.length);
+  });
+
+  // WHY: The Activity Log is how a commissioner sees that a sync happened.
+  it('writes a SYNC audit entry against the local league id', async () => {
+    await syncLeague('999');
+
+    expect(mockAuditLog).toHaveBeenCalledWith('SYNC', 'db-lg-1', expect.anything());
+  });
+
+  // WHY: A league that fails validation must not leave half-written rows.
+  it('does not touch the database when the league fails validation', async () => {
+    mockSleeperGet.mockReset();
+    mockSleeperGet
+      .mockResolvedValueOnce({ ...leaguePayload, settings: { divisions: 3 } } as never)
+      .mockResolvedValueOnce(rostersPayload as never)
+      .mockResolvedValueOnce(usersPayload as never);
+
+    await expect(syncLeague('999')).rejects.toThrow(/Expected 2 divisions/);
+    expect(mockLeagueUpsert).not.toHaveBeenCalled();
+    expect(mockTeamUpsert).not.toHaveBeenCalled();
   });
 });

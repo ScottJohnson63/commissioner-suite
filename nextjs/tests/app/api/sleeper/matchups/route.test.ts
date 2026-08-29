@@ -16,8 +16,9 @@ import { NextRequest } from 'next/server';
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 jest.mock('@/lib/sleeper/client', () => ({
+  // Keep SLEEPER_BASE and the SLEEPER_TTL table real; only the fetch is faked.
+  ...jest.requireActual<typeof import('@/lib/sleeper/client')>('@/lib/sleeper/client'),
   sleeperGet: jest.fn(),
-  SLEEPER_BASE: 'https://api.sleeper.app/v1',
 }));
 
 import { GET } from '@/app/api/sleeper/matchups/route';

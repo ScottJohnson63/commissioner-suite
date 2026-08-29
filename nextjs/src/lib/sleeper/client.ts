@@ -16,6 +16,24 @@
 export const SLEEPER_BASE = 'https://api.sleeper.app/v1';
 
 /**
+ * Cache lifetimes, in seconds, keyed by how fast the underlying data moves.
+ * Every Sleeper call should pick one of these rather than an inline number, so
+ * the request rate against Sleeper stays reviewable in one place.
+ */
+export const SLEEPER_TTL = {
+  /** Current season/week pointer. Short, so a week rollover is picked up fast. */
+  NFL_STATE: 60,
+  /** Rosters, users, league settings, matchups. Move on waivers and trades. */
+  LEAGUE: 300,
+  /** Trending adds/drops. Sleeper recomputes these on the order of an hour. */
+  TRENDING: 600,
+  /** The full player index. Sleeper asks for at most one call per 24 hours. */
+  PLAYERS: 86_400,
+  /** Bypass the cache. Only for an explicit user-triggered refresh. */
+  FRESH: 0,
+} as const;
+
+/**
  * Fetches a Sleeper API endpoint and returns the JSON-parsed response body.
  *
  * Throws an `Error` on any non-2xx HTTP status so callers can catch and
@@ -23,12 +41,15 @@ export const SLEEPER_BASE = 'https://api.sleeper.app/v1';
  *
  * @template T         Expected shape of the JSON response body.
  * @param path         Path relative to `SLEEPER_BASE`, e.g. `/league/123/rosters`.
- * @param revalidate   Next.js `fetch` cache TTL in seconds (default 300 = 5 min).
- *                     Set to `0` to bypass the cache for time-critical reads.
+ * @param revalidate   Next.js `fetch` cache TTL in seconds. Pick a `SLEEPER_TTL`
+ *                     member rather than passing a bare number.
  * @returns            Parsed response body typed as `T`.
  * @throws             `Error` if the HTTP status is not 2xx.
  */
-export async function sleeperGet<T>(path: string, revalidate = 300): Promise<T> {
+export async function sleeperGet<T>(
+  path: string,
+  revalidate: number = SLEEPER_TTL.LEAGUE,
+): Promise<T> {
   const res = await fetch(`${SLEEPER_BASE}${path}`, { next: { revalidate } });
   if (!res.ok) throw new Error(`Sleeper ${res.status}: ${path}`);
   return res.json() as Promise<T>;

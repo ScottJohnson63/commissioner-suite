@@ -127,25 +127,44 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   // Fetch Sleeper bracket/roster data and cached all-time rankings in parallel.
-  const [users, rosters, winners, losers, cachedRankings] = await Promise.all([
-    sleeperGet<SleeperUser[]>(`/league/${previous_league_id}/users`),
-    sleeperGet<SleeperRoster[]>(`/league/${previous_league_id}/rosters`),
-    sleeperGet<BracketMatch[]>(`/league/${previous_league_id}/winners_bracket`),
-    sleeperGet<BracketMatch[]>(`/league/${previous_league_id}/losers_bracket`),
-    prisma.sleeperRanking.findMany({ where: { leagueId: league.id } }),
-  ]);
+  // Roster/user data is pulled for BOTH seasons: ranks come from last season's
+  // brackets, but team names and owners must come from the current roster.
+  const [users, rosters, winners, losers, cachedRankings, currentUsers, currentRosters] =
+    await Promise.all([
+      sleeperGet<SleeperUser[]>(`/league/${previous_league_id}/users`),
+      sleeperGet<SleeperRoster[]>(`/league/${previous_league_id}/rosters`),
+      sleeperGet<BracketMatch[]>(`/league/${previous_league_id}/winners_bracket`),
+      sleeperGet<BracketMatch[]>(`/league/${previous_league_id}/losers_bracket`),
+      prisma.sleeperRanking.findMany({ where: { leagueId: league.id } }),
+      sleeperGet<SleeperUser[]>(`/league/${league.sleeperLeagueId}/users`),
+      sleeperGet<SleeperRoster[]>(`/league/${league.sleeperLeagueId}/rosters`),
+    ]);
 
-  const userMap = new Map(users.map((u) => [u.user_id, u]));
-  const rosterInfo = new Map(
-    rosters.map((r) => {
-      const u = r.owner_id ? userMap.get(r.owner_id) : undefined;
-      return [r.roster_id, {
-        name: u?.metadata?.team_name ?? u?.display_name ?? `Team ${r.roster_id}`,
-        ownerName: u?.display_name ?? null,
-        ownerId: r.owner_id ?? null,
-      }];
-    }),
-  );
+  // Sleeper roster IDs are stable across seasons, so a roster that changed hands
+  // keeps its ID. Preferring the current league means a manager who left is not
+  // still listed under last season's team name.
+  const buildRosterInfo = (us: SleeperUser[], rs: SleeperRoster[]) => {
+    const byUserId = new Map(us.map((u) => [u.user_id, u]));
+    return new Map(
+      rs.map((r) => {
+        const u = r.owner_id ? byUserId.get(r.owner_id) : undefined;
+        // Managers can save a blank team name in Sleeper, so fall back on
+        // anything that is empty or whitespace — not just null/undefined.
+        const teamName = u?.metadata?.team_name?.trim();
+        const owner    = u?.display_name?.trim();
+        return [r.roster_id, {
+          name: teamName || owner || `Team ${r.roster_id}`,
+          ownerName: owner || null,
+          ownerId: r.owner_id ?? null,
+        }];
+      }),
+    );
+  };
+
+  const currentInfo  = buildRosterInfo(currentUsers ?? [], currentRosters ?? []);
+  const previousInfo = buildRosterInfo(users, rosters);
+  // Fall back to last season for a roster that no longer exists (league shrank).
+  const rosterInfo = new Map([...previousInfo, ...currentInfo]);
 
   const rankMap = rankFromBrackets(winners, losers);
 

@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import type { StandingEntry, StandingsResponse } from '@/types/standings';
-import type { LotteryResult, DraftPick } from '@/types/lottery';
+import type { StandingsResponse } from '@/types/standings';
+import type { LotteryResult, DraftPick, LotteryTeam, SleeperLeagueTeam } from '@/types/lottery';
 
 const LOTTERY_TOTAL       = 1_000_000;
 const LOTTERY_DURATION_MS = 180_000;
@@ -12,6 +12,14 @@ const LOTTERY_BATCH       = Math.ceil(LOTTERY_TOTAL / (LOTTERY_DURATION_MS / LOT
 const PICK_ACCENT  = ['#facc15', '#aaaaaa', '#cd7f32'] as const;
 const PICK_LABEL   = ['1st Overall Pick', '2nd Overall Pick', '3rd Overall Pick'] as const;
 const LIVE_ACCENTS = ['#80ff49', '#facc15', '#ff6d49'] as const;
+
+const LOTTERY_SPOTS = 3;
+const MIN_TEAMS     = 3;
+const INITIAL_ROWS  = 3;
+
+const INPUT_CLASS =
+  'w-full bg-[#0e0e0f] border border-[#2a2a2c] rounded px-2.5 py-1.5 text-xs ' +
+  'text-[#e8e6df] placeholder-[#3a3a3c] focus:outline-none focus:border-[#80ff49] transition-colors';
 
 function formatLotteryCountdown(ms: number): string {
   if (ms <= 0) return '0:00';
@@ -29,7 +37,14 @@ export function LotteryTab({
   isCommissioner: boolean;
 }) {
   const effectiveId = activeLeagueId ?? sleeperLeagueId;
-  const [standings, setStandings]       = useState<StandingEntry[]>([]);
+  const [teams, setTeams]               = useState<LotteryTeam[]>(() =>
+    Array.from({ length: INITIAL_ROWS }, (_, i) => ({ id: i + 1, rosterId: 0, name: '', ownerName: '' })),
+  );
+  const [pool, setPool]                 = useState<SleeperLeagueTeam[]>([]);
+  const [poolLoading, setPoolLoading]   = useState(false);
+  const [manualEntry, setManualEntry]   = useState(false);
+  const [resyncing, setResyncing]       = useState(false);
+  const [syncMsg, setSyncMsg]           = useState<string | null>(null);
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState<string | null>(null);
   const [running, setRunning]           = useState(false);
@@ -41,45 +56,175 @@ export function LotteryTab({
   const [draftError, setDraftError]     = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const rerunRef    = useRef(false);
+  const nextIdRef   = useRef(INITIAL_ROWS + 1);
+  const loggedRef   = useRef<LotteryResult[] | null>(null);
+  const poolReqRef  = useRef(0);
 
   useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
 
-  const load = useCallback(async (leagueId: string) => {
-    setLoading(true); setError(null); setResults(null);
+  // Roster list for the connected league — powers the per-row team picker.
+  // `fresh` bypasses the server's 5-minute Sleeper cache so a manager who just
+  // joined shows up right away.
+  const loadPool = useCallback(async (fresh: boolean): Promise<SleeperLeagueTeam[] | null> => {
+    if (!sleeperLeagueId) { setPool([]); return null; }
+    const req = ++poolReqRef.current;
+    setPoolLoading(true);
     try {
-      const res  = await fetch(`/api/assoc/standings?leagueId=${encodeURIComponent(leagueId)}`);
+      const res = await fetch(
+        `/api/sleeper/league-teams?leagueId=${encodeURIComponent(sleeperLeagueId)}${fresh ? '&refresh=1' : ''}`,
+      );
+      const data = await res.json() as { teams?: SleeperLeagueTeam[]; error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to load league teams');
+      const loaded = data.teams ?? [];
+      if (req === poolReqRef.current) setPool(loaded);
+      return loaded;
+    } catch (e) {
+      if (req === poolReqRef.current) {
+        setPool([]);
+        if (fresh) setError(e instanceof Error ? e.message : 'Failed to load league teams');
+      }
+      return null;
+    } finally {
+      if (req === poolReqRef.current) setPoolLoading(false);
+    }
+  }, [sleeperLeagueId]);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { void loadPool(false); }, [loadPool]);
+
+  // Pushes the latest Sleeper roster into the database, then refreshes the
+  // picker and re-labels any rows whose team was renamed.
+  async function resync(): Promise<void> {
+    if (!sleeperLeagueId) return;
+    setResyncing(true); setError(null); setSyncMsg(null);
+    try {
+      const res = await fetch('/api/leagues/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leagueIds: [sleeperLeagueId] }),
+      });
+      const data = await res.json() as {
+        results?: { teamCount: number }[]; error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? 'Sync failed');
+      const fresh = await loadPool(true);
+      if (fresh) {
+        setTeams((prev) => prev.map((t) => {
+          if (t.rosterId <= 0) return t;
+          const match = fresh.find((p) => p.rosterId === t.rosterId);
+          return match ? { ...t, name: match.name, ownerName: match.ownerName ?? '' } : t;
+        }));
+      }
+      const count = data.results?.[0]?.teamCount ?? fresh?.length ?? 0;
+      setSyncMsg(`Synced ${count} teams from Sleeper`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Sync failed');
+    } finally { setResyncing(false); }
+  }
+
+  const loadFromSleeper = useCallback(async () => {
+    if (!effectiveId) return;
+    setLoading(true); setError(null);
+    try {
+      const res  = await fetch(`/api/assoc/standings?leagueId=${encodeURIComponent(effectiveId)}`);
       const data = await res.json() as StandingsResponse & { error?: string };
       if (!res.ok) throw new Error(data.error ?? 'Failed to load standings');
-      setStandings(data.standings);
+      const loaded = [...data.standings]
+        .sort((a, b) => a.rank - b.rank)
+        .map((s) => ({
+          id: nextIdRef.current++, rosterId: s.rosterId,
+          name: s.name, ownerName: s.ownerName ?? '',
+        }));
+      setTeams(loaded);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load standings');
     } finally { setLoading(false); }
-  }, []);
+  }, [effectiveId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setStandings([]); setError(null); setResults(null);
-    setRunning(false); setTotalDrawn(0); setLiveCounts([]);
-    setDraftOrder(null); setDraftError(null);
-    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-    if (effectiveId) void load(effectiveId);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLeagueId, sleeperLeagueId, load]);
-
-  useEffect(() => {
-    if (!results || !effectiveId) return;
+    if (!results || !effectiveId || loggedRef.current === results) return;
+    loggedRef.current = results;
     void fetch('/api/assoc/lottery-log', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ leagueId: effectiveId, results, rerun: rerunRef.current }),
     });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results, activeLeagueId, sleeperLeagueId]);
+  }, [results, effectiveId]);
 
-  const worstTeams = useMemo(
-    () => [...standings].sort((a, b) => b.rank - a.rank).slice(0, 3),
-    [standings],
+  // List order is the final standings rank, so the last rows are the worst finishers.
+  // Hand-typed rows have no Sleeper roster, so they get a negative synthetic ID
+  // that can never collide with a real one.
+  const rankedTeams = useMemo(
+    () => teams
+      .filter((t) => t.name.trim() !== '')
+      .map((t, i) => ({
+        rowId: t.id,
+        rosterId: t.rosterId > 0 ? t.rosterId : -t.id,
+        name: t.name.trim(),
+        ownerName: t.ownerName.trim() || null,
+        rank: i + 1,
+      })),
+    [teams],
   );
+  const worstTeams = useMemo(
+    () => [...rankedTeams].sort((a, b) => b.rank - a.rank).slice(0, LOTTERY_SPOTS),
+    [rankedTeams],
+  );
+  const canRun = rankedTeams.length >= MIN_TEAMS;
+
+  const usePicker  = pool.length > 0 && !manualEntry;
+  const pickedIds  = useMemo(
+    () => new Set(teams.filter((t) => t.rosterId > 0).map((t) => t.rosterId)),
+    [teams],
+  );
+  const unpicked = useMemo(
+    () => pool.filter((p) => !pickedIds.has(p.rosterId)),
+    [pool, pickedIds],
+  );
+
+  function updateTeam(id: number, patch: Partial<LotteryTeam>) {
+    setTeams((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }
+  function selectTeam(rowId: number, value: string) {
+    if (value === '') {
+      updateTeam(rowId, { rosterId: 0, name: '', ownerName: '' });
+      return;
+    }
+    const picked = pool.find((p) => p.rosterId === Number(value));
+    if (!picked) return;
+    updateTeam(rowId, {
+      rosterId: picked.rosterId, name: picked.name, ownerName: picked.ownerName ?? '',
+    });
+  }
+  function addTeam() {
+    const id = nextIdRef.current++;
+    setTeams((prev) => [...prev, { id, rosterId: 0, name: '', ownerName: '' }]);
+  }
+  function addAllLeagueTeams() {
+    setTeams(pool.map((p) => ({
+      id: nextIdRef.current++, rosterId: p.rosterId,
+      name: p.name, ownerName: p.ownerName ?? '',
+    })));
+    setError(null);
+  }
+  function removeTeam(id: number) {
+    setTeams((prev) => prev.filter((t) => t.id !== id));
+  }
+  function moveTeam(index: number, dir: -1 | 1) {
+    const target = index + dir;
+    setTeams((prev) => {
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  }
+  function clearTeams() {
+    setTeams(Array.from({ length: INITIAL_ROWS }, () => ({
+      id: nextIdRef.current++, rosterId: 0, name: '', ownerName: '',
+    })));
+    setError(null);
+  }
 
   function runLottery() {
     if (worstTeams.length === 0) return;
@@ -113,7 +258,7 @@ export function LotteryTab({
   }
 
   async function generateDraftOrder(): Promise<void> {
-    if (!results || standings.length === 0 || !effectiveId) return;
+    if (!results || rankedTeams.length === 0) return;
     setDraftLoading(true); setDraftError(null);
     try {
       const lotteryRosterIds = new Set(results.map((r) => r.rosterId));
@@ -121,7 +266,7 @@ export function LotteryTab({
         pick: r.pick, rosterId: r.rosterId, name: r.name,
         ownerName: r.ownerName, source: 'lottery', prevRank: r.prevRank,
       }));
-      const nonLotteryPicks: DraftPick[] = [...standings]
+      const nonLotteryPicks: DraftPick[] = [...rankedTeams]
         .filter((s) => !lotteryRosterIds.has(s.rosterId))
         .sort((a, b) => b.rank - a.rank)
         .map((s, idx) => ({
@@ -131,11 +276,13 @@ export function LotteryTab({
         }));
       const order = [...lotteryPicks, ...nonLotteryPicks];
       setDraftOrder(order);
-      await fetch('/api/assoc/draft-order', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leagueId: effectiveId, draftOrder: order }),
-      });
+      if (effectiveId) {
+        await fetch('/api/assoc/draft-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ leagueId: effectiveId, draftOrder: order }),
+        });
+      }
     } catch (e) {
       setDraftError(e instanceof Error ? e.message : 'Failed to generate draft order');
     } finally { setDraftLoading(false); }
@@ -162,55 +309,249 @@ export function LotteryTab({
           {error}
         </div>
       )}
-      {loading && (
-        <div className="space-y-2">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-14 rounded animate-pulse"
-              style={{ background: '#141415', border: '1px solid #1e1e20' }} />
-          ))}
-        </div>
-      )}
-      {!effectiveId && !loading && (
-        <p className="text-xs text-center py-16" style={{ color: '#444' }}>
-          Select a league to get started.
-        </p>
-      )}
-      {!loading && !running && !results && worstTeams.length > 0 && (
+      {!running && !results && (
         <>
-          <p className="text-[10px] uppercase tracking-widest mb-3" style={{ color: '#555' }}>
-            Lottery Eligible · Previous Season Bottom 3
-          </p>
-          <div className="rounded-lg overflow-hidden mb-6"
+          <div className="flex items-end justify-between gap-3 mb-3">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest" style={{ color: '#555' }}>
+                Final Standings · Enter Teams
+              </p>
+              <p className="text-[10px] mt-1" style={{ color: '#444' }}>
+                Order top to bottom, 1st place first. The bottom {LOTTERY_SPOTS} enter the lottery.
+              </p>
+            </div>
+            {isCommissioner && pool.length > 0 && (
+              <div className="flex rounded overflow-hidden shrink-0"
+                style={{ border: '1px solid #2a2a2c' }}>
+                {([['Sleeper Teams', false], ['Manual', true]] as const).map(([label, manual]) => (
+                  <button
+                    key={label}
+                    onClick={() => setManualEntry(manual)}
+                    className="px-2.5 py-1.5 text-[10px] font-medium transition-colors"
+                    style={{
+                      background: manualEntry === manual ? '#1e1e20' : 'transparent',
+                      color: manualEntry === manual ? '#e8e6df' : '#666',
+                    }}
+                  >{label}</button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {isCommissioner && (
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              {sleeperLeagueId && (
+                <button
+                  onClick={() => void resync()}
+                  disabled={resyncing}
+                  className="px-2.5 py-1.5 rounded text-[10px] font-medium border transition-colors disabled:opacity-40"
+                  style={{ borderColor: '#2a2a2c', color: '#888' }}
+                  onMouseEnter={(e) => { if (!resyncing) e.currentTarget.style.color = '#e8e6df'; }}
+                  onMouseLeave={(e) => { if (!resyncing) e.currentTarget.style.color = '#888'; }}
+                >
+                  {resyncing ? 'Resyncing…' : '⟳ Resync with Sleeper'}
+                </button>
+              )}
+              {poolLoading && !resyncing && (
+                <span className="text-[10px]" style={{ color: '#444' }}>Loading league teams…</span>
+              )}
+              {syncMsg && (
+                <span className="text-[10px]" style={{ color: '#80ff49' }}>{syncMsg}</span>
+              )}
+              {pool.length > 0 && (
+                <button
+                  onClick={addAllLeagueTeams}
+                  className="px-2.5 py-1.5 rounded text-[10px] font-medium border transition-colors"
+                  style={{ borderColor: '#2a2a2c', color: '#888' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#e8e6df')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#888')}
+                >
+                  + Add All {pool.length} League Teams
+                </button>
+              )}
+              {effectiveId && (
+                <button
+                  onClick={() => void loadFromSleeper()}
+                  disabled={loading}
+                  className="px-2.5 py-1.5 rounded text-[10px] font-medium border transition-colors disabled:opacity-40"
+                  style={{ borderColor: '#2a2a2c', color: '#888' }}
+                  onMouseEnter={(e) => { if (!loading) e.currentTarget.style.color = '#e8e6df'; }}
+                  onMouseLeave={(e) => { if (!loading) e.currentTarget.style.color = '#888'; }}
+                >
+                  {loading ? 'Loading…' : "↓ Load Last Season's Order"}
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="rounded-lg overflow-hidden mb-3"
             style={{ background: '#141415', border: '1px solid #1e1e20' }}>
-            {worstTeams.map((team) => (
-              <div key={team.rosterId}
-                className="flex items-center gap-3 px-4 py-3 border-b last:border-b-0"
-                style={{ borderColor: '#1a1a1c' }}>
-                <span className="text-[10px] w-16 shrink-0 tabular-nums" style={{ color: '#555' }}>
-                  Rank #{team.rank}
-                </span>
-                <span className="flex-1 text-xs truncate" style={{ color: '#e8e6df' }}>
-                  {team.name}
-                  {team.ownerName && (
-                    <span className="ml-1" style={{ color: '#555' }}>({team.ownerName})</span>
+            {teams.length === 0 && (
+              <p className="text-[10px] text-center py-6" style={{ color: '#444' }}>
+                No teams yet — add one below.
+              </p>
+            )}
+            {teams.map((team, i) => {
+              const isEligible = team.name.trim() !== '' && worstTeams.some((w) => w.rowId === team.id);
+              return (
+                <div key={team.id}
+                  className="flex items-center gap-2 px-3 py-2 border-b last:border-b-0"
+                  style={{
+                    borderColor: '#1a1a1c',
+                    background: isEligible ? 'rgba(250,204,21,0.04)' : undefined,
+                  }}>
+                  <span className="text-[10px] w-5 shrink-0 text-center tabular-nums"
+                    style={{ color: isEligible ? '#facc15' : '#555' }}>
+                    {i + 1}
+                  </span>
+                  {usePicker ? (
+                    <>
+                      <select
+                        value={team.rosterId > 0 ? String(team.rosterId) : ''}
+                        onChange={(e) => selectTeam(team.id, e.target.value)}
+                        disabled={!isCommissioner}
+                        aria-label={`Team for slot ${i + 1}`}
+                        className={`${INPUT_CLASS} flex-1 min-w-0`}
+                      >
+                        <option value="">Select team…</option>
+                        {team.rosterId > 0 && (
+                          <option value={String(team.rosterId)}>{team.name}</option>
+                        )}
+                        {unpicked.map((p) => (
+                          <option key={p.rosterId} value={String(p.rosterId)}>{p.name}</option>
+                        ))}
+                      </select>
+                      <span className="w-28 shrink-0 text-[10px] truncate" style={{ color: '#555' }}>
+                        {team.ownerName || '—'}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        type="text"
+                        value={team.name}
+                        onChange={(e) => updateTeam(team.id, { name: e.target.value, rosterId: 0 })}
+                        placeholder={`Team ${i + 1} name`}
+                        disabled={!isCommissioner}
+                        className={`${INPUT_CLASS} flex-1 min-w-0`}
+                      />
+                      <input
+                        type="text"
+                        value={team.ownerName}
+                        onChange={(e) => updateTeam(team.id, { ownerName: e.target.value })}
+                        placeholder="Owner"
+                        disabled={!isCommissioner}
+                        className={`${INPUT_CLASS} w-28 shrink-0`}
+                      />
+                    </>
                   )}
-                </span>
-                <span className="text-[10px] shrink-0" style={{ color: '#444' }}>
-                  1 in {worstTeams.length} odds
+                  {isCommissioner && (
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        onClick={() => moveTeam(i, -1)}
+                        disabled={i === 0}
+                        aria-label={`Move ${team.name || `team ${i + 1}`} up`}
+                        className="w-5 h-6 rounded text-[10px] leading-none disabled:opacity-20"
+                        style={{ color: '#666' }}
+                        onMouseEnter={(e) => { if (i !== 0) e.currentTarget.style.color = '#e8e6df'; }}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
+                      >▲</button>
+                      <button
+                        onClick={() => moveTeam(i, 1)}
+                        disabled={i === teams.length - 1}
+                        aria-label={`Move ${team.name || `team ${i + 1}`} down`}
+                        className="w-5 h-6 rounded text-[10px] leading-none disabled:opacity-20"
+                        style={{ color: '#666' }}
+                        onMouseEnter={(e) => { if (i !== teams.length - 1) e.currentTarget.style.color = '#e8e6df'; }}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
+                      >▼</button>
+                      <button
+                        onClick={() => removeTeam(team.id)}
+                        aria-label={`Remove ${team.name || `team ${i + 1}`}`}
+                        className="w-5 h-6 rounded text-xs leading-none"
+                        style={{ color: '#666' }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = '#ff4949')}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
+                      >×</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {isCommissioner && (
+            <>
+              <div className="flex items-center gap-2 mb-6">
+                <button
+                  onClick={addTeam}
+                  className="px-3 py-1.5 rounded text-[11px] font-medium border transition-colors"
+                  style={{ borderColor: '#2a2a2c', color: '#888' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#e8e6df')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#888')}
+                >+ Add Team</button>
+                <button
+                  onClick={clearTeams}
+                  className="px-3 py-1.5 rounded text-[11px] font-medium border transition-colors"
+                  style={{ borderColor: '#2a2a2c', color: '#888' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#e8e6df')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#888')}
+                >Clear</button>
+                <span className="text-[10px] ml-auto tabular-nums" style={{ color: '#444' }}>
+                  {rankedTeams.length} team{rankedTeams.length === 1 ? '' : 's'} entered
                 </span>
               </div>
-            ))}
-          </div>
-          {isCommissioner && (
-            <button
-              onClick={runLottery}
-              className="px-6 py-2.5 rounded text-sm font-medium transition-colors"
-              style={{ background: '#80ff49', color: '#0e0e0f' }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = '#9fff6e')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = '#80ff49')}
-            >
-              Run Draft Lottery
-            </button>
+
+              {worstTeams.length > 0 && (
+                <>
+                  <p className="text-[10px] uppercase tracking-widest mb-2" style={{ color: '#555' }}>
+                    Lottery Eligible · Bottom {worstTeams.length}
+                  </p>
+                  <div className="rounded-lg overflow-hidden mb-6"
+                    style={{ background: '#141415', border: '1px solid #1e1e20' }}>
+                    {[...worstTeams].sort((a, b) => a.rank - b.rank).map((team) => (
+                      <div key={team.rosterId}
+                        className="flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0"
+                        style={{ borderColor: '#1a1a1c' }}>
+                        <span className="text-[10px] w-16 shrink-0 tabular-nums" style={{ color: '#555' }}>
+                          Rank #{team.rank}
+                        </span>
+                        <span className="flex-1 text-xs truncate" style={{ color: '#e8e6df' }}>
+                          {team.name}
+                          {team.ownerName && (
+                            <span className="ml-1" style={{ color: '#555' }}>({team.ownerName})</span>
+                          )}
+                        </span>
+                        <span className="text-[10px] shrink-0" style={{ color: '#444' }}>
+                          1 in {worstTeams.length} odds
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              <button
+                onClick={runLottery}
+                disabled={!canRun}
+                className="px-6 py-2.5 rounded text-sm font-medium transition-colors disabled:opacity-40"
+                style={{ background: '#80ff49', color: '#0e0e0f' }}
+                onMouseEnter={(e) => { if (canRun) e.currentTarget.style.background = '#9fff6e'; }}
+                onMouseLeave={(e) => { if (canRun) e.currentTarget.style.background = '#80ff49'; }}
+              >
+                Run Draft Lottery
+              </button>
+              {!canRun && (
+                <p className="mt-2 text-[10px]" style={{ color: '#444' }}>
+                  Enter at least {MIN_TEAMS} named teams to run the lottery.
+                </p>
+              )}
+              {!effectiveId && (
+                <p className="mt-2 text-[10px]" style={{ color: '#444' }}>
+                  No league selected — results won&apos;t be saved to the activity log.
+                </p>
+              )}
+            </>
           )}
         </>
       )}
