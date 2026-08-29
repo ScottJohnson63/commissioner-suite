@@ -1,56 +1,29 @@
 // tests/app/api/leagues/sync/route.test.ts
 //
-// Tests for POST /api/leagues/sync.
-// Mocks @/lib/prisma, @/lib/sleeper/sync, and @/lib/audit.
+// Tests for POST /api/leagues/sync — the commissioner guard, body validation,
+// and how per-league failures surface. The Sleeper fetch and DB upsert live in
+// syncLeague() and are covered in tests/unit/lib/sleeper/sync.test.ts.
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { NextRequest } from 'next/server';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-jest.mock('@/lib/prisma', () => ({
-  prisma: {
-    league: {
-      upsert: jest.fn(),
-    },
-    team: {
-      upsert: jest.fn(),
-    },
-  },
-}));
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
-jest.mock('@/lib/sleeper/sync', () => ({
-  fetchLeagueData: jest.fn(),
-}));
+jest.mock('@/lib/sleeper/sync', () => ({ syncLeague: jest.fn() }));
 
-jest.mock('@/lib/audit', () => ({
-  writeAuditLog: jest.fn(),
+// Pass-through: bookkeeping is not what this route is responsible for.
+jest.mock('@/lib/syncRun', () => ({
+  recordSyncRun: jest.fn((_source: unknown, _trigger: unknown, work: () => Promise<unknown>) => work()),
 }));
 
 import { POST } from '@/app/api/leagues/sync/route';
-import { prisma } from '@/lib/prisma';
-import { fetchLeagueData } from '@/lib/sleeper/sync';
-import { writeAuditLog } from '@/lib/audit';
+import { auth } from '@/auth';
+import { syncLeague } from '@/lib/sleeper/sync';
 
-const mockFetchLeagueData = fetchLeagueData as jest.MockedFunction<typeof fetchLeagueData>;
-const mockLeagueUpsert    = prisma.league.upsert as jest.MockedFunction<typeof prisma.league.upsert>;
-const mockTeamUpsert      = prisma.team.upsert   as jest.MockedFunction<typeof prisma.team.upsert>;
-const mockAuditLog        = writeAuditLog        as jest.MockedFunction<typeof writeAuditLog>;
-
-// ── Fixtures ──────────────────────────────────────────────────────────────────
-
-// Minimal team set — just 2 teams to keep the fixture small.
-const fakeSyncData = {
-  leagueId: 'sleeper-999',
-  name:     'Test League',
-  season:   2025,
-  teams: [
-    { id: '1', name: 'Team 1', divisionId: 0 as const },
-    { id: '2', name: 'Team 2', divisionId: 1 as const },
-  ],
-};
-
-const fakeLeagueRecord = { id: 'db-lg-1', sleeperLeagueId: 'sleeper-999', name: 'Test League', season: 2025 };
+const mockAuth       = auth       as jest.MockedFunction<typeof auth>;
+const mockSyncLeague = syncLeague as jest.MockedFunction<typeof syncLeague>;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -62,24 +35,46 @@ function makePost(body: Record<string, unknown>): NextRequest {
   });
 }
 
+function signedInAs(role: string) {
+  mockAuth.mockResolvedValue({ user: { role } } as never);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('POST /api/leagues/sync', () => {
   beforeEach(() => {
-    mockFetchLeagueData.mockReset();
-    mockLeagueUpsert.mockReset();
-    mockTeamUpsert.mockReset();
-    mockAuditLog.mockReset();
+    mockAuth.mockReset();
+    mockSyncLeague.mockReset();
 
-    // Default happy-path mocks
-    mockFetchLeagueData.mockResolvedValue(fakeSyncData as never);
-    mockLeagueUpsert.mockResolvedValue(fakeLeagueRecord as never);
-    mockTeamUpsert.mockResolvedValue({} as never);
-    mockAuditLog.mockResolvedValue(undefined);
+    signedInAs('COMMISSIONER');
+    mockSyncLeague.mockResolvedValue({
+      leagueId: 'db-lg-1',
+      sleeperLeagueId: 'sleeper-999',
+      teamCount: 10,
+    });
   });
 
-  // WHY: Happy-path — valid leagueIds array causes Sleeper fetch + DB upsert +
-  //      audit log, then returns 200 with the synced count.
+  // WHY: This route rewrites League and Team rows that every other page reads,
+  //      so a signed-out caller must never reach the Sleeper fetch.
+  it('returns 403 when the caller is not signed in', async () => {
+    mockAuth.mockResolvedValue(null as never);
+
+    const res = await POST(makePost({ leagueIds: ['999'] }));
+    expect(res.status).toBe(403);
+    expect(mockSyncLeague).not.toHaveBeenCalled();
+  });
+
+  // WHY: Members can read the dashboard but must not be able to overwrite the
+  //      league record for everyone.
+  it('returns 403 for a non-commissioner', async () => {
+    signedInAs('MEMBER');
+
+    const res = await POST(makePost({ leagueIds: ['999'] }));
+    expect(res.status).toBe(403);
+    expect(mockSyncLeague).not.toHaveBeenCalled();
+  });
+
+  // WHY: Happy-path — a valid leagueIds array returns 200 with the synced count.
   it('returns 200 with synced count on success', async () => {
     const res = await POST(makePost({ leagueIds: ['999'] }));
     expect(res.status).toBe(200);
@@ -102,24 +97,23 @@ describe('POST /api/leagues/sync', () => {
     expect(res.status).toBe(400);
   });
 
-  // WHY: A Sleeper API failure (e.g. invalid league ID) returns 500 so the UI
-  //      can tell the user the sync failed.
-  it('returns 500 when fetchLeagueData throws', async () => {
-    mockFetchLeagueData.mockRejectedValueOnce(new Error('Sleeper 404'));
+  // WHY: A Sleeper API failure (e.g. invalid league ID) returns 500 naming the
+  //      league that failed, so the UI can tell the user which one to retry.
+  it('returns 500 naming the league that failed', async () => {
+    mockSyncLeague.mockRejectedValueOnce(new Error('Sleeper 404'));
 
     const res = await POST(makePost({ leagueIds: ['999'] }));
     expect(res.status).toBe(500);
 
     const body = await res.json() as { error: string };
+    expect(body.error).toMatch(/league 999/);
     expect(body.error).toMatch(/Sleeper 404/);
   });
 
   // WHY: A league with the wrong division count must fail with a message that
   //      references the 2-division requirement so the user knows how to fix it.
   it('returns 500 with division error message for a non-2-division league', async () => {
-    mockFetchLeagueData.mockRejectedValueOnce(
-      new Error('Expected 2 divisions, league has 3'),
-    );
+    mockSyncLeague.mockRejectedValueOnce(new Error('Expected 2 divisions, league has 3'));
 
     const res = await POST(makePost({ leagueIds: ['999'] }));
     expect(res.status).toBe(500);
@@ -128,24 +122,23 @@ describe('POST /api/leagues/sync', () => {
     expect(body.error).toMatch(/Expected 2 divisions/);
   });
 
-  // WHY: writeAuditLog must be called once per successfully synced league so
-  //      the Activity Log shows an accurate history of sync operations.
-  it('calls writeAuditLog once per synced league', async () => {
-    await POST(makePost({ leagueIds: ['999'] }));
-    expect(mockAuditLog).toHaveBeenCalledTimes(1);
-    expect(mockAuditLog).toHaveBeenCalledWith('SYNC', fakeLeagueRecord.id, expect.anything());
+  // WHY: When the second of two leagues fails, the first league's result must
+  //      still come back so the caller knows it does not need re-syncing.
+  it('returns partial results when a later league fails', async () => {
+    mockSyncLeague
+      .mockResolvedValueOnce({ leagueId: 'db-1', sleeperLeagueId: 'sleeper-1', teamCount: 10 })
+      .mockRejectedValueOnce(new Error('Sleeper 500'));
+
+    const res = await POST(makePost({ leagueIds: ['111', '222'] }));
+    expect(res.status).toBe(500);
+
+    const body = await res.json() as { results: unknown[] };
+    expect(body.results).toHaveLength(1);
   });
 
   // WHY: Multiple leagueIds should be synced in sequence, returning a count
   //      equal to the number of IDs provided.
   it('syncs multiple leagues and returns correct count', async () => {
-    mockFetchLeagueData
-      .mockResolvedValueOnce({ ...fakeSyncData, leagueId: 'sleeper-1' } as never)
-      .mockResolvedValueOnce({ ...fakeSyncData, leagueId: 'sleeper-2' } as never);
-    mockLeagueUpsert
-      .mockResolvedValueOnce({ ...fakeLeagueRecord, id: 'db-1' } as never)
-      .mockResolvedValueOnce({ ...fakeLeagueRecord, id: 'db-2' } as never);
-
     const res = await POST(makePost({ leagueIds: ['111', '222'] }));
     expect(res.status).toBe(200);
 
