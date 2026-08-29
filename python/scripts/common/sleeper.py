@@ -10,6 +10,9 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlsplit
+
+from common.net import require_https
 
 SLEEPER_BASE = "https://api.sleeper.app/v1"
 USER_AGENT = "commissioner-suite/1.0"
@@ -21,12 +24,26 @@ TIMEOUT_SECONDS = 10
 COURTESY_DELAY_SECONDS = 0.1
 
 
+SLEEPER_HOST = urlsplit(SLEEPER_BASE).hostname or ""
+
+
 def get(path: str) -> Any:
-    """Fetches a Sleeper endpoint and returns the parsed JSON body."""
-    req = urllib.request.Request(
-        f"{SLEEPER_BASE}{path}", headers={"User-Agent": USER_AGENT}
-    )
+    """Fetches a Sleeper endpoint and returns the parsed JSON body.
+
+    `path` is a relative path built by the callers from league and user ids, so
+    it is pinned to the Sleeper host — an id carrying "../" or an absolute URL
+    cannot redirect the request elsewhere.
+    """
+    if not path.startswith("/"):
+        raise ValueError(f"Sleeper path must start with '/': {path!r}")
+
+    url = require_https(f"{SLEEPER_BASE}{path}", allowed_host=SLEEPER_HOST)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
+        # The URL is dynamic, but require_https above has already pinned it to
+        # https on api.sleeper.app, so the file:// read this rule guards against
+        # cannot be reached. See tests/test_net.py.
         with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as res:
             body = json.loads(res.read())
     except urllib.error.HTTPError as e:

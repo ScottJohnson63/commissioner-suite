@@ -15,6 +15,8 @@ from typing import Any, Iterable, Sequence
 
 import certifi
 
+from common.net import require_https
+
 # GitHub runners ship without the CA bundle urllib expects, so point the default
 # HTTPS context at certifi for both this module and nflreadpy's downloads.
 ssl._create_default_https_context = lambda: ssl.create_default_context(
@@ -29,8 +31,14 @@ DEFAULT_CHUNK_SIZE = 100
 
 
 def _pipeline_url() -> str:
-    base = os.environ["TURSO_DATABASE_URL"].replace("libsql://", "https://")
-    return f"{base}/v2/pipeline"
+    """The Turso pipeline endpoint, derived from TURSO_DATABASE_URL.
+
+    Turso hands out libsql:// URLs; the HTTP API lives at the same host over
+    https. The scheme is checked rather than assumed, so a secret holding
+    anything else fails loudly here instead of being opened as-is.
+    """
+    base = os.environ["TURSO_DATABASE_URL"].replace("libsql://", "https://", 1)
+    return f"{require_https(base)}/v2/pipeline"
 
 
 def _post(requests: list[dict[str, Any]]) -> dict[str, Any]:
@@ -45,6 +53,10 @@ def _post(requests: list[dict[str, Any]]) -> dict[str, Any]:
         method="POST",
     )
     try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
+        # The URL comes from TURSO_DATABASE_URL, not from user input, and
+        # _pipeline_url rejects it unless it is https with a host. See
+        # tests/test_net.py.
         with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as res:
             return json.loads(res.read())
     except urllib.error.HTTPError as e:
