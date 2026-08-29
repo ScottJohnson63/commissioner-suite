@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { LeagueSelector } from '@/components/LeagueSelector';
 import { useSleeperData } from '@/hooks/useSleeperData';
@@ -15,6 +16,11 @@ import { LotteryTab }     from '@/components/dashboard/LotteryTab';
 
 type Tab = 'league' | 'statistics' | 'news' | 'schedules' | 'divisions' | 'lottery';
 
+// The two tabs a signed-out visitor may browse. Everything behind them
+// (/api/nfl/*, /api/news, /api/trending) is unauthenticated already, so this
+// list and the proxy's PUBLIC_PATHS are the whole story.
+const PUBLIC_TABS: Tab[] = ['statistics', 'news'];
+
 // ─── Dashboard page ───────────────────────────────────────────────────────────
 
 export default function LeagueDashboardPage() {
@@ -25,10 +31,12 @@ export default function LeagueDashboardPage() {
   const [trendingLoading, setTrendingLoading] = useState(true);
   const [trendingError, setTrendingError]     = useState<string | null>(null);
 
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const role           = session?.user?.role;
   const isCommissioner = role === 'COMMISSIONER';
   const isMember       = role === 'MEMBER' || role === 'COMMISSIONER';
+  const isAuthed       = status === 'authenticated';
+  const sessionLoading = status === 'loading';
 
   const [dbLeagues, setDbLeagues] = useState<DbLeague[]>([]);
   const activeDbLeagueId =
@@ -52,14 +60,20 @@ export default function LeagueDashboardPage() {
   useEffect(() => { void fetchTrending(); }, [fetchTrending]);
 
   useEffect(() => {
+    // /api/leagues is 401 for signed-out visitors, and its error body is an
+    // object — assigning that straight to dbLeagues would break the .find()
+    // below. Skip the call entirely, and still guard the shape.
+    if (!isAuthed) return;
     void fetch('/api/leagues')
-      .then((r) => r.json() as Promise<DbLeague[]>)
-      .then(setDbLeagues)
+      .then((r) => (r.ok ? (r.json() as Promise<DbLeague[]>) : null))
+      .then((data) => { if (Array.isArray(data)) setDbLeagues(data); })
       .catch(() => { /* non-critical */ });
-  }, []);
+  }, [isAuthed]);
 
+  // League needs a Sleeper account behind it, so it joins the public two only
+  // once there is a session.
   const LEFT_TABS: { id: Tab; label: string }[] = [
-    { id: 'league',     label: 'League'     },
+    ...(isAuthed ? [{ id: 'league' as Tab, label: 'League' }] : []),
     { id: 'statistics', label: 'Statistics' },
     { id: 'news',       label: 'News'       },
   ];
@@ -71,7 +85,12 @@ export default function LeagueDashboardPage() {
   ];
 
   const allTabs = [...LEFT_TABS, ...(isMember ? MEMBER_TABS : [])];
-  const currentTabLabel = allTabs.find((t) => t.id === tab)?.label ?? '';
+
+  // `tab` defaults to League, which a signed-out visitor cannot see. Falling
+  // back to the first visible tab means no separate default per auth state, and
+  // it also catches a member who signs out while sitting on Lottery.
+  const activeTab: Tab = allTabs.some((t) => t.id === tab) ? tab : PUBLIC_TABS[0];
+  const currentTabLabel = allTabs.find((t) => t.id === activeTab)?.label ?? '';
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
@@ -92,8 +111,8 @@ export default function LeagueDashboardPage() {
         onClick={() => setTab(id)}
         className="px-4 py-2.5 text-sm font-medium transition-colors"
         style={{
-          color: tab === id ? '#e8e6df' : '#555',
-          borderBottom: `2px solid ${tab === id ? '#80ff49' : 'transparent'}`,
+          color: activeTab === id ? '#e8e6df' : '#555',
+          borderBottom: `2px solid ${activeTab === id ? '#80ff49' : 'transparent'}`,
           marginBottom: -1,
         }}
       >
@@ -114,16 +133,33 @@ export default function LeagueDashboardPage() {
           <h1 className="text-xl font-semibold">Dashboard</h1>
         </div>
 
+        {/* Nothing here until the session resolves — swapping a Sign in button
+            for the league selector a moment later reads as a glitch. */}
         <div className="flex items-center gap-3 mt-1">
-          <LeagueSelector
-            sleeperUser={sleeperUser}
-            activeLeagueId={activeLeagueId}
-            onSelect={setActiveLeagueId}
-          />
-          {(sleeperUser?.displayName ?? session?.user?.username) && (
-            <span className="text-xs" style={{ color: '#80ff49' }}>
-              {sleeperUser?.displayName ?? session?.user?.username}
-            </span>
+          {sessionLoading ? null : isAuthed ? (
+            <>
+              <LeagueSelector
+                sleeperUser={sleeperUser}
+                activeLeagueId={activeLeagueId}
+                onSelect={setActiveLeagueId}
+              />
+              {(sleeperUser?.displayName ?? session?.user?.username) && (
+                <span className="text-xs" style={{ color: '#80ff49' }}>
+                  {sleeperUser?.displayName ?? session?.user?.username}
+                </span>
+              )}
+            </>
+          ) : (
+            // Links to the app's own login page, which has the OAuth buttons,
+            // the commissioner modal and the demo entry. NextAuth's built-in
+            // signIn() page has none of that.
+            <Link
+              href="/login"
+              className="text-xs px-3 py-1.5 rounded font-medium transition-opacity hover:opacity-80"
+              style={{ background: '#80ff49', color: '#0e0e0f' }}
+            >
+              Sign in
+            </Link>
           )}
         </div>
       </div>
@@ -172,11 +208,11 @@ export default function LeagueDashboardPage() {
                 onClick={() => { setTab(id); setMobileMenuOpen(false); }}
                 className="w-full text-left px-4 py-2.5 text-sm transition-colors"
                 style={{
-                  color: tab === id ? '#80ff49' : '#888',
-                  background: tab === id ? 'rgba(128,255,73,0.08)' : 'transparent',
+                  color: activeTab === id ? '#80ff49' : '#888',
+                  background: activeTab === id ? 'rgba(128,255,73,0.08)' : 'transparent',
                 }}
-                onMouseEnter={(e) => { if (tab !== id) e.currentTarget.style.color = '#e8e6df'; }}
-                onMouseLeave={(e) => { if (tab !== id) e.currentTarget.style.color = '#888'; }}
+                onMouseEnter={(e) => { if (activeTab !== id) e.currentTarget.style.color = '#e8e6df'; }}
+                onMouseLeave={(e) => { if (activeTab !== id) e.currentTarget.style.color = '#888'; }}
               >
                 {label}
               </button>
@@ -186,11 +222,11 @@ export default function LeagueDashboardPage() {
       </div>
 
       {/* ── Tab content ── */}
-      {tab === 'league' && (
+      {isAuthed && activeTab === 'league' && (
         <LeagueTab sleeperUser={sleeperUser} activeLeagueId={activeLeagueId} />
       )}
 
-      {tab === 'statistics' && (
+      {activeTab === 'statistics' && (
         <StatisticsTab
           trending={trending}
           trendingLoading={trendingLoading}
@@ -199,12 +235,12 @@ export default function LeagueDashboardPage() {
         />
       )}
 
-      {tab === 'news' && <NewsTab />}
+      {activeTab === 'news' && <NewsTab />}
 
       {isMember && (
         <>
           {/* Keep SchedulesTab always mounted so fetched data survives tab switches */}
-          <div style={{ display: tab === 'schedules' ? undefined : 'none' }}>
+          <div style={{ display: activeTab === 'schedules' ? undefined : 'none' }}>
             <SchedulesTab
               activeLeagueId={activeDbLeagueId}
               sleeperLeagueId={activeLeagueId}
@@ -212,8 +248,8 @@ export default function LeagueDashboardPage() {
               isCommissioner={isCommissioner}
             />
           </div>
-          {tab === 'divisions' && <DivisionsTab activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
-          {tab === 'lottery'   && <LotteryTab   activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
+          {activeTab === 'divisions' && <DivisionsTab activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
+          {activeTab === 'lottery'   && <LotteryTab   activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
         </>
       )}
 

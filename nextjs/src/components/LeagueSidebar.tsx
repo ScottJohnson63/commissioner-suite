@@ -9,10 +9,14 @@ import type { Route } from 'next';
 // ─── Nav definition ───────────────────────────────────────────────────────────
 
 // Route type satisfies Next.js typedRoutes — href must be a known app route.
-const BASE_NAV: { label: string; href: Route; icon: React.ReactNode }[] = [
+// Dashboard is the only entry a signed-out visitor can reach — the page itself
+// shows them just the public Statistics and News tabs.
+const PUBLIC_NAV: { label: string; href: Route; icon: React.ReactNode }[] = [
   { label: 'Dashboard',    href: '/league/dashboard', icon: <GridIcon /> },
+];
+
+const AUTHED_NAV: { label: string; href: Route; icon: React.ReactNode }[] = [
   { label: 'AI Assistant', href: '/league/ai',        icon: <SparkleIcon /> },
-  { label: 'Schedule',     href: '/league/schedule',  icon: <CalendarIcon /> },
 ];
 
 // ─── Tooltip shown beside collapsed nav icons ─────────────────────────────────
@@ -34,16 +38,29 @@ function NavTooltip({ label }: { label: string }) {
 
 export function LeagueSidebar() {
   const pathname = usePathname();
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const [expanded, setExpanded] = useState(true);
   const [overflow, setOverflow] = useState<'hidden' | 'visible'>('hidden');
 
+  // Data Sync, Members and Activity Log are member-only; a PLAYER sees just the
+  // base nav.
+  const isAuthed = status === 'authenticated';
+  const isMember =
+    session?.user?.role === 'MEMBER' || session?.user?.role === 'COMMISSIONER';
+
   const NAV: { label: string; href: Route; icon: React.ReactNode }[] = [
-    ...BASE_NAV,
-    ...(session?.user?.role === 'MEMBER' || session?.user?.role === 'COMMISSIONER'
+    ...PUBLIC_NAV,
+    ...(isAuthed ? AUTHED_NAV : []),
+    ...(isMember
+      ? [
+          { label: 'League Sync', href: '/league/league-sync' as Route, icon: <SyncIcon />  },
+          { label: 'Stats Sync',  href: '/league/stats-sync'  as Route, icon: <StatsIcon /> },
+        ]
+      : []),
+    ...(isMember
       ? [{ label: 'Members',      href: '/league/members' as Route, icon: <PeopleIcon /> }]
       : []),
-    ...(session?.user?.role === 'MEMBER' || session?.user?.role === 'COMMISSIONER'
+    ...(isMember
       ? [{ label: 'Activity Log', href: '/league/log'     as Route, icon: <LogIcon />    }]
       : []),
   ];
@@ -142,10 +159,14 @@ export function LeagueSidebar() {
       </nav>
 
       {/* ── Footer / sign out ── */}
+      {/* Signed-out visitors sign in from the dashboard header instead. */}
+      {isAuthed && (
       <div className="p-1.5 border-t" style={{ borderColor: '#1e1e20' }}>
         <div className="relative group">
+          {/* Signing out lands on the public dashboard, not the login page —
+              Statistics and News are still readable without an account. */}
           <button
-            onClick={() => void signOut({ callbackUrl: '/' })}
+            onClick={() => void signOut({ callbackUrl: '/league/dashboard' })}
             className="flex items-center gap-3 w-full rounded px-2 py-2 text-sm transition-colors"
             style={{ color: '#555', minHeight: 36 }}
             onMouseEnter={(e) => (e.currentTarget.style.color = '#ff4949')}
@@ -159,6 +180,7 @@ export function LeagueSidebar() {
           {!expanded && <NavTooltip label="Sign out" />}
         </div>
       </div>
+      )}
     </aside>
   );
 }
@@ -185,11 +207,19 @@ function SparkleIcon() {
   );
 }
 
-function CalendarIcon() {
+function StatsIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
-      <rect x="1.5" y="2.5" width="12" height="11" rx="1.5" />
-      <path d="M5 1v3M10 1v3M1.5 6.5h12" />
+      <path d="M2 13V9M6 13V4M10 13V7M14 13V2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SyncIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M13 7.5a5.5 5.5 0 01-9.4 3.9M2 7.5a5.5 5.5 0 019.4-3.9" />
+      <path d="M11.5 1v3h-3M3.5 14v-3h3" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
