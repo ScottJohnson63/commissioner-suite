@@ -43,10 +43,9 @@ async function main() {
   // Cascade manually (SQLite doesn't always enforce FK cascade on delete)
   const ids = nullUsers.map((u) => u.id);
   await prisma.account.deleteMany({ where: { userId: { in: ids } } });
-  await prisma.session.deleteMany({ where: { userId: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
 
-  console.log(`\n✓ Deleted ${nullUsers.length} user(s) and their linked accounts/sessions.`);
+  console.log(`\n✓ Deleted ${nullUsers.length} user(s) and their linked accounts.`);
   console.log('  These users will need to sign in again via OAuth and reconnect Sleeper.\n');
 }
 

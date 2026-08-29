@@ -50,6 +50,28 @@ turso db shell commissioner-suite ".tables"
 
 ---
 
+## Applying a checked-in migration
+
+For changes kept as a migration directory under `prisma/migrations/`, use the
+runner instead of a hand-edited `schema.sql`:
+
+```bash
+npx tsx prisma/apply-migration.ts <migration-dir-name> --dry-run   # pre-flight only
+npx tsx prisma/apply-migration.ts <migration-dir-name>             # execute
+```
+
+The dry run reports the live row count and confirms that every column each table
+rebuild copies forward actually exists. That check matters because this database
+was originally created with `db push`, so it can drift from the migration
+history — and a rebuild that fails halfway has already dropped the source table.
+
+> **Turso caveat:** `CREATE INDEX` immediately after `DROP TABLE` in the same run
+> can fail with "index already exists" even though the index is gone from
+> `sqlite_master`. Re-run the index statements on their own with
+> `IF NOT EXISTS`; the rest of the migration is unaffected.
+
+---
+
 ## Notes
 
 - `schema.sql` is gitignored — never commit it as it may contain connection details
