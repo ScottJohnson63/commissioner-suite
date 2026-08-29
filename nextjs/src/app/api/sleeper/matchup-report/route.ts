@@ -18,7 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getPlayerMap, type SleeperPlayerInfo } from '@/lib/sleeper/playerCache';
-import { sleeperGet } from '@/lib/sleeper/client';
+import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
 import type { SleeperRoster, SleeperUser, SleeperMatchupRaw, SleeperNflState } from '@/lib/sleeper/types';
 import { RouteCache } from '@/lib/cache';
 import type { PlayerProjection, TeamProjection, WeatherInfo, VegasLine, MatchupReportResponse } from '@/types/projections';
@@ -108,7 +108,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       let rawWeek = searchParams.get('week') ? Number(searchParams.get('week')) : null;
       if (!rawWeek) {
         try {
-          const state = await sleeperGet<SleeperNflState>('/state/nfl', 60);
+          const state = await sleeperGet<SleeperNflState>('/state/nfl', SLEEPER_TTL.NFL_STATE);
           rawWeek = state.week;
         } catch {
           rawWeek = 1;

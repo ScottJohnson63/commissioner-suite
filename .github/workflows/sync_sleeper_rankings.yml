@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 9 1 9 *'  # September 1st at 09:00 UTC — before divisions are set
   workflow_dispatch:
+    inputs:
+      league_id:
+        description: 'Sleeper league ID to sync (leave blank for every league)'
+        required: false
+        default: ''
 
 jobs:
   sync:
@@ -35,6 +40,7 @@ jobs:
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          LEAGUE_ID: ${{ github.event.inputs.league_id || '' }}
         run: |
           cd python
           python scripts/sync_sleeper_rankings.py

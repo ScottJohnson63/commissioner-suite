@@ -28,7 +28,7 @@ async function syncLeagueFromSleeper(sleeperLeagueId: string): Promise<LeagueWit
   const league = await prisma.league.upsert({
     where: { sleeperLeagueId: leagueId },
     update: { name, season },
-    create: { sleeperLeagueId: leagueId, name, season, divisionCount: 2 },
+    create: { sleeperLeagueId: leagueId, name, season },
   });
 
   await Promise.all(

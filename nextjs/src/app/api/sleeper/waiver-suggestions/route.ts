@@ -14,7 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getPlayerMap } from '@/lib/sleeper/playerCache';
-import { sleeperGet } from '@/lib/sleeper/client';
+import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
 import type { SleeperRoster, SleeperNflState, SleeperTrendingRaw } from '@/lib/sleeper/types';
 import { RouteCache } from '@/lib/cache';
 import type { WaiverSuggestion, WaiverSuggestionsResponse } from '@/types/suggestions';
@@ -120,7 +120,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       let rawWeek = searchParams.get('week') ? Number(searchParams.get('week')) : null;
       if (!rawWeek) {
         try {
-          const state = await sleeperGet<SleeperNflState>('/state/nfl', 60);
+          const state = await sleeperGet<SleeperNflState>('/state/nfl', SLEEPER_TTL.NFL_STATE);
           rawWeek = Math.max(1, state.week - 1);
         } catch { rawWeek = 1; }
       }
@@ -128,7 +128,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       const [rosters, trendingRaw, livePlayerMap] = await Promise.all([
         sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
-        sleeperGet<SleeperTrendingRaw[]>('/players/nfl/trending/add?lookback_hours=168&limit=50', 600),
+        sleeperGet<SleeperTrendingRaw[]>('/players/nfl/trending/add?lookback_hours=168&limit=50', SLEEPER_TTL.TRENDING),
         getPlayerMap().catch(() => new Map<string, PlayerInfo>()),
       ]);
 

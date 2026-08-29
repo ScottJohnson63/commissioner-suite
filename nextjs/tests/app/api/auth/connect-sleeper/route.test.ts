@@ -28,6 +28,7 @@ jest.mock('next-auth/jwt', () => ({
 // the ESM import chain is never traversed.
 jest.mock('@/auth', () => ({
   validateSleeperMembership: jest.fn(),
+  resolveSleeperUser: jest.fn(),
 }));
 
 jest.mock('@/lib/prisma', () => ({
@@ -39,11 +40,12 @@ jest.mock('@/lib/prisma', () => ({
 
 import { POST } from '@/app/api/auth/connect-sleeper/route';
 import { getToken } from 'next-auth/jwt';
-import { validateSleeperMembership } from '@/auth';
+import { validateSleeperMembership, resolveSleeperUser } from '@/auth';
 import { prisma } from '@/lib/prisma';
 
 const mockGetToken    = getToken                    as jest.MockedFunction<typeof getToken>;
 const mockValidate    = validateSleeperMembership   as jest.MockedFunction<typeof validateSleeperMembership>;
+const mockResolve     = resolveSleeperUser          as jest.MockedFunction<typeof resolveSleeperUser>;
 const mockAcctFind    = prisma.account.findUnique   as jest.MockedFunction<typeof prisma.account.findUnique>;
 const mockAcctCreate  = prisma.account.create       as jest.MockedFunction<typeof prisma.account.create>;
 const mockUserCreate  = prisma.user.create          as jest.MockedFunction<typeof prisma.user.create>;
@@ -202,18 +204,48 @@ describe('POST /api/auth/connect-sleeper', () => {
     expect(res.status).toBe(404);
   });
 
-  // WHY: Commissioners (role: COMMISSIONER) skip Sleeper membership validation —
-  //      they are trusted by their role and shouldn't be locked out if their
-  //      Sleeper account isn't in a registered league.
-  it('[Path B] skips Sleeper validation for COMMISSIONER role', async () => {
+  // WHY: Commissioners (role: COMMISSIONER) skip the league-membership check —
+  //      they may run a league they do not play in — but the id must still be
+  //      resolved and written, or the form silently saves nothing.
+  it('[Path B] resolves without a league check for COMMISSIONER role', async () => {
     mockGetToken.mockResolvedValueOnce(resolvedToken as never);
     mockUserFind.mockResolvedValueOnce({ ...existingDbUser, role: 'COMMISSIONER' } as never);
+    mockResolve.mockResolvedValueOnce(sleeperOk);
 
     const res = await POST(makeReq({ sleeperUsername: 'commissioner-alice' }));
 
     expect(res.status).toBe(200);
-    // validateSleeperMembership must NOT have been called.
+    // The league-membership check must NOT have been used.
     expect(mockValidate).not.toHaveBeenCalled();
+    expect(mockResolve).toHaveBeenCalledWith('commissioner-alice');
+  });
+
+  // WHY: This is the bug that made the reconnect form appear to work while
+  //      leaving the account unlinked — a commissioner's id was never written.
+  it('[Path B] persists sleeperUserId for a COMMISSIONER', async () => {
+    mockGetToken.mockResolvedValueOnce(resolvedToken as never);
+    mockUserFind.mockResolvedValueOnce({ ...existingDbUser, role: 'COMMISSIONER' } as never);
+    mockResolve.mockResolvedValueOnce(sleeperOk);
+
+    await POST(makeReq({ sleeperUsername: 'commissioner-alice' }));
+
+    expect(mockUserUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ sleeperUserId: sleeperOk.userId }),
+      }),
+    );
+  });
+
+  // WHY: Skipping the league check must not become skipping every check — a
+  //      username that does not exist on Sleeper still has to fail.
+  it('[Path B] returns 404 when a COMMISSIONER gives an unknown Sleeper username', async () => {
+    mockGetToken.mockResolvedValueOnce(resolvedToken as never);
+    mockUserFind.mockResolvedValueOnce({ ...existingDbUser, role: 'COMMISSIONER' } as never);
+    mockResolve.mockResolvedValueOnce(null);
+
+    const res = await POST(makeReq({ sleeperUsername: 'nope' }));
+    expect(res.status).toBe(404);
+    expect(mockUserUpdate).not.toHaveBeenCalled();
   });
 
   // WHY: A non-commissioner member must pass Sleeper validation on reconnect —

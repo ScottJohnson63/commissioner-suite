@@ -16,7 +16,8 @@ export function TradeAnalyzerPanel({
     setLoading(true); setError(null);
     try {
       const res = await fetch(
-        `/api/sleeper/trade-suggestions?leagueId=${leagueId}&userId=${userId}&season=2025`,
+        // No season param: the server uses NFL_SEASON, which is the live Sleeper season.
+        `/api/sleeper/trade-suggestions?leagueId=${leagueId}&userId=${userId}`,
       );
       if (!res.ok) throw new Error('Failed to load trades');
       setData(await res.json() as TradeSuggestionsResponse);

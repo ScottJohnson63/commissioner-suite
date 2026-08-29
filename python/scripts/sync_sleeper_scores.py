@@ -1,260 +1,137 @@
-"""
-Sleeper score sync — runs every Tuesday after sync_nfl_weekly.
-Fetches fantasy points from Sleeper for the most recently completed
-week and updates homePoints / awayPoints on Matchup rows in Turso.
+"""Sleeper score sync — Tuesdays at 08:30 UTC, in season only.
 
-Requires:
-  TURSO_DATABASE_URL, TURSO_AUTH_TOKEN — Turso credentials
-  NFL_SEASON — current season year (e.g. 2025)
+Copies each team's fantasy points for the last completed week from Sleeper onto
+the Matchup rows of the locally generated schedule. Runs after the NFL stat sync
+so both feeds land in the same window.
+
+Env:
+  TURSO_DATABASE_URL, TURSO_AUTH_TOKEN — database credentials
+  NFL_SEASON                           — season to sync
+  FORCE                                — "true" bypasses the season window
+  WEEK                                 — override the week to sync
 """
 from __future__ import annotations
 
-import json
 import os
-import ssl
-import urllib.request
-from datetime import datetime
-from typing import Any
 
-import certifi
+from common import season, sleeper, syncrun, turso
 
-ssl._create_default_https_context = lambda: ssl.create_default_context(
-    cafile=certifi.where()
-)
+UPDATE_POINTS_SQL = 'UPDATE "Matchup" SET "homePoints" = ?, "awayPoints" = ? WHERE "id" = ?'
 
-TURSO_DATABASE_URL: str = os.environ["TURSO_DATABASE_URL"]
-TURSO_AUTH_TOKEN: str = os.environ["TURSO_AUTH_TOKEN"]
-CURRENT_SEASON: int = int(os.environ.get("NFL_SEASON", str(datetime.now().year)))
-FORCE: bool = os.environ.get("FORCE", "false").lower() == "true"
-# Override week for manual runs: WEEK=5 python sync_sleeper_scores.py
-FORCE_WEEK: int | None = int(os.environ["WEEK"]) if os.environ.get("WEEK") else None
-
-SLEEPER_BASE = "https://api.sleeper.app/v1"
+MATCHUPS_FOR_WEEK_SQL = """
+    SELECT m.id,
+           ht.sleeperRosterId AS homeRosterId,
+           at.sleeperRosterId AS awayRosterId
+    FROM   Matchup m
+    JOIN   Schedule s  ON s.id = m.scheduleId
+    JOIN   Team     ht ON ht.id = m.homeTeamId
+    JOIN   Team     at ON at.id = m.awayTeamId
+    WHERE  s.leagueId = ?
+    AND    m.week     = ?
+"""
 
 
-# ── HTTP helpers ──────────────────────────────────────────────────────────────
-
-def sleeper_get(path: str) -> Any:
-    url = f"{SLEEPER_BASE}{path}"
-    req = urllib.request.Request(url, headers={"User-Agent": "commissioner-suite/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as res:
-            return json.loads(res.read())
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Sleeper HTTP {e.code} for {path}") from e
+def target_week() -> int:
+    """The week to sync — the WEEK override if set, else the last completed one."""
+    override = os.environ.get("WEEK")
+    if override:
+        print(f"WEEK override: using week {override}")
+        return int(override)
+    return sleeper.last_completed_week()
 
 
-def turso_execute(statements: list[dict[str, Any]]) -> None:
-    base_url = TURSO_DATABASE_URL.replace("libsql://", "https://")
-    url = f"{base_url}/v2/pipeline"
-    payload = json.dumps({"requests": statements}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as res:
-            result = json.loads(res.read())
-            for i, r in enumerate(result.get("results", [])):
-                if r.get("type") == "error":
-                    raise RuntimeError(f"Statement {i} failed: {r['error']}")
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8")
-        raise RuntimeError(f"Turso HTTP {e.code}: {body}") from e
-
-
-def turso_query(sql: str, args: list[Any] | None = None) -> list[dict[str, Any]]:
-    """Run a SELECT and return rows as list of dicts."""
-    base_url = TURSO_DATABASE_URL.replace("libsql://", "https://")
-    url = f"{base_url}/v2/pipeline"
-    stmt: dict[str, Any] = {"sql": sql, "args": [{"type": "text", "value": str(a)} for a in (args or [])]}
-    payload = json.dumps({"requests": [{"type": "execute", "stmt": stmt}]}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=15) as res:
-        result = json.loads(res.read())
-
-    result_set = result["results"][0]
-    if result_set.get("type") == "error":
-        raise RuntimeError(f"Query error: {result_set['error']}")
-
-    rows_data = result_set["response"]["result"]
-    cols = [c["name"] for c in rows_data["cols"]]
-    return [
-        {cols[i]: (cell["value"] if cell["type"] != "null" else None) for i, cell in enumerate(row)}
-        for row in rows_data["rows"]
-    ]
-
-
-# ── Season window guard ───────────────────────────────────────────────────────
-
-def is_in_season() -> bool:
-    if FORCE:
-        print("FORCE=true — skipping season window check.")
-        return True
-    today = datetime.utcnow()
-    if today.month >= 8:
-        return True
-    if today.month == 1 or (today.month == 2 and today.day == 1):
-        return True
-    return False
-
-
-# ── Sleeper data fetchers ─────────────────────────────────────────────────────
-
-def get_current_week() -> int:
-    """Returns the most recently COMPLETED week (state.week - 1 during season)."""
-    if FORCE_WEEK:
-        print(f"WEEK override: using week {FORCE_WEEK}")
-        return FORCE_WEEK
-    state = sleeper_get("/state/nfl")
-    # During the season, state.week is the current week in progress.
-    # We want the last completed week.
-    week = state.get("week", 1)
-    season_type = state.get("season_type", "off")
-    if season_type == "regular":
-        return max(1, week - 1)
-    # Post-season or off-season — return last regular season week
-    return 18
-
-
-def fetch_sleeper_matchups(sleeper_league_id: str, week: int) -> list[dict[str, Any]]:
-    """
-    Returns Sleeper matchup objects for the given week.
-    Each object has: roster_id, matchup_id, points
-    """
-    return sleeper_get(f"/league/{sleeper_league_id}/matchups/{week}")
-
-
-# ── Core sync logic ───────────────────────────────────────────────────────────
-
-def sync_league_scores(
-    league_id: str,
-    sleeper_league_id: str,
-    league_name: str,
-    week: int,
-) -> int:
-    """
-    Syncs scores for one league for the given week.
-    Returns the number of matchup rows updated.
-    """
-    print(f"  Fetching Sleeper matchups for {league_name} (week {week})...")
-    sleeper_matchups = fetch_sleeper_matchups(sleeper_league_id, week)
+def sync_league_scores(league_id: str, sleeper_league_id: str, name: str, week: int) -> int:
+    """Writes points onto one league's matchup rows. Returns rows updated."""
+    print(f"  Fetching Sleeper matchups for {name} (week {week})...")
+    sleeper_matchups = sleeper.get(f"/league/{sleeper_league_id}/matchups/{week}")
 
     if not sleeper_matchups:
         print(f"  No Sleeper matchup data for week {week} — skipping.")
         return 0
 
-    # Build map: roster_id (str) → points
     roster_points: dict[str, float] = {
-        str(m["roster_id"]): float(m.get("points", 0) or 0)
-        for m in sleeper_matchups
+        str(m["roster_id"]): float(m.get("points", 0) or 0) for m in sleeper_matchups
     }
     print(f"  Got points for {len(roster_points)} rosters.")
 
-    # Fetch Matchup rows from Turso for this league + week
-    # Join through Schedule to filter by leagueId
-    matchup_rows = turso_query(
-        """
-        SELECT m.id, m.homeTeamId, m.awayTeamId,
-               ht.sleeperRosterId AS homeRosterId,
-               at.sleeperRosterId AS awayRosterId
-        FROM   Matchup m
-        JOIN   Schedule s  ON s.id = m.scheduleId
-        JOIN   Team     ht ON ht.id = m.homeTeamId
-        JOIN   Team     at ON at.id = m.awayTeamId
-        WHERE  s.leagueId = ?
-        AND    m.week     = ?
-        """,
-        [league_id, str(week)],
-    )
-
+    matchup_rows = turso.query(MATCHUPS_FOR_WEEK_SQL, [league_id, week])
     if not matchup_rows:
-        print(f"  No Matchup rows found in Turso for week {week} — schedule may not be generated yet.")
+        print(f"  No Matchup rows for week {week} — schedule may not be generated yet.")
         return 0
 
-    # Build UPDATE statements
-    statements: list[dict[str, Any]] = []
-    updated = 0
-
+    updates = []
     for row in matchup_rows:
-        home_pts = roster_points.get(str(row["homeRosterId"]))
-        away_pts = roster_points.get(str(row["awayRosterId"]))
-
-        if home_pts is None and away_pts is None:
-            print(f"    ⚠ No points found for matchup {row['id']} — roster IDs may not match.")
+        home = roster_points.get(str(row["homeRosterId"]))
+        away = roster_points.get(str(row["awayRosterId"]))
+        if home is None and away is None:
+            print(f"    ⚠ No points for matchup {row['id']} — roster IDs may not match.")
             continue
+        updates.append([home or 0.0, away or 0.0, row["id"]])
 
-        statements.append({
-            "type": "execute",
-            "stmt": {
-                "sql": 'UPDATE "Matchup" SET "homePoints" = ?, "awayPoints" = ? WHERE "id" = ?',
-                "args": [
-                    {"type": "float", "value": home_pts or 0.0},
-                    {"type": "float", "value": away_pts or 0.0},
-                    {"type": "text",  "value": row["id"]},
-                ],
-            },
-        })
-        updated += 1
-
-    if statements:
-        turso_execute(statements)
-
-    print(f"  ✓ Updated {updated}/{len(matchup_rows)} matchup rows.")
-    return updated
+    turso.execute([turso.statement(UPDATE_POINTS_SQL, u) for u in updates])
+    print(f"  ✓ Updated {len(updates)}/{len(matchup_rows)} matchup rows.")
+    return len(updates)
 
 
 def main() -> None:
-    if not is_in_season():
-        today = datetime.utcnow()
-        print(f"Outside NFL season window ({today.strftime('%B %d')}) — skipping. Set FORCE=true to override.")
-        return
+    with syncrun.record(syncrun.SLEEPER_SCORES) as run:
+        if not season.is_in_season():
+            reason = f"Outside the NFL season window ({season.now():%B %d})."
+            print(f"{reason} Set FORCE=true to override.")
+            run.skip(reason)
+            return
 
-    week = get_current_week()
-    print(f"Syncing Sleeper scores for season {CURRENT_SEASON}, week {week}...")
+        current = season.current_season()
+        week = target_week()
+        print(f"Syncing Sleeper scores for season {current}, week {week}...")
 
-    # Fetch all leagues from Turso
-    leagues = turso_query(
-        'SELECT id, sleeperLeagueId, name FROM "League" WHERE season = ?',
-        [str(CURRENT_SEASON)],
-    )
+        # LEAGUE_ID narrows a commissioner's manual run to the league selected
+        # on the Data Sync page; blank (the scheduled case) sweeps them all.
+        only = syncrun.target_league()
+        if only:
+            leagues = turso.query(
+                'SELECT id, sleeperLeagueId, name FROM "League" '
+                "WHERE season = ? AND sleeperLeagueId = ?",
+                [current, only],
+            )
+        else:
+            leagues = turso.query(
+                'SELECT id, sleeperLeagueId, name FROM "League" WHERE season = ?', [current]
+            )
 
-    if not leagues:
-        print("No leagues found in Turso — sync leagues via the commissioner dashboard first.")
-        return
+        if not leagues:
+            reason = (
+                f"League {only} is not registered for season {current}."
+                if only
+                else "No leagues in the database — add one from the Data Sync page first."
+            )
+            print(reason)
+            run.skip(reason)
+            return
 
-    print(f"Found {len(leagues)} league(s).\n")
-    total_updated = 0
+        print(f"Found {len(leagues)} league(s).\n")
+        failures: list[str] = []
 
-    for league in leagues:
-        league_id = league["id"]
-        sleeper_league_id = league["sleeperLeagueId"]
-        league_name = league["name"] or sleeper_league_id
+        for league in leagues:
+            name = league["name"] or league["sleeperLeagueId"]
+            print(f"League: {name} ({league['sleeperLeagueId']})")
+            try:
+                run.count(
+                    sync_league_scores(league["id"], league["sleeperLeagueId"], name, week)
+                )
+            except Exception as e:
+                # One bad league should not stop the rest, but the run should
+                # still surface as failed in the dashboard.
+                print(f"  ✗ Error syncing {name}: {e}")
+                failures.append(f"{name}: {e}")
+            print()
 
-        print(f"League: {league_name} ({sleeper_league_id})")
-        try:
-            updated = sync_league_scores(league_id, sleeper_league_id, league_name, week)
-            total_updated += updated
-        except Exception as e:
-            # Non-fatal — log and continue with next league
-            print(f"  ✗ Error syncing {league_name}: {e}")
+        run.note(season=current, week=week, leagues=len(leagues))
+        if failures:
+            run.note(failures=failures)
+            raise RuntimeError(f"{len(failures)} of {len(leagues)} league(s) failed")
 
-        print()
-
-    print(f"✓ Sleeper score sync complete. {total_updated} matchup rows updated across {len(leagues)} league(s).")
+        print(f"✓ Score sync complete. {run.row_count} matchup rows updated.")
 
 
 if __name__ == "__main__":

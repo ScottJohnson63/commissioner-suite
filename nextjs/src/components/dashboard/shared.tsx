@@ -41,12 +41,15 @@ export function PlayerAvatar({
 }
 
 export function PanelActionBtn({
-  onClick, disabled, loading, label, loadingLabel,
+  onClick, disabled, loading, label, loadingLabel, type = 'button',
 }: {
-  onClick: () => void; disabled: boolean; loading: boolean; label: string; loadingLabel: string;
+  onClick?: () => void; disabled: boolean; loading: boolean; label: string; loadingLabel: string;
+  /** 'submit' lets the button drive a surrounding form instead of an onClick. */
+  type?: 'button' | 'submit';
 }) {
   return (
     <button
+      type={type}
       onClick={onClick}
       disabled={disabled || loading}
       className="text-xs font-medium px-3 py-1.5 rounded transition-opacity disabled:opacity-40 shrink-0"

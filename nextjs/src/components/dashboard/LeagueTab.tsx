@@ -23,7 +23,7 @@ export function LeagueTab({
           <div>
             <p className="text-xs font-semibold" style={{ color: '#facc15' }}>Demo Mode Active</p>
             <p className="text-[10px] mt-0.5" style={{ color: 'rgba(250,204,21,0.5)' }}>
-              Mock rosters · Real 2025 stats · Live odds from the current active sport · Set{' '}
+              Mock rosters · Real NFL stats · Live odds from the current active sport · Set{' '}
               <code style={{ color: 'rgba(250,204,21,0.75)' }}>DEMO_MODE=false</code> in{' '}
               <code style={{ color: 'rgba(250,204,21,0.75)' }}>.env</code> to connect your Sleeper account
             </p>

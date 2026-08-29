@@ -5,7 +5,7 @@ export default async function AuthRedirectPage() {
   const session = await auth();
 
   if (!session?.user) {
-    redirect('/');
+    redirect('/login');
   }
 
   // New OAuth user — not yet in the DB, must verify Sleeper membership first

@@ -29,7 +29,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 import { prisma } from '@/lib/prisma';
-import { validateSleeperMembership } from '@/auth';
+import { validateSleeperMembership, resolveSleeperUser } from '@/auth';
 import { ok, err } from '@/lib/api';
 
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME ?? 'admin';
@@ -121,21 +121,31 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return err('User not found', 404);
   }
 
-  // Commissioners (e.g. admin) skip Sleeper validation
+  // Commissioners skip the league-membership requirement — they may run a
+  // league they do not play in — but their Sleeper id still has to be resolved
+  // and stored, or the account stays unlinked and the form appears to do
+  // nothing.
   const isCommissioner = dbUser.role === 'COMMISSIONER';
-  if (!isCommissioner) {
-    const sleeper = await validateSleeperMembership(sleeperUsername);
-    if (!sleeper) {
-      return err('Your Sleeper account is not a member of any registered league.', 403);
-    }
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        sleeperUserId: sleeper.userId,
-        ...(dbUser.username !== ADMIN_USERNAME && { username: sleeper.username }),
-      },
-    });
+  const sleeper = isCommissioner
+    ? await resolveSleeperUser(sleeperUsername)
+    : await validateSleeperMembership(sleeperUsername);
+
+  if (!sleeper) {
+    return err(
+      isCommissioner
+        ? 'No Sleeper account found with that username.'
+        : 'Your Sleeper account is not a member of any registered league.',
+      isCommissioner ? 404 : 403,
+    );
   }
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      sleeperUserId: sleeper.userId,
+      ...(dbUser.username !== ADMIN_USERNAME && { username: sleeper.username }),
+    },
+  });
 
   return ok({ ok: true, userId });
 }

@@ -19,19 +19,17 @@ enum Role {
 }
 
 model User {
-  id              String    @id @default(cuid())
-  name            String?
-  username        String    @unique @default(cuid())
-  email           String?   @unique
-  emailVerified   DateTime?
-  image           String?
-  password        String?
-  role            Role      @default(MEMBER)
-  sleeperUserId   String?
-  accounts        Account[]
-  sessions        Session[]
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id            String    @id @default(cuid())
+  name          String?
+  username      String    @unique @default(cuid())
+  email         String?   @unique
+  image         String?
+  password      String?
+  role          Role      @default(MEMBER)
+  sleeperUserId String?
+  accounts      Account[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 }
 
 model Account {
@@ -52,34 +50,17 @@ model Account {
   @@unique([provider, providerAccountId])
 }
 
-model Session {
-  id           String   @id @default(cuid())
-  sessionToken String   @unique
-  userId       String
-  expires      DateTime
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model VerificationToken {
-  identifier String
-  token      String   @unique
-  expires    DateTime
-
-  @@unique([identifier, token])
-}
-
 model League {
-  id                String           @id @default(cuid())
-  sleeperLeagueId   String           @unique
-  name              String           @default("")   // add this
-  season            Int
-  divisionCount     Int              @default(2)
-  createdAt         DateTime         @default(now())
-  rankedSeasonIds   String           @default("[]") // JSON array of Sleeper league IDs already synced for rankings
-  teams             Team[]
-  schedules         Schedule[]
-  auditLogs         AuditLog[]
-  rankings          SleeperRanking[]
+  id              String           @id @default(cuid())
+  sleeperLeagueId String           @unique
+  name            String           @default("")
+  season          Int
+  createdAt       DateTime         @default(now())
+  rankedSeasonIds String           @default("[]") // JSON array of Sleeper league IDs already synced for rankings
+  teams           Team[]
+  schedules       Schedule[]
+  auditLogs       AuditLog[]
+  rankings        SleeperRanking[]
 }
 
 model Team {
@@ -112,8 +93,8 @@ model Matchup {
   homeTeamId String
   awayTeamId String
   type       String
-  homePoints Float?   // ← new
-  awayPoints Float?   // ← new
+  homePoints Float? // ← new
+  awayPoints Float? // ← new
   schedule   Schedule @relation(fields: [scheduleId], references: [id])
   homeTeam   Team     @relation("HomeTeam", fields: [homeTeamId], references: [id])
   awayTeam   Team     @relation("AwayTeam", fields: [awayTeamId], references: [id])
@@ -168,144 +149,235 @@ model SleeperRanking {
 }
 
 model SleeperCache {
-  key       String   @id         // e.g. "nfl_player_map"
-  data      String               // JSON blob
+  key       String   @id // e.g. "nfl_player_map"
+  data      String // JSON blob
   fetchedAt DateTime @default(now())
 }
 
+// ─── Scheduled External Sync Tracking ─────────────────────────────────────────
+//
+// Every job that pulls from Sleeper or nflverse and writes to this database
+// records one SyncRun row. The Data Sync dashboard tab reads the latest row per
+// source to show when each feed last updated and whether it succeeded.
+
+enum SyncSource {
+  NFL_WEEKLY
+  NFL_SEASON_RESET
+  SLEEPER_SCORES
+  SLEEPER_RANKINGS
+  SLEEPER_LEAGUES
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  // The job ran but intentionally did nothing — e.g. the NFL season window
+  // guard rejected it. Distinguished from FAILED so the UI does not alarm.
+  SKIPPED
+}
+
+model SyncRun {
+  id         String     @id @default(cuid())
+  source     SyncSource
+  status     SyncStatus
+  /**
+   * "schedule" for cron-triggered runs, "manual" for commissioner-triggered.
+   */
+  trigger    String     @default("schedule")
+  /**
+   * Sleeper league this run covered, for the league-scoped feeds. Null means
+   * the run was not league-specific: either a global feed (the nflverse jobs
+   * pull NFL-wide data) or a scheduled run that swept every league at once.
+   * Deliberately not a relation — a run is a historical fact and must survive
+   * the league being removed from the app.
+   */
+  leagueId   String?
+  rowCount   Int        @default(0)
+  /**
+   * Free-form JSON: row counts per league, skip reason, error message.
+   */
+  detail     String     @default("{}")
+  startedAt  DateTime   @default(now())
+  finishedAt DateTime?
+
+  @@index([source, startedAt])
+  @@index([source, leagueId, startedAt])
+  @@index([startedAt])
+}
+
 model NflWeeklyStat {
-  id                      String  @id @default(cuid())
+  id String @id @default(cuid())
 
-  // ── Identity ───────────────────────────────────────
-  playerId                String
-  playerName              String?
-  playerDisplayName       String?
-  position                String?
-  positionGroup           String?
-  headshot                String?
-  season                  Int
-  week                    Int
-  seasonType              String?
-  team                    String?
-  opponentTeam            String?
+  // ── Identity ──────────────────────────────────────
+  gameId            String?
+  playerId          String
+  playerName        String?
+  playerDisplayName String?
+  position          String?
+  positionGroup     String?
+  season            Int
+  week              Int
+  seasonType        String?
+  team              String?
+  opponentTeam      String?
 
-  // ── Passing ────────────────────────────────────────
-  completions             Float?
-  attempts                Float?
-  passingYards            Float?
-  passingTds              Float?
-  passingInterceptions    Float?
-  sacksSuffered           Float?
-  sackYardsLost           Float?
-  sackFumbles             Float?
-  sackFumblesLost         Float?
-  passingAirYards         Float?
-  passingYardsAfterCatch  Float?
-  passingFirstDowns       Float?
-  passingEpa              Float?
-  passingCpoe             Float?
-  passing2ptConversions   Float?
-  pacr                    Float?  // passing air conversion ratio
+  // ── Passing ───────────────────────────────────────
+  completions            Float?
+  attempts               Float?
+  passingYards           Float?
+  passingTds             Float?
+  passingInterceptions   Float?
+  sacksSuffered          Float?
+  sackYardsLost          Float?
+  sackFumbles            Float?
+  sackFumblesLost        Float?
+  passingAirYards        Float?
+  passingYardsAfterCatch Float?
+  passingFirstDowns      Float?
+  passingEpa             Float?
+  passingCpoe            Float?
+  passing2ptConversions  Float?
+  pacr                   Float?
+  passing10              Float?
+  passing16              Float?
+  passing20              Float?
+  passing40              Float?
 
-  // ── Rushing ────────────────────────────────────────
-  carries                 Float?
-  rushingYards            Float?
-  rushingTds              Float?
-  rushingFumbles          Float?
-  rushingFumblesLost      Float?
-  rushingFirstDowns       Float?
-  rushingEpa              Float?
-  rushing2ptConversions   Float?
+  // ── Rushing ───────────────────────────────────────
+  carries               Float?
+  rushingYards          Float?
+  rushingTds            Float?
+  rushingFumbles        Float?
+  rushingFumblesLost    Float?
+  rushingFirstDowns     Float?
+  rushingEpa            Float?
+  rushing2ptConversions Float?
+  rushing10             Float?
+  rushing12             Float?
+  rushing20             Float?
+  rushing40             Float?
 
-  // ── Receiving ──────────────────────────────────────
-  receptions              Float?
-  targets                 Float?
-  receivingYards          Float?
-  receivingTds            Float?
-  receivingFumbles        Float?
-  receivingFumblesLost    Float?
-  receivingAirYards       Float?
+  // ── Receiving ─────────────────────────────────────
+  receptions               Float?
+  targets                  Float?
+  receivingYards           Float?
+  receivingTds             Float?
+  receivingFumbles         Float?
+  receivingFumblesLost     Float?
+  receivingAirYards        Float?
   receivingYardsAfterCatch Float?
-  receivingFirstDowns     Float?
-  receivingEpa            Float?
-  receiving2ptConversions Float?
-  racr                    Float?  // receiver air conversion ratio
-  targetShare             Float?
-  airYardsShare           Float?
-  wopr                    Float?  // weighted opportunity rating
+  receivingFirstDowns      Float?
+  receivingEpa             Float?
+  receiving2ptConversions  Float?
+  receiving10              Float?
+  receiving16              Float?
+  receiving20              Float?
+  receiving40              Float?
+  racr                     Float?
+  targetShare              Float?
+  airYardsShare            Float?
+  wopr                     Float?
 
-  // ── Defense ────────────────────────────────────────
-  defTacklesSolo          Float?
-  defTacklesWithAssist    Float?
-  defTackleAssists        Float?
-  defTacklesForLoss       Float?
-  defTacklesForLossYards  Float?
-  defFumblesForced        Float?
-  defSacks                Float?
-  defSackYards            Float?
-  defQbHits               Float?
-  defInterceptions        Float?
-  defInterceptionYards    Float?
-  defPassDefended         Float?
-  defTds                  Float?
-  defFumbles              Float?
-  defSafeties             Float?
+  // ── Defense ───────────────────────────────────────
+  defTacklesSolo         Float?
+  defTacklesWithAssist   Float?
+  defTackleAssists       Float?
+  defTacklesForLoss      Float?
+  defTacklesForLossYards Float?
+  defFumblesForced       Float?
+  defSacks               Float?
+  defSackYards           Float?
+  defQbHits              Float?
+  defInterceptions       Float?
+  defInterceptionYards   Float?
+  defPassDefended        Float?
+  defTds                 Float?
+  defFumbles             Float?
+  defSafeties            Float?
+  defPuntBlocks          Float?
+  defPatBlocks           Float?
+  defFgBlocks            Float?
+  def2ptAtts             Float?
+  def2ptMade             Float?
 
-  // ── Misc / Special Teams ───────────────────────────
-  specialTeamsTds         Float?
-  miscYards               Float?
-  fumbleRecoveryOwn       Float?
-  fumbleRecoveryYardsOwn  Float?
-  fumbleRecoveryOpp       Float?
-  fumbleRecoveryYardsOpp  Float?
-  fumbleRecoveryTds       Float?
-  penalties               Float?
-  penaltyYards            Float?
-  puntReturns             Float?
-  puntReturnYards         Float?
-  kickoffReturns          Float?
-  kickoffReturnYards      Float?
+  // ── Kicking ───────────────────────────────────────
+  fgMade            Float?
+  fgAtt             Float?
+  fgMissed          Float?
+  fgBlocked         Float?
+  fgLong            Float?
+  fgPct             Float?
+  fgMade0To19       Float?
+  fgMade20To29      Float?
+  fgMade30To39      Float?
+  fgMade40To49      Float?
+  fgMade50To59      Float?
+  fgMade60Plus      Float?
+  fgMissed0To19     Float?
+  fgMissed20To29    Float?
+  fgMissed30To39    Float?
+  fgMissed40To49    Float?
+  fgMissed50To59    Float?
+  fgMissed60Plus    Float?
+  fgMadeList        String?
+  fgMissedList      String?
+  fgBlockedList     String?
+  fgMadeDistance    Float?
+  fgMissedDistance  Float?
+  fgBlockedDistance Float?
+  patMade           Float?
+  patAtt            Float?
+  patMissed         Float?
+  patBlocked        Float?
+  patPct            Float?
+  gwfgMade          Float?
+  gwfgAtt           Float?
+  gwfgMissed        Float?
+  gwfgBlocked       Float?
+  gwfgDistance      Float?
 
-  // ── Kicking ────────────────────────────────────────
-  fgMade                  Float?
-  fgAtt                   Float?
-  fgMissed                Float?
-  fgBlocked               Float?
-  fgLong                  Float?
-  fgPct                   Float?
-  fgMade0To19             Float?
-  fgMade20To29            Float?
-  fgMade30To39            Float?
-  fgMade40To49            Float?
-  fgMade50To59            Float?
-  fgMade60Plus            Float?
-  fgMissed0To19           Float?
-  fgMissed20To29          Float?
-  fgMissed30To39          Float?
-  fgMissed40To49          Float?
-  fgMissed50To59          Float?
-  fgMissed60Plus          Float?
-  fgMadeDistance          Float?
-  fgMissedDistance        Float?
-  fgBlockedDistance       Float?
-  patMade                 Float?
-  patAtt                  Float?
-  patMissed               Float?
-  patBlocked              Float?
-  patPct                  Float?
-  gwfgMade                Float?
-  gwfgAtt                 Float?
-  gwfgMissed              Float?
-  gwfgBlocked             Float?
-  gwfgDistance            Float?
+  // ── Punting ───────────────────────────────────────
+  ptAtt         Float?
+  ptBlocked     Float?
+  ptLong        Float?
+  ptYards       Float?
+  ptInside20    Float?
+  ptOutOfBounds Float?
+  ptDowned      Float?
+  ptTouchback   Float?
+  ptFairCaught  Float?
+  ptReturned    Float?
+  ptReturnYards Float?
+  ptReturnTds   Float?
+  ptNetYards    Float?
 
-  // ── Fantasy ────────────────────────────────────────
-  fantasyPoints           Float?
-  fantasyPointsPpr        Float?
+  // ── Returns / misc ────────────────────────────────
+  specialTeamsTds        Float?
+  miscYards              Float?
+  fumbleRecoveryOwn      Float?
+  fumbleRecoveryYardsOwn Float?
+  fumbleRecoveryOpp      Float?
+  fumbleRecoveryYardsOpp Float?
+  fumbleRecoveryTds      Float?
+  penalties              Float?
+  penaltyYards           Float?
+  fumblesForcedByOpp     Float?
+  fumblesNotForced       Float?
+  fumblesOutOfBounds     Float?
+  fumblesTotal           Float?
+  fumblesLostTotal       Float?
+  puntReturns            Float?
+  puntReturnYards        Float?
+  kickoffReturns         Float?
+  kickoffReturnYards     Float?
+
+  // ── Fantasy ───────────────────────────────────────
+  fantasyPoints    Float?
+  fantasyPointsPpr Float?
+  headshot         String?
 
   @@unique([season, week, playerId])
-  @@index([season, week])
-  @@index([playerId])
   @@index([position, season])
   @@index([team, season])
 }

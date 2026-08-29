@@ -41,11 +41,12 @@ import Discord from 'next-auth/providers/discord';
 import Google from 'next-auth/providers/google';
 import Credentials from 'next-auth/providers/credentials';
 import { prisma } from '@/lib/prisma';
-import { validateSleeperMembership, authorizeCredentials } from '@/lib/authHelpers';
+import { validateSleeperMembership, resolveSleeperUser, authorizeCredentials } from '@/lib/authHelpers';
+import { IS_DEMO_LOGIN, authorizeDemo } from '@/lib/demoAuth';
 
 // Re-export the pure helpers so callers who previously imported from @/auth
 // (e.g. the connect-sleeper API route) continue to work without changes.
-export { validateSleeperMembership, authorizeCredentials };
+export { validateSleeperMembership, resolveSleeperUser, authorizeCredentials };
 
 // ─── Session type augmentation ────────────────────────────────────────────────
 
@@ -108,6 +109,18 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       },
       authorize: authorizeCredentials,
     }),
+    // Only exists while DEMO_MODE=true. See src/lib/demoAuth.ts for what that
+    // hands out — it is a real session on a real account, with no password.
+    ...(IS_DEMO_LOGIN
+      ? [
+          Credentials({
+            id: 'demo',
+            name: 'Demo',
+            credentials: {},
+            authorize: authorizeDemo,
+          }),
+        ]
+      : []),
   ],
 
   session: { strategy: 'jwt' },
@@ -122,8 +135,14 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     // ─────────────────────────────────────────────────────────────────────────
     async jwt({ token, user, account, trigger, session: sessionData }) {
 
+      // Both password login and the DEMO_MODE bypass are Credentials providers:
+      // they resolve a DB user themselves and have no linked Account row, so
+      // neither may take the OAuth path below.
+      const isLocalProvider =
+        account?.provider === 'credentials' || account?.provider === 'demo';
+
       // ── A. OAuth sign-in ────────────────────────────────────────────────────
-      if (account && account.provider !== 'credentials') {
+      if (account && !isLocalProvider) {
         // Does this OAuth account already have a DB record?
         const existing = await prisma.account.findUnique({
           where: {
@@ -166,8 +185,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         return token;
       }
 
-      // ── B. Credentials sign-in ──────────────────────────────────────────────
-      if (account?.provider === 'credentials' && user?.id) {
+      // ── B. Credentials / demo sign-in ───────────────────────────────────────
+      if (isLocalProvider && user?.id) {
         const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
         if (!dbUser) return token;
 
@@ -247,6 +266,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   },
 
   pages: {
-    signIn: '/',
+    signIn: '/login',
   },
 });

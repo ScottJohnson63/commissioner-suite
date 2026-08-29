@@ -3,8 +3,11 @@
   "configurations": [
     {
       "name": "nextjs",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeExecutable": "/bin/zsh",
+      "runtimeArgs": [
+        "-c",
+        "export PATH=/Users/ProfessionalHD/.nvm/versions/node/v24.16.0/bin:$PATH; unset NODE_OPTIONS; exec node ./node_modules/next/dist/bin/next dev --disable-source-maps"
+      ],
       "port": 3000,
       "autoPort": false,
       "cwd": "./nextjs"
