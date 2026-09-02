@@ -12,10 +12,14 @@
 // An empty slot is drawn as something you can click rather than as an absence,
 // because an empty lineup should read as ten invitations rather than a blank.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { PlayerCard } from '@/components/cards/PlayerCard';
 import { TIER_STYLE } from '@/components/cards/tierStyles';
+import { useMeasuredWidth } from '@/components/useMeasuredWidth';
 import type { CardDto, DeckStatsDto, OwnedCardDto, RosterSlotDto } from '@/types/cards';
+
+/** The slot tile's fixed size on the auto-fill grid the tiles use at `sm` and up. */
+const SLOT_CARD_W = 72;
 
 export function RosterPanel({
   roster, cards, stats, onAssign, busySlot,
@@ -31,6 +35,22 @@ export function RosterPanel({
 }) {
   const [picking, setPicking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Below `sm` the grid is one column wide (see the note on it further down),
+  // and a 72px thumbnail centred in a tile that now spans the whole phone
+  // screen is the small-box-in-a-big-box the tiles were flagged for — a name
+  // and a PPG number nobody can actually read. Each tile measures its own box
+  // and fills it instead, but only below this breakpoint: the auto-fill grid
+  // at `sm` and up already sizes its tiles for a compact glance, and nothing
+  // about that was broken.
+  const [isNarrow, setIsNarrow] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia('(max-width: 639px)');
+    const apply = () => setIsNarrow(mql.matches);
+    apply();
+    mql.addEventListener('change', apply);
+    return () => mql.removeEventListener('change', apply);
+  }, []);
 
   /** Cards already starting, so the picker can mark them. */
   const startedIds = useMemo(
@@ -102,6 +122,7 @@ export function RosterPanel({
             slot={slot}
             busy={busySlot === slot.id}
             active={picking === slot.id}
+            fillWidth={isNarrow}
             onClick={() => setPicking((cur) => (cur === slot.id ? null : slot.id))}
           >
             {picking === slot.id && openSlot && (
@@ -179,26 +200,39 @@ export function RosterPanel({
  * -1'` place it on the row right after this tile instead of at the grid's end.
  */
 function SlotWithPicker({
-  slot, busy, active, onClick, children,
+  slot, busy, active, fillWidth, onClick, children,
 }: {
-  slot: RosterSlotDto; busy: boolean; active: boolean; onClick: () => void;
+  slot: RosterSlotDto; busy: boolean; active: boolean;
+  /** Size the card to the tile's own measured width rather than the fixed thumbnail. */
+  fillWidth: boolean;
+  onClick: () => void;
   children?: React.ReactNode;
 }) {
   return (
     <>
-      <SlotTile slot={slot} busy={busy} active={active} onClick={onClick} />
+      <SlotTile slot={slot} busy={busy} active={active} fillWidth={fillWidth} onClick={onClick} />
       {children}
     </>
   );
 }
 
 function SlotTile({
-  slot, busy, active, onClick,
-}: { slot: RosterSlotDto; busy: boolean; active: boolean; onClick: () => void }) {
+  slot, busy, active, fillWidth, onClick,
+}: {
+  slot: RosterSlotDto; busy: boolean; active: boolean; fillWidth: boolean; onClick: () => void;
+}) {
   const tier = slot.card ? TIER_STYLE[slot.card.tier] : null;
+
+  // Measured unconditionally — a ResizeObserver on ten buttons is cheap — but
+  // only trusted when `fillWidth` is set. At `sm` and up the tile's own width
+  // still comes from SLOT_CARD_W as before, so the auto-fill grid's thumbnails
+  // are pixel-identical to what they were before this measurement existed.
+  const [buttonRef, measured] = useMeasuredWidth<HTMLButtonElement>(SLOT_CARD_W);
+  const cardWidth = fillWidth ? Math.max(SLOT_CARD_W, measured) : SLOT_CARD_W;
 
   return (
     <button
+      ref={buttonRef}
       onClick={onClick}
       className="relative flex flex-col items-center rounded p-1.5 transition-opacity"
       style={{
@@ -216,33 +250,35 @@ function SlotTile({
 
       {slot.card ? (
         <>
-          <PlayerCard card={slot.card} width={72} />
+          <PlayerCard card={slot.card} width={cardWidth} />
           <span
-            className="text-[10px] font-bold mt-1.5 tabular-nums"
-            style={{ color: '#e8e6df' }}
+            className="font-bold mt-1.5 tabular-nums"
+            style={{ color: '#e8e6df', fontSize: fillWidth ? 15 : 10 }}
           >
             {slot.card.pointsPerGame.toFixed(1)}
           </span>
         </>
       ) : (
-        <EmptySlot />
+        <EmptySlot width={cardWidth} />
       )}
     </button>
   );
 }
 
 /** The dashed outline of a slot waiting to be filled. */
-function EmptySlot() {
+function EmptySlot({ width }: { width: number }) {
   return (
     <>
       <div
         className="flex items-center justify-center"
         style={{
-          width: 72, aspectRatio: '2 / 3', borderRadius: 5,
+          width, aspectRatio: '2 / 3', borderRadius: 5,
           border: '1px dashed #2a2a2c', background: '#0a0a0b',
         }}
       >
-        <span style={{ fontSize: 18, color: '#2a2a2c', lineHeight: 1 }}>+</span>
+        {/* Same ratio as the 18px glyph on the 72px thumbnail, so it grows
+            with the box instead of turning into a period on a full-width one. */}
+        <span style={{ fontSize: width * 0.25, color: '#2a2a2c', lineHeight: 1 }}>+</span>
       </div>
       <span className="text-[10px] mt-1.5" style={{ color: '#333' }}>—</span>
     </>
