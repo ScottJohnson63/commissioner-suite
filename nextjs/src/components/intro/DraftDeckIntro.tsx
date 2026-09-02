@@ -1,7 +1,7 @@
 // src/components/intro/DraftDeckIntro.tsx
 //
-// The game's own tour: what Draft Deck is, where cards come from, and what each
-// of its three tabs holds.
+// The game's own tour: what Draft Deck is, where cards come from, how a week is
+// played, and what each of its tabs holds.
 //
 // It opens on a first visit and whenever the sidebar's Draft Deck link is
 // clicked — that link calls requestIntro before it navigates, so the ask
@@ -10,9 +10,9 @@
 //
 // The balance numbers are imported from lib/cards rather than typed out, so a
 // commissioner retuning the ration cannot leave the explanation lying. Only
-// modules that are free of Prisma are safe to import here — tiers.ts and
-// roster.ts are pure, allowance.ts and bonus.ts are not, so the two ration
-// numbers below are stated in prose instead.
+// modules that are free of Prisma are safe to import here — tiers.ts, roster.ts
+// and weeklyGame.ts are pure, allowance.ts and bonus.ts are not, so the two
+// ration numbers below are stated in prose instead.
 
 'use client';
 
@@ -23,6 +23,7 @@ import {
   CARDS_PER_PACK, DECK_POINTS, TIER_MAX_RANK, WILDCARD_PULL_CHANCE,
 } from '@/lib/cards/tiers';
 import { ROSTER_SIZE } from '@/lib/cards/roster';
+import { MAX_GAME_WEEK } from '@/lib/cards/weeklyGame';
 
 export const CARDS_INTRO_ID = 'cards';
 
@@ -51,8 +52,8 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
         <>
           <p>
             Every player from every season your league has played has a card. You open
-            packs to find them, field the best {ROSTER_SIZE} you own, and the league is
-            ranked on what that lineup scores.
+            packs to find them, submit a lineup of {ROSTER_SIZE} every week, and the
+            weeks add up to a season score.
           </p>
           <IntroList
             items={[
@@ -60,9 +61,12 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
                 a card it is off the board — nobody else in the league can ever have it.
                 That makes the pool a race rather than a checklist.</>,
               <><IntroTerm>Your deck is not your lineup.</IntroTerm> The deck is
-                everything you own; the lineup is the {ROSTER_SIZE} cards you start. A
-                second elite running back is worth nothing if a better one already holds
-                the slot.</>,
+                everything you own; the lineup is the {ROSTER_SIZE} cards you play this
+                week. A second elite running back is worth nothing if a better one
+                already holds the slot.</>,
+              <><IntroTerm>A card plays once.</IntroTerm> Every card you field is retired
+                for the rest of the season, so the real decision is not just who is best
+                — it is which week to spend them in.</>,
             ]}
           />
         </>
@@ -140,17 +144,45 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
           <p>Everything you own, and the decisions you make with it.</p>
           <IntroList
             items={[
-              <><IntroTerm>Your rank</IntroTerm> — where you sit, what your lineup scores
-                per game, and how far behind the person above you it leaves you. That gap
-                is the reason to go and fill a slot.</>,
-              <><IntroTerm>The lineup</IntroTerm> — {ROSTER_SIZE} slots: QB, two RB, two
-                WR, TE and three FLEX. Only started cards score, and swapping one
-                re-ranks the whole league.</>,
               <><IntroTerm>Tier tiles and filters</IntroTerm> — the four tier tiles are
-                also the filter; narrow further by position or by season to find the card
-                you are after.</>,
-              <><IntroTerm>Standings</IntroTerm> — the whole league by lineup points per
-                game, at the bottom of the tab.</>,
+                also the filter; narrow further by position, season, or whether a card is
+                still available to play.</>,
+              <><IntroTerm>Retired cards stay here</IntroTerm> — dimmed, stamped with the
+                week they played and what they scored. Your deck is the record of your
+                season, so nothing ever disappears from it.</>,
+              <><IntroTerm>Name them and give them faces</IntroTerm> — tap a card. A
+                nickname and a photograph are what make it yours when it turns up in
+                Tuesday&apos;s results in front of the league.</>,
+            ]}
+          />
+        </>
+      ),
+    },
+    {
+      key: 'lineup',
+      eyebrow: 'Draft Deck · Tab 3',
+      title: 'Lineup — the week',
+      art: <DeckTabsArt active="lineup" showCommissioner={isCommissioner} />,
+      body: (
+        <>
+          <p>
+            The game is played a week at a time. Fill the {ROSTER_SIZE} slots from cards
+            you have not played yet, submit before the deadline, and read the results the
+            next morning.
+          </p>
+          <IntroList
+            items={[
+              <><IntroTerm>Submit by Monday 11:59pm central.</IntroTerm> You can keep
+                editing and re-submitting right up to it. A week you do not submit scores
+                nothing.</>,
+              <><IntroTerm>Results at Tuesday 10am central.</IntroTerm> Everybody&apos;s
+                lineup is published at once — every card anybody played, best to worst,
+                nicknames and photographs and all.</>,
+              <><IntroTerm>Played cards retire.</IntroTerm> The {ROSTER_SIZE} you field
+                are gone for the season. Spending your best cards early wins a week;
+                saving them wins a different one.</>,
+              <><IntroTerm>The weeks add up.</IntroTerm> {MAX_GAME_WEEK} weeks, one score
+                each, and the highest total at the end of the season takes it.</>,
             ]}
           />
         </>
@@ -159,7 +191,7 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
     ...(isCommissioner
       ? [{
           key: 'commissioner',
-          eyebrow: 'Draft Deck · Tab 3',
+          eyebrow: 'Draft Deck · Tab 4',
           title: 'Commissioner',
           art: <DeckTabsArt active="commissioner" showCommissioner />,
           body: (
@@ -191,9 +223,10 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
         <>
           <p>
             Start on <IntroTerm>Packs</IntroTerm> and spend what you are holding, then
-            move to <IntroTerm>Deck</IntroTerm> and fill all {ROSTER_SIZE} lineup slots —
-            an empty slot scores nothing, and most of the early ground in the standings
-            is lost that way rather than to bad pulls.
+            move to <IntroTerm>Lineup</IntroTerm>, fill all {ROSTER_SIZE} slots and
+            submit. An empty slot scores nothing and a week left unsubmitted scores
+            nothing at all — most of the early ground in the standings is lost that way
+            rather than to bad pulls.
           </p>
           <p className="mt-3">
             This explanation is always a click away: <IntroTerm>How it works</IntroTerm>,

@@ -39,8 +39,9 @@ describe('DraftDeckIntro', () => {
     await user.click(screen.getByRole('button', { name: 'Back' }));
     expect(screen.getByText('A card game on top of your league')).toBeTruthy();
 
-    // Straight to the end, then out.
-    for (let i = 0; i < 4; i++) {
+    // Straight to the end, then out. Five clicks: overview, tiers, packs, deck,
+    // lineup, then the closing slide.
+    for (let i = 0; i < 5; i++) {
       await user.click(screen.getByRole('button', { name: 'Next' }));
     }
     await user.click(screen.getByRole('button', { name: "Let's play" }));
@@ -94,14 +95,14 @@ describe('DraftDeckIntro', () => {
   it('describes the Commissioner tab only for a commissioner', async () => {
     const user = userEvent.setup();
     const member = renderTour(false);
-    expect(screen.getByText('1 / 5')).toBeTruthy();
+    expect(screen.getByText('1 / 6')).toBeTruthy();
     expect(screen.queryByText('Commissioner')).toBeNull();
     member.unmount();
     window.localStorage.clear();
 
     renderTour(true);
-    expect(screen.getByText('1 / 6')).toBeTruthy();
-    for (let i = 0; i < 4; i++) {
+    expect(screen.getByText('1 / 7')).toBeTruthy();
+    for (let i = 0; i < 5; i++) {
       await user.click(screen.getByRole('button', { name: 'Next' }));
     }
     expect(screen.getByRole('heading', { name: 'Commissioner' })).toBeTruthy();

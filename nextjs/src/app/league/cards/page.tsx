@@ -2,11 +2,17 @@
 
 // /league/cards — Draft Deck.
 //
-// Three tabs over one fetch: Packs is where cards come from, Deck is what you
-// have, and Commissioner is the pool behind both. It was a single scroll — the
-// ration, the opener, the rank card, the lineup, the standings, the grid and an
-// admin panel, in that order — which meant opening a pack and looking something
-// up in your deck were the same page-length journey.
+// Four tabs over one fetch: Packs is where cards come from, Deck is what you
+// have, Lineup is the week you are playing, and Commissioner is the pool behind
+// all of it. It was a single scroll — the ration, the opener, the rank card,
+// the lineup, the standings, the grid and an admin panel, in that order — which
+// meant opening a pack and looking something up in your deck were the same
+// page-length journey.
+//
+// The results of a published week are the one thing not on the collection
+// fetch. They are a league-wide read of every lineup rather than a member's own
+// deck, they are only wanted on one tab, and they change once a week — so they
+// are fetched when that tab is opened rather than paid for on every page load.
 //
 // Cards are owned exclusively, so the standings are not a nicety bolted on the
 // side — they are the scoreboard the whole game is played against.
@@ -26,6 +32,8 @@ import { Standings } from '@/components/cards/Standings';
 import { BonusBanner } from '@/components/cards/BonusBanner';
 import { CardAdminPanel } from '@/components/cards/CardAdminPanel';
 import { PendingWildcards } from '@/components/cards/WildcardReveal';
+import { WeeklyPanel } from '@/components/cards/WeeklyPanel';
+import { WeekResults } from '@/components/cards/WeekResults';
 import { CardDetail } from '@/components/cards/CardDetail';
 import { CardsDialog } from '@/components/cards/CardsDialog';
 import { useForceSidebarCollapsed } from '@/components/useSidebarForceCollapse';
@@ -35,7 +43,7 @@ import { ROSTER_SIZE } from '@/lib/cards/roster';
 import { MAX_CUSTOMIZATION_PACKS } from '@/lib/cards/customize';
 import type {
   CollectionResponse, CustomizeResponse, OpenPackResponse,
-  RosterUpdateResponse, WildcardResponse,
+  RosterUpdateResponse, WeekResultsDto, WildcardResponse,
 } from '@/types/cards';
 
 /** The tabs, in bar order. Commissioner is right-aligned and gated on role. */
@@ -80,6 +88,12 @@ export default function CardsPage() {
   // see the Packs tab below. Kept separate from `pack` state inside PackOpener
   // itself, which is why closing this never discards a reveal in progress.
   const [packDialogOpen, setPackDialogOpen] = useState(false);
+  // Published results, fetched per week rather than with the collection — see
+  // the note at the top. `null` week means "whatever the latest one is", which
+  // is what the route answers an absent ?week= with.
+  const [results, setResults] = useState<WeekResultsDto | null>(null);
+  const [resultsWeek, setResultsWeek] = useState<number | null>(null);
+  const [resultsLoading, setResultsLoading] = useState(false);
 
   // The lineup is one card wide on a phone — see the Lineup tab below — and a
   // 52px collapsed sidebar is still real estate that card wants. Only takes
@@ -140,6 +154,37 @@ export default function CardsPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (status === 'authenticated') void load();
   }, [status, load]);
+
+  /**
+   * Reads one published week.
+   *
+   * A failure is swallowed into an empty result rather than blanking the page:
+   * the results are one panel on one tab, and a week that will not load should
+   * not take the lineup down with it.
+   */
+  const loadResults = useCallback(async (week: number | null) => {
+    setResultsLoading(true);
+    try {
+      const query = week === null ? '' : `?week=${week}`;
+      const res = await fetch(`/api/cards/results${query}`);
+      const body = (await res.json().catch(() => null)) as WeekResultsDto | null;
+      if (res.ok && body) {
+        setResults(body);
+        setResultsWeek(body.week || null);
+      }
+    } finally {
+      setResultsLoading(false);
+    }
+  }, []);
+
+  // Fetched the first time the lineup tab is opened, and re-fetched when a new
+  // week is published — `revealedWeeks` growing is what says that has happened.
+  const revealed = data?.weekly.revealedWeeks.length ?? 0;
+  useEffect(() => {
+    // Same shape as the fetch-on-mount above, disabled for the same reason.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (tab === 'lineup' && revealed > 0) void loadResults(null);
+  }, [tab, revealed, loadResults]);
 
   const loading = status === 'loading' || (status === 'authenticated' && !settled);
 
@@ -241,6 +286,20 @@ export default function CardsPage() {
     return body;
   }, [load]);
 
+  /**
+   * Freezes this week's lineup as a submission.
+   *
+   * Re-reads afterwards rather than patching state: the submission retires
+   * nothing until Monday night, but it does change what the panel says about
+   * itself, and the deck is the source of truth for that.
+   */
+  const submitLineup = useCallback(async () => {
+    const res = await fetch('/api/cards/lineup', { method: 'POST' });
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    if (!res.ok) throw new Error(body.error ?? 'Could not submit your lineup');
+    await load();
+  }, [load]);
+
   if (status === 'loading' || loading) {
     return <Shell><p className="text-xs" style={{ color: '#555' }}>Loading…</p></Shell>;
   }
@@ -268,7 +327,7 @@ export default function CardsPage() {
     );
   }
 
-  const { allowance, stats, cards, roster, standings, bonus, seasons } = data;
+  const { allowance, stats, cards, roster, standings, bonus, weekly, seasons } = data;
   const poolEmpty = allowance.poolSize === 0;
 
   // Resolved from the freshly-read deck rather than stored, so the panel shows
@@ -326,8 +385,8 @@ export default function CardsPage() {
                     ].filter(Boolean).join(' · ')
                   } />
           </button>
-          <Stat label="Lineup" value={`${stats.rosterPpg.toFixed(1)} PPG`}
-                hint={`${stats.started} of ${ROSTER_SIZE} started`} />
+          <Stat label="Season" value={stats.seasonPoints.toFixed(1)}
+                hint={`${stats.started} of ${ROSTER_SIZE} started · wk ${weekly.week}`} />
           <Stat
             label="Cards left"
             value={allowance.remainingCards.toLocaleString()}
@@ -462,6 +521,12 @@ export default function CardsPage() {
             <RankCard stats={stats} standings={standings} />
           </div>
 
+          {/* The deadline sits above the slots it applies to. A submit button
+              under nine cards on a phone is a button nobody scrolls to. */}
+          <div className="mb-4">
+            <WeeklyPanel weekly={weekly} roster={roster} onSubmit={submitLineup} />
+          </div>
+
           <div className="rounded p-4 mb-8" style={PANEL_BG}>
             <RosterPanel
               roster={roster}
@@ -469,6 +534,16 @@ export default function CardsPage() {
               stats={stats}
               onAssign={assignSlot}
               busySlot={busySlot}
+            />
+          </div>
+
+          {/* Tuesday morning's reveal, on the page it is about. */}
+          <div className="mb-8">
+            <WeekResults
+              results={results}
+              week={resultsWeek}
+              onWeek={(w) => void loadResults(w)}
+              loading={resultsLoading}
             />
           </div>
 

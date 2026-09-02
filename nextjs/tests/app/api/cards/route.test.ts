@@ -169,6 +169,25 @@ describe('GET /api/cards/collection', () => {
     expect(body.standings).toHaveLength(1);
     expect(body.bonus.threshold).toBe(100);
     expect(body.seasons).toEqual([2023, 2024, 2025]);
+    // The weekly game rides along too — the deadline is on every page load.
+    expect(body.weekly).toMatchObject({ week: 3, phase: 'OPEN' });
+  });
+
+  // WHY: on Tuesday morning a member's slots still point at nine cards that can
+  //      never start again. The sweep has to run *before* the deck is read, or
+  //      the page shows a lineup that looks full and scores nothing — the same
+  //      ordering the Sleeper bonus check needs, for the same reason.
+  it('sweeps retired cards out of the lineup before reading the deck', async () => {
+    const order: string[] = [];
+    mockClearRetiredSlots.mockImplementation(async () => { order.push('sweep'); return 9; });
+    mockReadDeck.mockImplementation(async () => {
+      order.push('deck');
+      return { cards: [], stats: {}, roster: [], standings: [] };
+    });
+
+    const { GET } = await import('@/app/api/cards/collection/route');
+    expect((await GET(req('collection'))).status).toBe(200);
+    expect(order).toEqual(['sweep', 'deck']);
   });
 
   it('reports a read failure as a 500 rather than throwing', async () => {
@@ -444,6 +463,119 @@ describe('GET /api/cards/leaderboard', () => {
     const { GET } = await import('@/app/api/cards/leaderboard/route');
     expect((await GET()).status).toBe(401);
     expect(mockReadLeaderboard).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/cards/lineup', () => {
+  // WHY: the deadline is the whole feature, and a refusal after it is not a
+  //      malformed request — it is a request that arrived at 12:01am. 409
+  //      rather than 400 is what says so.
+  it('reports a late submission as a conflict, not a bad request', async () => {
+    mockSubmitLineup.mockResolvedValue({ ok: false, reason: 'LOCKED' });
+
+    const { POST } = await import('@/app/api/cards/lineup/route');
+    const res = await POST();
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/11:59pm Monday/);
+  });
+
+  it('refuses an empty lineup as a bad request', async () => {
+    mockSubmitLineup.mockResolvedValue({ ok: false, reason: 'EMPTY' });
+
+    const { POST } = await import('@/app/api/cards/lineup/route');
+    expect((await POST()).status).toBe(400);
+  });
+
+  // WHY: retirement is enforced by an index, so this refusal arrives from the
+  //      database rather than from a check. It still has to read as a rule.
+  it('reports a card that has already played', async () => {
+    mockSubmitLineup.mockResolvedValue({ ok: false, reason: 'RETIRED' });
+
+    const { POST } = await import('@/app/api/cards/lineup/route');
+    const res = await POST();
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/already played/);
+  });
+
+  it('returns the week, the score and the deadline it beat', async () => {
+    mockSubmitLineup.mockResolvedValue({
+      ok: true,
+      result: {
+        week: 3, points: 128.4, filled: 9,
+        lockAt: new Date('2025-09-23T04:59:59.999Z'),
+        revealAt: new Date('2025-09-23T15:00:00.000Z'),
+      },
+    });
+
+    const { POST } = await import('@/app/api/cards/lineup/route');
+    const res = await POST();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      week: 3, points: 128.4, filled: 9,
+      lockAt: '2025-09-23T04:59:59.999Z',
+      revealAt: '2025-09-23T15:00:00.000Z',
+    });
+  });
+
+  it('rejects a signed-out caller before touching the lineup', async () => {
+    mockRequireUser.mockResolvedValue({
+      denied: Response.json({ error: 'Unauthorized' }, { status: 401 }),
+    });
+
+    const { POST } = await import('@/app/api/cards/lineup/route');
+    expect((await POST()).status).toBe(401);
+    expect(mockSubmitLineup).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/cards/results', () => {
+  // WHY: the reveal. readWeekResults returns null for a week that has not had
+  //      its Tuesday, and the route must turn that into a refusal rather than
+  //      into an empty league.
+  it('answers 404 for a week that is not out yet', async () => {
+    mockDefaultResultsWeek.mockReturnValue(2);
+    mockReadWeekResults.mockResolvedValue(null);
+
+    const { GET } = await import('@/app/api/cards/results/route');
+    const res = await GET(req('results?week=9'));
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toMatch(/not out yet/);
+  });
+
+  // WHY: before the season's first Tuesday there is no week to default to.
+  //      An empty payload is a state the page can draw; a 404 is not.
+  it('returns an empty week before anything has been published', async () => {
+    mockDefaultResultsWeek.mockReturnValue(null);
+
+    const { GET } = await import('@/app/api/cards/results/route');
+    const res = await GET(req('results'));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ week: 0, entries: [], cards: [] });
+    expect(mockReadWeekResults).not.toHaveBeenCalled();
+  });
+
+  it('refuses a week number that is not one', async () => {
+    mockDefaultResultsWeek.mockReturnValue(3);
+
+    const { GET } = await import('@/app/api/cards/results/route');
+    expect((await GET(req('results?week=nonsense'))).status).toBe(400);
+    expect((await GET(req('results?week=0'))).status).toBe(400);
+  });
+
+  it('returns a published week', async () => {
+    mockDefaultResultsWeek.mockReturnValue(3);
+    mockReadWeekResults.mockResolvedValue({ week: 3, entries: [], cards: [], weeks: [1, 2, 3] });
+
+    const { GET } = await import('@/app/api/cards/results/route');
+    const res = await GET(req('results'));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ week: 3, weeks: [1, 2, 3] });
   });
 });
 

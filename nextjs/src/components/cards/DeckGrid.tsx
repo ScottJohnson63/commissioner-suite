@@ -18,6 +18,17 @@ import type { CardTier, DeckStatsDto, OwnedCardDto } from '@/types/cards';
 
 const POSITIONS = ['QB', 'RB', 'WR', 'TE'] as const;
 
+/**
+ * Whether a card is still playable.
+ *
+ * A third filter beside tier and position, because a deck of two hundred cards
+ * a third of which can never start again is two different collections sharing a
+ * grid: what you can field this week, and what you already spent. "Available"
+ * is the default — the deck is mostly looked at to answer "who can I play".
+ */
+const AVAILABILITY = ['ALL', 'Available', 'Retired'] as const;
+type Availability = (typeof AVAILABILITY)[number];
+
 export function DeckGrid({
   cards, stats, seasons, afterTiers, selectedId, onSelect,
 }: {
@@ -44,6 +55,7 @@ export function DeckGrid({
   const [tier, setTier] = useState<CardTier | 'ALL'>('ALL');
   const [position, setPosition] = useState<string>('ALL');
   const [season, setSeason] = useState<number | 'ALL'>('ALL');
+  const [availability, setAvailability] = useState<Availability>('Available');
 
   const filtered = useMemo(
     () =>
@@ -51,9 +63,11 @@ export function DeckGrid({
         (c) =>
           (tier === 'ALL' || c.tier === tier) &&
           (position === 'ALL' || c.position === position) &&
-          (season === 'ALL' || c.season === season),
+          (season === 'ALL' || c.season === season) &&
+          (availability === 'ALL' ||
+            (availability === 'Retired') === (c.retiredWeek !== null)),
       ),
-    [cards, tier, position, season],
+    [cards, tier, position, season, availability],
   );
 
   return (
@@ -116,6 +130,13 @@ export function DeckGrid({
           options={['ALL', ...seasons.map(String)]}
           onChange={(v) => setSeason(v === 'ALL' ? 'ALL' : Number(v))}
         />
+        <FilterSelect
+          id="deck-filter-availability"
+          label="Status"
+          value={availability}
+          options={[...AVAILABILITY]}
+          onChange={(v) => setAvailability(v as Availability)}
+        />
         <span className="text-[10px] ml-auto" style={{ color: '#555' }}>
           {filtered.length} of {stats.cards} shown
         </span>
@@ -143,7 +164,7 @@ export function DeckGrid({
             if (!onSelect) {
               return (
                 <div key={card.id} className="flex justify-center">
-                  <PlayerCard card={card} width={104} />
+                  <RetirableCard card={card} />
                 </div>
               );
             }
@@ -163,12 +184,42 @@ export function DeckGrid({
                   outlineOffset: 2,
                 }}
               >
-                <PlayerCard card={card} width={104} />
+                <RetirableCard card={card} />
               </button>
             );
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A card, marked with the week it played if it has played.
+ *
+ * Retired cards stay in the deck rather than disappearing from it: the card you
+ * won week 3 with is the record of week 3, and hiding it would make a deck
+ * shrink as a season went on. Drawn dimmed with the week stamped on it, so the
+ * grid distinguishes "spent" from "available" at a glance instead of on a
+ * click.
+ */
+function RetirableCard({ card }: { card: OwnedCardDto }) {
+  if (card.retiredWeek === null) return <PlayerCard card={card} width={104} />;
+
+  return (
+    <div className="relative">
+      <PlayerCard card={card} width={104} style={{ opacity: 0.4 }} />
+      <span
+        className="absolute font-bold uppercase"
+        style={{
+          top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+          fontSize: 9, letterSpacing: '0.1em', padding: '2px 6px', borderRadius: 3,
+          background: 'rgba(10,10,11,0.85)', color: '#8a8a92', border: '1px solid #2a2a2c',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        Wk {card.retiredWeek} · {card.retiredPoints.toFixed(1)}
+      </span>
     </div>
   );
 }
