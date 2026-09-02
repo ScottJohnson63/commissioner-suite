@@ -5,11 +5,16 @@ already syncs. Every (season, player) pair is a collectible card; members earn a
 weekly pack allowance, open packs, and build a deck that is wiped when the game
 season rolls over.
 
+**It is played a week at a time.** Set a lineup and submit it before Monday
+11:59pm central; at Tuesday 10am central every submission is published, best to
+worst. The nine cards that played are retired for the rest of the season, and
+the weeks add up — the highest total at the end wins. See **The weekly game**.
+
 **Cards are owned exclusively.** One card has exactly one owner for the whole
 season — if you pull the 2025 Christian McCaffrey, nobody else in the league can
 ever have him. Nobody is trying to collect the full set; everyone is racing for
-the scarce top of it, and the season is won by whoever ends up with the rarest
-deck. That single rule is what most of the design below follows from.
+the scarce top of it, because the cards you pull are the only ones you will ever
+have to spend. That single rule is what most of the design below follows from.
 
 ---
 
@@ -438,7 +443,8 @@ drops below 15% unclaimed, and `/api/cards/open` answers 409 when it is empty.
 ## The lineup
 
 A member's **deck** is everything they own. Their **roster** is the nine cards
-they field, and it is the roster that decides the standings.
+they are fielding *this week* — the working copy that `POST /api/cards/lineup`
+freezes into a submission. See **The weekly game**.
 
 | | Slot | Accepts |
 |---|------|---------|
@@ -465,32 +471,174 @@ sits in at most one slot — the second is what stops the same running back
 starting at RB1 and FLEX1 at once. Assigning a card that is already starting
 elsewhere **moves** it rather than failing.
 
-Eligibility is enforced server-side in `setRosterSlot`. The picker filters by
-the same `slotAccepts` rule, but a filtered picker is a convenience, not a guard.
+Eligibility is enforced server-side in `setRosterSlot`, which checks four things
+and cannot trust any of them from the client: that the slot exists, that the
+member owns the card, that the position is eligible, and that the card has not
+already played. The picker filters by the same rules, but a filtered picker is a
+convenience, not a guard.
+
+## The weekly game
+
+The season is played in weeks, and a week has three phases.
+
+| Phase | From | Until | What happens |
+|-------|------|-------|--------------|
+| **Open** | the previous week's reveal | **Monday 23:59:59.999 central** | Set the lineup, submit, re-submit as often as you like |
+| **Locked** | that instant | **Tuesday 10:00 central** | Nothing to do. The cards have played; the scores are not out |
+| **Revealed** | Tuesday 10:00 central | — | Everybody's lineup is published, and the next week opens |
+
+The lock and the reveal are ten hours apart, and the gap is deliberate: the
+Monday night game finishes inside it, and a reveal at midnight would publish
+results before the last of them had settled.
+
+### Where a week number comes from
+
+**Not from Sleeper.** The rest of the card game asks `/state/nfl` what week it
+is, which is right for a pack ration — that only has to land on the correct side
+of a Tuesday. It is wrong here. The lock and the reveal are wall-clock instants,
+so the week they belong to has to come from the same clock, and Sleeper's week
+rolls over somewhere inside the ten-hour locked window. Two sources of truth
+would disagree in exactly the window this feature lives in.
+
+So `weeklyGame.ts` derives it, and the whole NFL calendar it needs is Labor Day:
+the league always opens on the Thursday after it, so **week W's Monday night is
+Labor Day plus 7 × W days**. Labor Day 2025 was September 1st and week 1's
+Monday night game was September 8th. No feed, no table, no season-start constant
+to keep current.
+
+The module is pure — no Prisma, no network, no `Date.now()` unless a caller
+passes one in. The deadlines are the rules of the game, and the only place they
+can be checked without waiting for a Monday night is a test.
+
+### Central time, not UTC−6
+
+"Central standard time" is read as **the wall clock in Chicago**, which is CDT
+for the first two months of the season and CST from early November. Pinning it
+to a fixed −6 would move the deadline to 12:59am for two thirds of the season,
+which is not what anybody means by it. The offset is resolved per instant
+through `Intl`, so the deadline stays 11:59pm on the wall in every week.
+
+The API sends both an ISO instant and a rendered central label. The instant is
+what a countdown ticks against in the reader's own clock; the label is the rule
+as written, so a member in Los Angeles can see it is 9:59pm for them without
+doing the arithmetic.
+
+### Submitting
+
+`POST /api/cards/lineup` takes **no body**. The lineup is already on the server,
+and accepting the client's copy would mean re-validating ownership, eligibility
+and retirement for nine cards on a request whose whole job is "that one, now".
+
+Submitting is a **save, not a send**: the lineup stays editable until the
+deadline and re-submitting overwrites. The row is deleted and rewritten rather
+than updated, because a lineup with fewer cards than last time has to lose the
+slots it dropped, and an upsert of eight rows leaves the ninth behind. Children
+are deleted explicitly ahead of the parent even though the relation cascades —
+SQLite only honours a foreign key when `PRAGMA foreign_keys` is on and nothing
+here guarantees the adapter sets it.
+
+A submission freezes three things, and none of them could be recomputed later
+and still be honest:
+
+| Frozen | Because |
+|--------|---------|
+| The nine cards | The working lineup keeps being edited after the deadline |
+| The points | `pointsPerGame` moves whenever a commissioner rebuilds the pool |
+| `lockAt` / `revealAt` | A change to the deadline rule must not re-open a week that closed in September |
+
+A partial lineup is allowed and scores less. A week nobody submits scores
+nothing — there is no default lineup, because a default would field cards a
+member did not choose to spend, and spending is the whole decision.
+
+### Retirement
+
+**A card plays once a season.** Every card in a submitted lineup is out of the
+deck for good the moment its week locks.
+
+This is enforced by the unique index on `LineupCard (userId, gameSeason,
+cardId)` — the same shape as `CardOwnership`'s exclusivity key and for the same
+reason. Playing a card twice is refused by SQLite rather than by an `if` a race
+could slip past, so the picker hiding retired cards is a courtesy on top of the
+rule rather than the rule itself.
+
+Retirement is keyed on the **lock**, not the reveal. The games are over by
+Monday midnight, so the cards have played whether or not the scores are out; the
+ten hours in between are the only window where the difference is visible, and
+during them the deck should already show those cards as spent, because they are.
+
+Retired cards **stay in the deck**, dimmed and stamped with the week they played
+and what they scored. Hiding them would make a deck shrink as a season went on,
+and the card you won week 3 with is the record of week 3.
+
+Nothing sweeps the lineup on a schedule. On Tuesday morning a member's slots
+still point at nine cards that can never start again, and `clearRetiredSlots`
+empties them on the next collection read — the same lazy pattern the pack grant
+and the starter grant already use. `readRoster` also drops them on read, because
+the read has to be right *before* the cleanup runs as well as after it.
+
+**The arithmetic.** Eighteen weeks at nine cards is 162, against roughly 285
+cards a member pulls in a season (see *What this costs the pool*). That is
+comfortable but not free: a member who plays every week spends over half their
+deck, and the FLEX-heavy positions run out first. Spending your best cards early
+wins a week; saving them wins a different one, and that tension is the game.
 
 ## Winning
 
-Two numbers, answering two different questions.
+**Season points** — the sum of every published week's lineup. **This is what the
+standings rank on, and it is what the season is won with.**
 
-**Lineup PPG** — the combined points per game of the nine starters. This is what
-the standings rank on. A sum rather than an average, because that is what a
-lineup means: the points you would put up in a week if everyone played to their
-season average. Empty slots contribute nothing, so a half-filled lineup scores
-half as much.
+A week's score is the combined points per game of the cards played, which is the
+same figure the lineup has always shown: the points you would put up in a week
+if everyone played to their season average. Empty slots contribute nothing, so a
+half-filled lineup scores half as much.
+
+Points count from the **reveal**, not the lock. Cards retire on Monday night but
+nothing is published until Tuesday morning, and a standings table that moved at
+midnight would give the week away ten hours early.
+
+Two more numbers ride alongside, and both are now tiebreaks rather than the
+ranking:
+
+**Lineup PPG** — what the lineup currently being built would score. It ranks
+nothing on its own; it is the best available guess at who is about to bank more,
+and before the season's first Tuesday every total is zero and it is the only
+thing there is to sort on — which is exactly what the table used to rank on
+outright.
 
 **Deck average PPG** — the mean points per game across every card owned. It
-answers the other question: not "how good is your best ten" but "how good is
+answers the other question: not "how good is your best nine" but "how good is
 everything you pulled". A member hoarding good cards they cannot start still has
-a number that reflects it. It also breaks ties in the standings.
+a number that reflects it.
 
-The rank card on `/league/cards` shows a member's position, both numbers, and
-the gap to whoever is above them — `3rd of 8` is a fact, `3rd, 4.2 PPG off 2nd`
-is a reason to go and fill a slot. Its frame borrows the tier palettes: first
-place is drawn in Hall of Fame, descending from there, so climbing the table
-changes the metal of your own card.
+The rank card on `/league/cards` shows a member's position, their season total,
+this week's lineup, and the gap to whoever is above them — `3rd of 8` is a fact,
+`3rd, 4.2 points off 2nd` is a reason to field a better lineup on Sunday. Its
+frame borrows the tier palettes: first place is drawn in Hall of Fame, descending
+from there, so climbing the table changes the metal of your own card.
 
 The standings list every account, including members who have not opened
 anything, on zero.
+
+### The reveal
+
+`GET /api/cards/results?week=` answers with two orderings, because two questions
+are being asked:
+
+- **`entries`** ranks the members — who won the week — each carrying the cards
+  they played.
+- **`cards`** is every card anybody played, league-wide, best to worst. This is
+  where a nicknamed card with somebody's own photograph on it gets to be the
+  best card of the week in front of the league, which is most of the reason the
+  game has nicknames and photographs at all.
+
+⚠️ **The reveal guard lives in `readWeekResults`, not in the route.** A route
+that decided it would be one guard away from leaking Sunday's lineups to anyone
+who typed a week number into the query string. The rule belongs next to the
+clock that defines it.
+
+Names and pictures are read live rather than frozen: a member who renames a card
+after the fact renames it everywhere, which is what a nickname is for. Only the
+score is frozen.
 
 ---
 
@@ -500,9 +648,16 @@ Everything a member owns is scoped to `gameSeason`, which tracks `NFL_SEASON`.
 A commissioner clears a season from the panel at the bottom of `/league/cards`,
 which requires typing the year back before the button enables.
 
-The reset clears decks, grants and openings — which also releases every claimed
-card back into the pool for the new season. It leaves the card pool itself
-alone: cards are derived from NFL history and do not expire.
+The reset clears decks, grants, openings, lineups and submitted weeks — which
+also releases every claimed card back into the pool for the new season, and
+un-retires everything that played. It leaves the card pool itself alone: cards
+are derived from NFL history and do not expire.
+
+`LineupCard` is cleared alongside `LineupSubmission` rather than left to the
+cascade. SQLite only honours a foreign key when `PRAGMA foreign_keys` is on and
+nothing here guarantees the adapter sets it, and an orphaned `LineupCard` would
+go on retiring a card for a season that no longer exists — which is the shape of
+the bug that put `RosterSlot` on that list in the first place.
 
 For development, where there is no session to authenticate with,
 `npx tsx prisma/reset-card-game.ts [season]` does the same thing from the
@@ -823,6 +978,9 @@ every link is pinned by `tests/components/PlayerCard.test.tsx`.
 | `src/lib/cards/pool.ts` | Derives cards from `NflWeeklyStat` and ranks them |
 | `src/lib/cards/packs.ts` | Pack odds and dealing. Pure; takes an injected RNG |
 | `src/lib/cards/roster.ts` | Lineup shape, slot eligibility, both PPG scores |
+| `src/lib/cards/weeklyGame.ts` | The weekly clock: deadlines, phases, week numbers. Pure |
+| `src/lib/cards/weekly.ts` | Submitting a lineup, retiring what played, publishing a week |
+| `src/lib/cards/db.ts` | `CARD_FIELDS` and `isUniqueViolation`, shared by both of the above and by `service.ts` |
 | `src/lib/cards/bonus.ts` | Sleeper win/high-score detection and awarding |
 | `src/lib/cards/allowance.ts` | The weekly ration, the wildcard die, the grant |
 | `src/lib/cards/service.ts` | Persistence: decks, standings, claiming a pack |
@@ -833,6 +991,12 @@ persistence and knows nothing about the odds. They meet in `openOnePack`. The
 injected RNG is what makes the odds testable — a fixed seed turns "the odds are
 right" into an exact assertion rather than a distribution check.
 
+`weeklyGame.ts` and `weekly.ts` are split along the same seam and for the same
+reason: the clock is pure and takes its `now` from the caller, so every deadline
+in the game is an exact assertion rather than something you find out on a Monday
+night. `service.ts` depends on `weekly.ts` and never the other way round —
+retirement and the season score are read *into* the deck and the standings.
+
 ### Routes
 
 | Route | Method | Who |
@@ -840,6 +1004,8 @@ right" into an exact assertion rather than a distribution check.
 | `/api/cards/collection` | GET | Signed in — also runs the Sleeper bonus check |
 | `/api/cards/open` | POST | Signed in |
 | `/api/cards/roster` | PUT | Signed in |
+| `/api/cards/lineup` | POST | Signed in — submits the week. No body |
+| `/api/cards/results` | GET | Signed in — published weeks only |
 | `/api/cards/wildcard` | POST | Signed in |
 | `/api/cards/leaderboard` | GET | Signed in |
 | `/api/cards/pool` | GET / POST | Signed in / Commissioner |
@@ -847,6 +1013,17 @@ right" into an exact assertion rather than a distribution check.
 
 `/api/cards/open` answers **409** when the ration is spent — the member is
 entitled to open packs, they are simply out of them.
+
+`/api/cards/lineup` answers **409** for a submission after the deadline and for
+a card that has already played. Nothing about either request is malformed; one
+arrived at 12:01am and the other names a card that is spent. `/api/cards/roster`
+answers 409 for the same second reason.
+
+`/api/cards/results` answers **404** for a week that has not had its Tuesday,
+rather than an empty body — a member who bookmarks week 9 in week 8 should be
+told it is not out yet, not shown a league that apparently submitted nothing.
+With no `?week=` and nothing published at all it answers an empty week, because
+"no results yet" is a state the page draws rather than a missing resource.
 
 ### Concurrency
 
@@ -927,6 +1104,28 @@ ownership row whose card has gone.
 omission is the exclusivity rule, and the database is what enforces it rather
 than any application check. There is no `count` column because a duplicate
 cannot happen.
+
+`LineupCard` is unique on `(userId, gameSeason, cardId)` for the same reason in
+the other direction: that is the retirement rule, and it is an index rather than
+a check because a check is something a race can slip past. It is the only card
+table with a foreign key — to its parent `LineupSubmission`, which is game-owned
+and rebuilt by nothing. Its `cardId` is still a plain column.
+
+`LineupSubmission` stores `points`, `lockAt` and `revealAt` rather than deriving
+them, so a pool rebuild cannot restate a published week and a change to the
+deadline rule cannot re-open one that closed in September.
+
+Both tables ship as `prisma/migrations/20260902000000_weekly_lineup_game`.
+Prisma's own `migrate deploy` cannot drive a libsql remote, so it is applied to
+Turso with the generic script rather than by the CLI — see `docs/DATABASE.md`:
+
+```bash
+npx tsx prisma/apply-migration.ts 20260902000000_weekly_lineup_game
+```
+
+It is additive only — two `CREATE TABLE`s and their indexes, every statement
+`IF NOT EXISTS` — so running it twice is a no-op and nothing existing is read,
+altered or dropped.
 
 ## UI notes
 
