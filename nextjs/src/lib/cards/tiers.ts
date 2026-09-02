@@ -103,15 +103,31 @@ export const WILDCARD_PACK_TIERS: CardTier[] = ['HALL_OF_FAME', 'GOLD', 'SILVER'
  * Chance that a qualifying pack carries a wildcard, per pack.
  *
  * A wildcard takes a card slot rather than adding a sixth, so the cost of this
- * number is real: at 0.15 roughly one Silver-or-better pack in seven trades its
- * weakest card for a die worth one to six more packs. That trade is heavily in
- * the member's favour, which is why the rate is low — it wants to feel like a
- * find, and a member who never sees one has still lost nothing.
+ * number is real: it trades a pack's weakest card for a die worth one to six
+ * more packs. That trade is heavily in the member's favour, which is why the
+ * rate is low — it wants to feel like a find, and a member who never sees one
+ * has still lost nothing.
+ *
+ * **This was 0.15 — roughly one Silver-or-better pack in seven.** Wildcards
+ * chain: a pack earned from a die is an ordinary pack, 60% of which qualify to
+ * roll another one. That makes a per-pack chance a *branching* rate, not a flat
+ * one, and at 0.15 the branching factor (0.6 chance to qualify × 0.15 × an
+ * average die of 3.5) was 0.315 — under 1, so it does not run away on average,
+ * but the die's spread hides a heavy tail on top of that average. A member
+ * opening the five-pack starter grant saw 16 or more total packs one time in
+ * twenty, and 25 or more one time in a hundred — a run indistinguishable from
+ * "this is broken" for a meaningful slice of any real league.
+ *
+ * At 0.05 the branching factor drops to 0.105: the same starter grant now sees
+ * 10 or more packs one time in twenty, not sixteen, and 13 or more one time in
+ * a hundred, not twenty-five. One qualifying pack in twenty pays out — rare
+ * enough that a chain of several in a row reads as a lucky streak worth
+ * remembering rather than a slot machine that got stuck.
  *
  * Tuned here rather than inline for the same reason as every other number in
  * this file: the balance of the game should be readable in one place.
  */
-export const WILDCARD_PULL_CHANCE = 0.15;
+export const WILDCARD_PULL_CHANCE = 0.05;
 
 /**
  * Cards of the pack's own tier that the pack guarantees.

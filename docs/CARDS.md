@@ -289,10 +289,20 @@ member who skips three weeks gets this week's packs, not a backlog.
 **A card you pull, worth one to six extra packs.**
 
 Wildcards fall out of Silver, Gold and Hall of Fame packs at
-`WILDCARD_PULL_CHANCE` (0.15), so the packs worth opening are the ones that can
+`WILDCARD_PULL_CHANCE` (0.05), so the packs worth opening are the ones that can
 pay out again. A wildcard takes a card slot rather than adding a sixth: it
 displaces the pack's weakest card, never the guaranteed rare one it was opened
 for. A five-card pack that finds one deals four players and a die.
+
+**This was 0.15**, and it snowballed. A wildcard's own payout is more packs,
+60% of which qualify to roll another wildcard, which makes the per-pack chance
+a branching rate rather than a flat one — at 0.15 the branching factor was
+0.315, under 1 on average but with enough spread that a member opening the
+five-pack starter grant would see 16 or more total packs one time in twenty.
+That reads as a broken game to the one member it happens to, even though the
+odds behind it were exactly as designed. At 0.05 the branching factor is 0.105
+and that same one-in-twenty outcome is 10 packs, not 16 — still a real streak,
+no longer indistinguishable from a bug.
 
 This used to be a weekly entitlement — one nullable column on the grant, one
 throw a week, available whether or not you had opened anything, which made it a
