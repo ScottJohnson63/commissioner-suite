@@ -6,6 +6,7 @@ import React, { useState, useEffect } from 'react';
 import { signOut, useSession } from 'next-auth/react';
 import type { Route } from 'next';
 import { requestDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
+import { useSidebarForceCollapseListener } from '@/components/useSidebarForceCollapse';
 
 // ─── Nav definition ───────────────────────────────────────────────────────────
 
@@ -45,6 +46,13 @@ export function LeagueSidebar() {
   const { data: session, status } = useSession();
   const [expanded, setExpanded] = useState(true);
   const [overflow, setOverflow] = useState<'hidden' | 'visible'>('hidden');
+  // A page can ask this to collapse while it is on screen and the viewport is
+  // narrow — the lineup tab does, since the sidebar's width there is the
+  // difference between one card fitting the row and not. Kept separate from
+  // `expanded` so the member's own preference is untouched underneath it.
+  const [forcedCollapse, setForcedCollapse] = useState(false);
+  useSidebarForceCollapseListener(setForcedCollapse);
+  const visible = forcedCollapse ? false : expanded;
 
   // Data Sync, Members and Activity Log are member-only; a PLAYER sees just the
   // base nav.
@@ -80,16 +88,18 @@ export function LeagueSidebar() {
     }
   }, []);
 
-  // Allow tooltips to extend outside the aside once the collapse animation finishes
+  // Allow tooltips to extend outside the aside once the collapse animation
+  // finishes. Keyed on `visible` rather than `expanded`, so a forced collapse
+  // gets the same tooltip treatment as a member's own.
   useEffect(() => {
-    if (expanded) {
+    if (visible) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setOverflow('hidden');
     } else {
       const t = setTimeout(() => setOverflow('visible'), 210);
       return () => clearTimeout(t);
     }
-  }, [expanded]);
+  }, [visible]);
 
   function toggle() {
     setExpanded((prev) => {
@@ -103,7 +113,7 @@ export function LeagueSidebar() {
     <aside
       className="isolate flex flex-col shrink-0 border-r transition-[width] duration-200"
       style={{
-        width: expanded ? 216 : 52,
+        width: visible ? 216 : 52,
         background: '#0a0a0b',
         borderColor: '#1e1e20',
         overflow,
@@ -112,9 +122,9 @@ export function LeagueSidebar() {
       {/* ── Header / toggle ── */}
       <div
         className="flex items-center border-b px-3"
-        style={{ borderColor: '#1e1e20', height: 56, gap: expanded ? 8 : 0 }}
+        style={{ borderColor: '#1e1e20', height: 56, gap: visible ? 8 : 0 }}
       >
-        {expanded && (
+        {visible && (
           <span
             className="flex-1 text-[10px] uppercase tracking-[0.2em] truncate"
             style={{ color: '#555' }}
@@ -125,12 +135,12 @@ export function LeagueSidebar() {
         <button
           onClick={toggle}
           className="w-7 h-7 rounded flex items-center justify-center transition-colors shrink-0"
-          style={{ color: '#555', marginLeft: expanded ? 0 : 'auto', marginRight: expanded ? 0 : 'auto' }}
+          style={{ color: '#555', marginLeft: visible ? 0 : 'auto', marginRight: visible ? 0 : 'auto' }}
           onMouseEnter={(e) => (e.currentTarget.style.color = '#e8e6df')}
           onMouseLeave={(e) => (e.currentTarget.style.color = '#555')}
-          title={expanded ? 'Collapse' : 'Expand'}
+          title={visible ? 'Collapse' : 'Expand'}
         >
-          <ChevronIcon direction={expanded ? 'left' : 'right'} />
+          <ChevronIcon direction={visible ? 'left' : 'right'} />
         </button>
       </div>
 
@@ -159,9 +169,9 @@ export function LeagueSidebar() {
                 <span className="w-5 h-5 flex items-center justify-center shrink-0">
                   {item.icon}
                 </span>
-                {expanded && <span className="truncate leading-none">{item.label}</span>}
+                {visible && <span className="truncate leading-none">{item.label}</span>}
               </Link>
-              {!expanded && <NavTooltip label={item.label} />}
+              {!visible && <NavTooltip label={item.label} />}
             </div>
           );
         })}
@@ -184,9 +194,9 @@ export function LeagueSidebar() {
             <span className="w-5 h-5 flex items-center justify-center shrink-0">
               <SignOutIcon />
             </span>
-            {expanded && <span className="truncate">Sign out</span>}
+            {visible && <span className="truncate">Sign out</span>}
           </button>
-          {!expanded && <NavTooltip label="Sign out" />}
+          {!visible && <NavTooltip label="Sign out" />}
         </div>
       </div>
       )}

@@ -84,77 +84,111 @@ export function RosterPanel({
         </span>
       </div>
 
-      {/* ── The ten slots ── */}
-      <div
-        className="grid gap-2"
-        style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))' }}
-      >
+      {/* ── The slots, and the picker slid in under whichever is open ──
+          One column on a phone — a lineup slot is a whole card, and two to a
+          row left both too small to read at a glance. Wider screens keep the
+          auto-fill grid the tiles have always used.
+
+          The picker is a grid item too, forced to span every column, rather
+          than a block appended after the grid. That is what makes it open
+          directly under the slot that was tapped instead of at the bottom of
+          the whole list — on the single mobile column that is the same place
+          either way, but on a wider grid it is the difference between the
+          picker reading as this slot's and reading as the list's. */}
+      <div className="grid grid-cols-1 gap-2 sm:[grid-template-columns:repeat(auto-fill,minmax(96px,1fr))]">
         {roster.map((slot) => (
-          <SlotTile
+          <SlotWithPicker
             key={slot.id}
             slot={slot}
             busy={busySlot === slot.id}
-            onClick={() => setPicking((cur) => (cur === slot.id ? null : slot.id))}
             active={picking === slot.id}
-          />
+            onClick={() => setPicking((cur) => (cur === slot.id ? null : slot.id))}
+          >
+            {picking === slot.id && openSlot && (
+              <div
+                className="ut-slide-down rounded p-3"
+                style={{
+                  gridColumn: '1 / -1',
+                  background: '#0e0e0f',
+                  border: '1px solid #1e1e20',
+                  animation: 'ut-slide-down 0.2s ease-out',
+                }}
+              >
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-xs font-bold" style={{ color: '#e8e6df' }}>
+                    {openSlot.label}
+                  </span>
+                  <span className="text-[10px]" style={{ color: '#555' }}>
+                    {openSlot.accepts.join(' · ')}
+                  </span>
+                  <div className="ml-auto flex items-center gap-2">
+                    {openSlot.card && (
+                      <button
+                        onClick={() => void assign(openSlot.id, null)}
+                        className="text-[10px] uppercase tracking-[0.16em] px-2 py-1 rounded"
+                        style={{ color: '#ff6b6b', border: '1px solid #2a2a2c' }}
+                      >
+                        Bench
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setPicking(null)}
+                      className="text-[10px] uppercase tracking-[0.16em]"
+                      style={{ color: '#555' }}
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+                {candidates.length === 0 ? (
+                  <p className="text-[11px] py-4 text-center" style={{ color: '#555' }}>
+                    No {openSlot.accepts.join('/')} cards in your deck yet — open some packs.
+                  </p>
+                ) : (
+                  <div
+                    className="grid gap-2"
+                    style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))' }}
+                  >
+                    {candidates.map((card) => (
+                      <PickCandidate
+                        key={card.id}
+                        card={card}
+                        starting={startedIds.has(card.id)}
+                        inThisSlot={openSlot.card?.id === card.id}
+                        onClick={() => void assign(openSlot.id, card.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </SlotWithPicker>
         ))}
       </div>
 
       {error && <p className="text-[11px]" style={{ color: '#ff6b6b' }}>{error}</p>}
-
-      {/* ── Picker for the open slot ── */}
-      {openSlot && (
-        <div className="rounded p-3" style={{ background: '#0e0e0f', border: '1px solid #1e1e20' }}>
-          <div className="flex items-center gap-3 mb-3">
-            <span className="text-xs font-bold" style={{ color: '#e8e6df' }}>
-              {openSlot.label}
-            </span>
-            <span className="text-[10px]" style={{ color: '#555' }}>
-              {openSlot.accepts.join(' · ')}
-            </span>
-            <div className="ml-auto flex items-center gap-2">
-              {openSlot.card && (
-                <button
-                  onClick={() => void assign(openSlot.id, null)}
-                  className="text-[10px] uppercase tracking-[0.16em] px-2 py-1 rounded"
-                  style={{ color: '#ff6b6b', border: '1px solid #2a2a2c' }}
-                >
-                  Bench
-                </button>
-              )}
-              <button
-                onClick={() => setPicking(null)}
-                className="text-[10px] uppercase tracking-[0.16em]"
-                style={{ color: '#555' }}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-
-          {candidates.length === 0 ? (
-            <p className="text-[11px] py-4 text-center" style={{ color: '#555' }}>
-              No {openSlot.accepts.join('/')} cards in your deck yet — open some packs.
-            </p>
-          ) : (
-            <div
-              className="grid gap-2"
-              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))' }}
-            >
-              {candidates.map((card) => (
-                <PickCandidate
-                  key={card.id}
-                  card={card}
-                  starting={startedIds.has(card.id)}
-                  inThisSlot={openSlot.card?.id === card.id}
-                  onClick={() => void assign(openSlot.id, card.id)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
+  );
+}
+
+/**
+ * A slot tile plus, as a sibling grid item via `children`, the picker when
+ * this slot is the one open. Wrapping both in a fragment keeps them adjacent
+ * in the grid's auto-flow, which is what lets the picker's `gridColumn: '1 /
+ * -1'` place it on the row right after this tile instead of at the grid's end.
+ */
+function SlotWithPicker({
+  slot, busy, active, onClick, children,
+}: {
+  slot: RosterSlotDto; busy: boolean; active: boolean; onClick: () => void;
+  children?: React.ReactNode;
+}) {
+  return (
+    <>
+      <SlotTile slot={slot} busy={busy} active={active} onClick={onClick} />
+      {children}
+    </>
   );
 }
 

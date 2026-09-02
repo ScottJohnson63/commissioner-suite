@@ -85,6 +85,13 @@ body {
 
 /* "NEW" badge drawing attention to a first-time pull. */
 /* Cards sliding up into the summary row after the reveal. */
+
+/* The candidate picker opening under a tapped lineup slot. */
+@keyframes ut-slide-down {
+  0%   { opacity: 0; transform: translateY(-8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* Keep the reveal legible without the motion. Every animation above is
      decorative and the reveal is driven by React state rather than by them, so
@@ -97,4 +104,5 @@ body {
   .ut-holo, .ut-prism, .ut-burst, .ut-flare { animation: none !important; }
   .ut-pop { animation-duration: 0.01ms !important; }
   .ut-card-flip { transition-duration: 0.01ms !important; }
+  .ut-slide-down { animation-duration: 0.01ms !important; }
 }

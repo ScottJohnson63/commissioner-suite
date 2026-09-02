@@ -692,6 +692,7 @@ function WildcardStep({
         style={{
           width: STEP_CARD_W,
           perspective: 1000,
+          WebkitPerspective: 1000,
           cursor: faceUp ? 'default' : 'pointer',
           background: 'none',
           border: 0,
@@ -713,6 +714,7 @@ function WildcardStep({
           className="ut-card-flip relative"
           style={{
             transformStyle: 'preserve-3d',
+            WebkitTransformStyle: 'preserve-3d',
             transition: 'transform 0.55s cubic-bezier(0.2, 0.8, 0.3, 1)',
             transform: faceUp ? 'rotateY(0deg)' : 'rotateY(180deg)',
             ...(faceUp ? { animation: 'ut-pop 0.55s ease-out' } : {}),
@@ -721,7 +723,11 @@ function WildcardStep({
           <WildcardFace width={STEP_CARD_W} />
           <div
             className="absolute inset-0"
-            style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+            style={{
+              backfaceVisibility: 'hidden',
+              WebkitBackfaceVisibility: 'hidden',
+              transform: 'rotateY(180deg)',
+            }}
           >
             {/* Face down it is indistinguishable from a card — finding out it is
                 not one is the moment this whole step exists for. */}
@@ -774,7 +780,9 @@ function StepCard({
           : `A ${TIER_LABEL[card.tier]} card, face down. Click to turn it over`
       }
       className="relative outline-none"
-      style={{ width: STEP_CARD_W, perspective: 1000, cursor: 'pointer' }}
+      style={{
+        width: STEP_CARD_W, perspective: 1000, WebkitPerspective: 1000, cursor: 'pointer',
+      }}
     >
       {/* The burst only fires once the card is known — before that its colour
           is already on the back, and a second glow would just be noise. */}
@@ -795,6 +803,7 @@ function StepCard({
         className="ut-card-flip relative"
         style={{
           transformStyle: 'preserve-3d',
+          WebkitTransformStyle: 'preserve-3d',
           transition: 'transform 0.55s cubic-bezier(0.2, 0.8, 0.3, 1)',
           transform: faceUp ? 'rotateY(0deg)' : 'rotateY(180deg)',
           ...(faceUp ? { animation: 'ut-pop 0.55s ease-out' } : {}),
@@ -804,11 +813,15 @@ function StepCard({
           card={card}
           width={STEP_CARD_W}
           showTierName
-          style={{ backfaceVisibility: 'hidden' }}
+          style={{ backfaceVisibility: 'hidden', WebkitBackfaceVisibility: 'hidden' }}
         />
         <div
           className="absolute inset-0"
-          style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+          style={{
+            backfaceVisibility: 'hidden',
+            WebkitBackfaceVisibility: 'hidden',
+            transform: 'rotateY(180deg)',
+          }}
         >
           <CardBack width={STEP_CARD_W} tier={card.tier} />
         </div>
