@@ -17,7 +17,7 @@ import { RouteCache } from '@/lib/cache';
 import { eligiblePlayerWhere } from '@/lib/cards/eligibility';
 import { isUnillustrated } from '@/lib/cards/customize';
 import {
-  CARDS_PER_PACK, TIER_ORDER, lowerTiers,
+  TIER_ORDER, lowerTiers,
 } from '@/lib/cards/tiers';
 import {
   ROSTER_SLOT_IDS, deckAveragePointsPerGame, layoutRoster, rosterPointsPerGame,
