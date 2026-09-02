@@ -32,6 +32,23 @@ const TEAR_DISTANCE = 120;
 /** Length of the halves falling away, which the fetch runs underneath. */
 const TEAR_MS = 620;
 
+/** Duration of a card's 3D flip. */
+const FLIP_MS = 550;
+/** Easing shared by every `.ut-card-flip` rotation. */
+const FLIP_EASE = 'cubic-bezier(0.2, 0.8, 0.3, 1)';
+/**
+ * Which face is actually painted is driven by this, not by `backface-visibility` —
+ * that CSS property silently does nothing on some mobile Safari/Chrome builds,
+ * which is what let a card's front render — mirrored — through what was supposed
+ * to be its hidden back, before the card had even started turning.
+ *
+ * A zero-duration `visibility` transition delayed by half the flip lets React's own
+ * `faceUp` state decide which face exists at all, while still swapping at the
+ * moment the card is edge-on in both directions, so the flip still reads as a turn
+ * rather than a jump-cut.
+ */
+const FLIP_SWAP_TRANSITION = `visibility 0s linear ${FLIP_MS / 2}ms`;
+
 const PACK_W = 190;
 const PACK_H = 282;
 
@@ -715,18 +732,32 @@ function WildcardStep({
           style={{
             transformStyle: 'preserve-3d',
             WebkitTransformStyle: 'preserve-3d',
-            transition: 'transform 0.55s cubic-bezier(0.2, 0.8, 0.3, 1)',
+            transition: `transform ${FLIP_MS}ms ${FLIP_EASE}`,
             transform: faceUp ? 'rotateY(0deg)' : 'rotateY(180deg)',
             ...(faceUp ? { animation: 'ut-pop 0.55s ease-out' } : {}),
           }}
         >
-          <WildcardFace width={STEP_CARD_W} />
+          {/* `visibility` (below) decides which face renders at all; the
+              rotation and backface-visibility are still set so a browser
+              that does support the latter gets a fully 3D face swap rather
+              than a flat one. */}
           <div
-            className="absolute inset-0"
+            className="ut-flip-face"
+            style={{
+              visibility: faceUp ? 'visible' : 'hidden',
+              transition: FLIP_SWAP_TRANSITION,
+            }}
+          >
+            <WildcardFace width={STEP_CARD_W} />
+          </div>
+          <div
+            className="ut-flip-face absolute inset-0"
             style={{
               backfaceVisibility: 'hidden',
               WebkitBackfaceVisibility: 'hidden',
               transform: 'rotateY(180deg)',
+              visibility: faceUp ? 'hidden' : 'visible',
+              transition: FLIP_SWAP_TRANSITION,
             }}
           >
             {/* Face down it is indistinguishable from a card — finding out it is
@@ -804,23 +835,35 @@ function StepCard({
         style={{
           transformStyle: 'preserve-3d',
           WebkitTransformStyle: 'preserve-3d',
-          transition: 'transform 0.55s cubic-bezier(0.2, 0.8, 0.3, 1)',
+          transition: `transform ${FLIP_MS}ms ${FLIP_EASE}`,
           transform: faceUp ? 'rotateY(0deg)' : 'rotateY(180deg)',
           ...(faceUp ? { animation: 'ut-pop 0.55s ease-out' } : {}),
         }}
       >
+        {/* `visibility` (below) decides which face renders at all; the
+            rotation and backface-visibility are still set so a browser that
+            does support the latter gets a fully 3D face swap rather than a
+            flat one. See the note on FLIP_SWAP_TRANSITION. */}
         <PlayerCard
           card={card}
           width={STEP_CARD_W}
           showTierName
-          style={{ backfaceVisibility: 'hidden', WebkitBackfaceVisibility: 'hidden' }}
+          className="ut-flip-face"
+          style={{
+            backfaceVisibility: 'hidden',
+            WebkitBackfaceVisibility: 'hidden',
+            visibility: faceUp ? 'visible' : 'hidden',
+            transition: FLIP_SWAP_TRANSITION,
+          }}
         />
         <div
-          className="absolute inset-0"
+          className="ut-flip-face absolute inset-0"
           style={{
             backfaceVisibility: 'hidden',
             WebkitBackfaceVisibility: 'hidden',
             transform: 'rotateY(180deg)',
+            visibility: faceUp ? 'hidden' : 'visible',
+            transition: FLIP_SWAP_TRANSITION,
           }}
         >
           <CardBack width={STEP_CARD_W} tier={card.tier} />
