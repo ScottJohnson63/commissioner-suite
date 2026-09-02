@@ -32,7 +32,7 @@ import { CardsDialog } from '@/components/cards/CardsDialog';
 import { PlayerCard } from '@/components/cards/PlayerCard';
 import { TIER_STYLE } from '@/components/cards/tierStyles';
 import { TIER_LABEL } from '@/lib/cards/tiers';
-import type { CardDto, DeckStatsDto, OwnedCardDto, RosterSlotDto } from '@/types/cards';
+import type { DeckStatsDto, OwnedCardDto, RosterSlotDto } from '@/types/cards';
 
 /** The card chip on a lineup row. 2:3, so the row is this plus padding. */
 const ROW_CARD_W = 46;
@@ -63,20 +63,6 @@ export function RosterPanel({
 }) {
   const [picking, setPicking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  /**
-   * The owned copy of each card in the lineup, by id.
-   *
-   * A roster slot carries a CardDto — the pool's own record — but the lineup is
-   * built from cards this member owns, and ownership is what carries the
-   * nickname and the uploaded portrait. Looking them up here is what makes a
-   * card somebody named and gave a face to look the same in their lineup as it
-   * does in their deck.
-   */
-  const ownedById = useMemo(
-    () => new Map(cards.map((c) => [c.id, c])),
-    [cards],
-  );
 
   /** Cards already starting, so the picker can mark them. */
   const startedIds = useMemo(
@@ -143,7 +129,6 @@ export function RosterPanel({
           <SlotRow
             key={slot.id}
             slot={slot}
-            owned={slot.card ? ownedById.get(slot.card.id) ?? null : null}
             busy={busySlot === slot.id}
             active={picking === slot.id}
             onPick={() => setPicking(slot.id)}
@@ -189,17 +174,17 @@ export function RosterPanel({
  * needs, and nesting a button inside a button would be neither.
  */
 function SlotRow({
-  slot, owned, busy, active, onPick, onInspect,
+  slot, busy, active, onPick, onInspect,
 }: {
   slot: RosterSlotDto;
-  /** The owner's copy of the carded player, for the nickname and the portrait. */
-  owned: OwnedCardDto | null;
   busy: boolean;
   active: boolean;
   onPick: () => void;
   onInspect?: (cardId: string) => void;
 }) {
-  const card = owned ?? slot.card;
+  // Carries the owner's nickname and portrait — see LineupCardDto. The card
+  // here is the same card the deck shows, not the pool's copy of it.
+  const card = slot.card;
   const tier = card ? TIER_STYLE[card.tier] : null;
 
   return (
@@ -226,7 +211,7 @@ function SlotRow({
         <button
           type="button"
           onClick={() => onInspect(card.id)}
-          aria-label={`View ${card.playerName}'s card`}
+          aria-label={`View ${card.nickname || card.playerName}'s card`}
           className="shrink-0 self-center"
         >
           <PlayerCard card={card} width={ROW_CARD_W} />
@@ -246,7 +231,7 @@ function SlotRow({
         onClick={onPick}
         aria-label={
           card
-            ? `Change ${slot.label} — ${owned?.nickname || card.playerName}`
+            ? `Change ${slot.label} — ${card.nickname || card.playerName}`
             : `Fill ${slot.label} — empty`
         }
         className="flex-1 min-w-0 flex items-center gap-3 text-left"
@@ -265,7 +250,7 @@ function SlotRow({
                 className="text-sm font-bold truncate mt-0.5"
                 style={{ color: '#e8e6df' }}
               >
-                {owned?.nickname || card.playerName}
+                {card.nickname || card.playerName}
               </div>
               <div className="text-[10px] truncate mt-0.5" style={{ color: '#555' }}>
                 {[card.team, card.position, TIER_LABEL[card.tier]]
@@ -423,7 +408,7 @@ function PickerBody({
 
 function PickCandidate({
   card, starting, inThisSlot, onClick,
-}: { card: CardDto & { nickname?: string | null }; starting: boolean; inThisSlot: boolean; onClick: () => void }) {
+}: { card: OwnedCardDto; starting: boolean; inThisSlot: boolean; onClick: () => void }) {
   return (
     <button
       type="button"

@@ -499,6 +499,15 @@ strictly more readable than what the big tile was showing. The chip is a
 separate tap target from the row: it opens the card full size in the deck's own
 card dialog, so the art is one tap away rather than permanently in the way.
 
+A lineup card carries its owner's **nickname and portrait** on the wire —
+`LineupCardDto`, the same two fields `PlayedCardDto` carries into the reveal.
+They are joined on in `toRosterDtos` from the deck that ships in the same
+response, because `readRoster` reads `CardDefinition` and a nickname lives on
+the ownership. Without that join the starting lineup was the one screen in the
+game that showed a member the pool's name and the pool's face for a card they
+had renamed and photographed themselves — and the swap response drops it too,
+which put the pool's name back the moment a card was moved.
+
 The picker is a **sheet over the page**, not a block that opens under the row.
 Inline, the options appeared below whatever the row cost in height and below
 however far down the list you had scrolled, so choosing a card began with a

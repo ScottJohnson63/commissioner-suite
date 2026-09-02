@@ -146,6 +146,26 @@ export interface WildcardResponse {
   gameSeason: number;
 }
 
+/**
+ * A card in a lineup slot.
+ *
+ * The two customization fields ride along for the same reason they do on
+ * PlayedCardDto: they belong to the ownership rather than to the card, and a
+ * lineup is drawn from cards somebody owns. Without them the starting lineup
+ * was the one place in the game that showed a member the pool's name and the
+ * pool's portrait for a card they had named and given a face to.
+ *
+ * Not the whole of OwnedCardDto, because the rest of it — the reward flags, the
+ * retirement record — is about the deck rather than about what is on screen
+ * here, and a slot can only hold a card that has not played.
+ */
+export interface LineupCardDto extends CardDto {
+  /** What the owner calls it, shown in place of the player's name. */
+  nickname: string | null;
+  /** The owner's portrait, shown in place of the pool's. */
+  customImage: string | null;
+}
+
 /** One slot of the starting lineup, and whatever is in it. */
 export interface RosterSlotDto {
   /** Slot id — QB, RB1, FLEX1 … */
@@ -154,7 +174,7 @@ export interface RosterSlotDto {
   label: string;
   /** Positions eligible for the slot. */
   accepts: readonly string[];
-  card: CardDto | null;
+  card: LineupCardDto | null;
 }
 
 /** How a member is doing. */

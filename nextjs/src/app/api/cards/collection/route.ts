@@ -27,7 +27,7 @@ import { gameSeason } from '@/lib/cards/allowance';
 import { readAllowance, readDeck } from '@/lib/cards/service';
 import { clearRetiredSlots, readWeeklyState } from '@/lib/cards/weekly';
 import { availableSeasons } from '@/lib/cards/pool';
-import { toRosterDto } from '@/lib/cards/rosterDto';
+import { toRosterDtos } from '@/lib/cards/rosterDto';
 import type { CollectionResponse } from '@/types/cards';
 
 /**
@@ -84,7 +84,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       allowance,
       stats: deck.stats,
       cards: deck.cards,
-      roster: deck.roster.map(toRosterDto),
+      roster: toRosterDtos(deck.roster, deck.cards),
       // Included so the page does not need a second call to /leaderboard for
       // standings this request has already computed.
       standings: deck.standings,

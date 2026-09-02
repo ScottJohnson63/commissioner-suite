@@ -94,14 +94,23 @@ describe('RosterPanel', () => {
     expect(flex.getByText('RB · WR · TE')).toBeInTheDocument();
   });
 
-  // WHY: an owner who named a card and gave it a face should see that card in
-  //      their lineup, not the pool's copy of it.
-  it('prefers the owner\'s nickname over the player name', () => {
-    const named = card({ nickname: 'The Bus' });
-    panel({ roster: roster({ RB1: named }), cards: [named] });
+  // WHY: the bug this row layout inherited. An owner who named a card and gave
+  //      it a face saw the pool's name and the pool's portrait in their
+  //      lineup — the customization rides on the slot's own card now (see
+  //      LineupCardDto), so the deck is not consulted for it and an empty one
+  //      here is the point of the test.
+  it('shows the owner\'s nickname and portrait, without the deck', () => {
+    const named = card({ nickname: 'The Bus', customImage: '/api/cards/image?cardId=c1&v=7' });
+    panel({ roster: roster({ RB1: named }), cards: [] });
+
     const rb = within(row('RB'));
     expect(rb.getByText('The Bus')).toBeInTheDocument();
     expect(rb.queryByText('Jamal Lewis')).not.toBeInTheDocument();
+
+    // The chip is the card itself, so the portrait is the owner's upload.
+    expect(screen.getByAltText('The Bus')).toHaveAttribute(
+      'src', '/api/cards/image?cardId=c1&v=7',
+    );
   });
 
   // WHY: the whole point of the sheet. Opened from any row, it puts the slot
