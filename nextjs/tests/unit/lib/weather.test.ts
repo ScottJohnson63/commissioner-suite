@@ -3,14 +3,25 @@
 // Tests for the Open-Meteo weather helper in src/lib/weather.ts.
 // Mocks global.fetch and controls time with fake timers.
 //
+// The helper takes a venue rather than a team. It used to take a team and look
+// the ground up itself, which could only ever reach the thirty-two home
+// stadiums — no international games, and a road player got the forecast for a
+// city he was not in. Resolving a fixture to its venue is `venueOf` in
+// src/lib/matchupContext.ts, and is tested there.
+//
 // NOTE: weather.ts uses a module-level RouteCache instance. We reset modules
 // between tests via jest.resetModules() to prevent cache state from leaking.
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 
-describe('getWeather()', () => {
+/** Baltimore's ground, as STADIUM_COORDS holds it. */
+const BALTIMORE = { lat: 39.2780, lon: -76.6227, name: 'M&T Bank Stadium', dome: false };
+/** A covered one. */
+const ARIZONA   = { lat: 33.5277, lon: -112.2626, name: 'State Farm Stadium', dome: true };
+
+describe('getVenueWeather()', () => {
   let mockFetch: jest.MockedFunction<typeof fetch>;
-  let getWeather: (team: string, week: number) => Promise<unknown>;
+  let getWeather: (key: string, venue: typeof BALTIMORE, week: number) => Promise<unknown>;
 
   // Build a minimal Open-Meteo-shaped response for an outdoor stadium.
   // Weather at index 0 represents the "best" time slot chosen by the algorithm.
@@ -46,7 +57,7 @@ describe('getWeather()', () => {
     mockFetch = jest.spyOn(global, 'fetch') as jest.MockedFunction<typeof fetch>;
 
     const mod = await import('@/lib/weather');
-    getWeather = mod.getWeather;
+    getWeather = mod.getVenueWeather;
   });
 
   afterEach(() => {
@@ -57,16 +68,8 @@ describe('getWeather()', () => {
 
   // WHY: Dome stadiums are unaffected by outdoor weather. Returning null without
   //      fetching saves an API call and avoids misleading data in the matchup report.
-  it('returns null for a dome stadium without calling fetch', async () => {
-    const result = await getWeather('ARI', 1); // Arizona — dome: true
-    expect(result).toBeNull();
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  // WHY: An unknown team code has no stadium entry. Returning null gracefully is
-  //      better than crashing with a TypeError on the undefined entry.
-  it('returns null for an unknown team code without calling fetch', async () => {
-    const result = await getWeather('XYZ', 1);
+  it('returns null for a covered venue without calling fetch', async () => {
+    const result = await getWeather('ARI', ARIZONA, 1);
     expect(result).toBeNull();
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -78,7 +81,7 @@ describe('getWeather()', () => {
       new Response(JSON.stringify(makeOpenMeteoResponse({ temp: 55, wind: 5, precip: 10 })), { status: 200 }),
     );
 
-    const result = await getWeather('BAL', 1) as { note: string } | null;
+    const result = await getWeather('BAL', BALTIMORE, 1) as { note: string } | null;
     expect(result).not.toBeNull();
     expect(result!.note).toBe('Good conditions');
   });
@@ -90,7 +93,7 @@ describe('getWeather()', () => {
       new Response(JSON.stringify(makeOpenMeteoResponse({ wind: 25 })), { status: 200 }),
     );
 
-    const result = await getWeather('BAL', 1) as { note: string } | null;
+    const result = await getWeather('BAL', BALTIMORE, 1) as { note: string } | null;
     expect(result!.note).toContain('High wind');
   });
 
@@ -100,7 +103,7 @@ describe('getWeather()', () => {
       new Response(JSON.stringify(makeOpenMeteoResponse({ precip: 75 })), { status: 200 }),
     );
 
-    const result = await getWeather('BAL', 1) as { note: string } | null;
+    const result = await getWeather('BAL', BALTIMORE, 1) as { note: string } | null;
     expect(result!.note).toContain('Rain likely');
   });
 
@@ -111,7 +114,7 @@ describe('getWeather()', () => {
       new Response(JSON.stringify(makeOpenMeteoResponse({ temp: 10 })), { status: 200 }),
     );
 
-    const result = await getWeather('BAL', 1) as { note: string } | null;
+    const result = await getWeather('BAL', BALTIMORE, 1) as { note: string } | null;
     expect(result!.note).toContain('Extreme cold');
   });
 
@@ -125,7 +128,7 @@ describe('getWeather()', () => {
       ),
     );
 
-    const result = await getWeather('BAL', 1) as { note: string } | null;
+    const result = await getWeather('BAL', BALTIMORE, 1) as { note: string } | null;
     expect(result!.note).toContain('High wind');
     expect(result!.note).toContain('Rain likely');
     expect(result!.note).toContain('Extreme cold');
@@ -140,7 +143,7 @@ describe('getWeather()', () => {
       new Response('Service Unavailable', { status: 503 }),
     );
 
-    const result = await getWeather('BAL', 1);
+    const result = await getWeather('BAL', BALTIMORE, 1);
     expect(result).toBeNull();
   });
 
@@ -149,7 +152,7 @@ describe('getWeather()', () => {
   it('returns null when fetch throws a network error', async () => {
     mockFetch.mockRejectedValueOnce(new Error('network failure'));
 
-    const result = await getWeather('BAL', 1);
+    const result = await getWeather('BAL', BALTIMORE, 1);
     expect(result).toBeNull();
   });
 
@@ -160,21 +163,23 @@ describe('getWeather()', () => {
       new Response(JSON.stringify(makeOpenMeteoResponse()), { status: 200 }),
     );
 
-    await getWeather('BAL', 1);
-    await getWeather('BAL', 1); // should hit cache
+    await getWeather('BAL', BALTIMORE, 1);
+    await getWeather('BAL', BALTIMORE, 1); // should hit cache
 
     // fetch must only have been called once
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   // WHY: The WeatherInfo object must carry team, tempF, windMph, precipPct, and
-  //      stadiumName so the matchup report can render all relevant fields.
+  //      stadiumName so the matchup report can render all relevant fields. The
+  //      `team` echoed back is the key it was asked under — for a neutral site
+  //      that is the nominal home team, which is how a caller finds it again.
   it('returns a WeatherInfo with team, tempF, windMph, precipPct, stadiumName', async () => {
     mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify(makeOpenMeteoResponse({ temp: 45, wind: 8, precip: 20 })), { status: 200 }),
     );
 
-    const result = await getWeather('BAL', 1) as {
+    const result = await getWeather('BAL', BALTIMORE, 1) as {
       team: string; tempF: number; windMph: number; precipPct: number; stadiumName: string;
     } | null;
 

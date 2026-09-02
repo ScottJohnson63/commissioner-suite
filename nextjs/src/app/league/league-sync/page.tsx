@@ -37,6 +37,9 @@ export default function LeagueSyncPage() {
   // Starts null on every visit — the feeds stay hidden until a card is clicked.
   const [selected, setSelected] = useState<string | null>(null);
 
+  // Bumped after a sync finishes in-process, to re-read what it rewrote.
+  const [reloadKey, setReloadKey] = useState(0);
+
   function choose(sleeperLeagueId: string) {
     setSelected(sleeperLeagueId);
     // Keep the dashboard's dropdown in step with what was picked here.
@@ -47,6 +50,17 @@ export default function LeagueSyncPage() {
   function onLeaguesChanged(stillPresent: (id: string) => boolean) {
     refresh();
     setSelected((current) => (current && stillPresent(current) ? current : null));
+  }
+
+  /**
+   * A Sleeper sync stores the league's current name, so a league renamed in
+   * Sleeper gets a new name in the database the moment its feed runs. Both
+   * lists on this page were read before that, so re-read them — otherwise the
+   * card and the "Syncing …" line keep the old name until a full reload.
+   */
+  function onSynced() {
+    setReloadKey((k) => k + 1);
+    refresh();
   }
 
   const selectedName =
@@ -87,6 +101,7 @@ export default function LeagueSyncPage() {
                 selectedId={selected}
                 onSelect={choose}
                 onChange={onLeaguesChanged}
+                reloadKey={reloadKey}
               />
             ) : (
               <MemberLeaguePicker
@@ -102,6 +117,7 @@ export default function LeagueSyncPage() {
                 scope="league"
                 leagueId={selected}
                 leagueName={selectedName}
+                onSynced={onSynced}
               />
             ) : (
               <p className="text-xs rounded-lg p-4" style={{ ...PANEL_BG, color: '#888' }}>

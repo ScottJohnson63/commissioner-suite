@@ -19,6 +19,8 @@ from common import season, turso
 # Must match the SyncSource enum in nextjs/prisma/schema.prisma.
 NFL_WEEKLY = "NFL_WEEKLY"
 NFL_SEASON_RESET = "NFL_SEASON_RESET"
+NFL_DEFENSE = "NFL_DEFENSE"
+NFL_SCHEDULE = "NFL_SCHEDULE"
 SLEEPER_SCORES = "SLEEPER_SCORES"
 SLEEPER_RANKINGS = "SLEEPER_RANKINGS"
 

@@ -28,9 +28,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { sleeperGet } from '@/lib/sleeper/client';
+import { buildRosterInfo } from '@/lib/sleeper/teams';
 import type { SleeperRoster, SleeperUser, SleeperLeagueRaw } from '@/lib/sleeper/types';
 import type { StandingEntry } from '@/types/standings';
 import { ok, err } from '@/lib/api';
+import { findLeagueByAnyId } from '@/lib/league';
 
 export type { StandingEntry };
 
@@ -114,9 +116,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const leagueId = req.nextUrl.searchParams.get('leagueId');
   if (!leagueId) return err('leagueId is required', 400);
 
-  const league = await prisma.league.findFirst({
-    where: { OR: [{ id: leagueId }, { sleeperLeagueId: leagueId }] },
-  });
+  const league = await findLeagueByAnyId(leagueId);
   if (!league) return err('League not found', 404);
 
   const { previous_league_id } = await sleeperGet<SleeperLeagueInfo>(
@@ -143,25 +143,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // Sleeper roster IDs are stable across seasons, so a roster that changed hands
   // keeps its ID. Preferring the current league means a manager who left is not
   // still listed under last season's team name.
-  const buildRosterInfo = (us: SleeperUser[], rs: SleeperRoster[]) => {
-    const byUserId = new Map(us.map((u) => [u.user_id, u]));
-    return new Map(
-      rs.map((r) => {
-        const u = r.owner_id ? byUserId.get(r.owner_id) : undefined;
-        // Managers can save a blank team name in Sleeper, so fall back on
-        // anything that is empty or whitespace — not just null/undefined.
-        const teamName = u?.metadata?.team_name?.trim();
-        const owner    = u?.display_name?.trim();
-        return [r.roster_id, {
-          name: teamName || owner || `Team ${r.roster_id}`,
-          ownerName: owner || null,
-          ownerId: r.owner_id ?? null,
-        }];
-      }),
-    );
-  };
-
-  const currentInfo  = buildRosterInfo(currentUsers ?? [], currentRosters ?? []);
+  const currentInfo  = buildRosterInfo(currentUsers, currentRosters);
   const previousInfo = buildRosterInfo(users, rosters);
   // Fall back to last season for a roster that no longer exists (league shrank).
   const rosterInfo = new Map([...previousInfo, ...currentInfo]);

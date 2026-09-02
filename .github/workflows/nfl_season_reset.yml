@@ -1,4 +1,4 @@
-name: NFL Season Reset
+name: NFL Annual Season Load
 
 on:
   schedule:
@@ -36,12 +36,11 @@ jobs:
           cd python
           pip install -r requirements.txt
 
-      - name: Run season reset
+      - name: Load the completed season
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-          NFL_SEASON: "2025"
           FORCE: ${{ github.event.inputs.force || 'false' }}
         run: |
           cd python
-          python scripts/season_reset.py
+          python scripts/load_completed_season.py

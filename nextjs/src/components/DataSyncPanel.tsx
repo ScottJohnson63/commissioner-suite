@@ -164,6 +164,7 @@ export function DataSyncPanel({
   scope,
   leagueId = null,
   leagueName = null,
+  onSynced,
 }: {
   isCommissioner: boolean;
   /**
@@ -175,6 +176,13 @@ export function DataSyncPanel({
   /** Sleeper id of the chosen league. Only read when scope is 'league'. */
   leagueId?: string | null;
   leagueName?: string | null;
+  /**
+   * Called after a run that finished here rather than on Actions, so the caller
+   * can re-read whatever it rewrote. A Sleeper league sync stores the league's
+   * current name, and anything rendered from an earlier read — the cards above
+   * this panel, the "Syncing …" line below — keeps the old one until it does.
+   */
+  onSynced?: () => void;
 }) {
   const [feeds, setFeeds] = useState<Feed[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -217,6 +225,10 @@ export function DataSyncPanel({
           : `Synced ${body.synced ?? 0} league(s).`,
       );
       await load();
+      // A dispatched job has not touched the database yet — its own run row is
+      // what will report it later — so only an in-process sync has new data to
+      // hand back.
+      if (!body.dispatched) onSynced?.();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : 'Sync failed');
     } finally {

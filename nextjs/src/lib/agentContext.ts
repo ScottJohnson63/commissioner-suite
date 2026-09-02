@@ -6,6 +6,8 @@
 
 import { prisma } from '@/lib/prisma';
 import { SLEEPER_BASE } from '@/lib/sleeper/client';
+import { buildUserMap, resolveTeamName } from '@/lib/sleeper/teams';
+import type { SleeperUser as SleeperUserShape } from '@/lib/sleeper/types';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -192,13 +194,15 @@ async function fetchLeagueRostersAndStandings(
   ]);
   if (!rosters) return { rosters: [], standings: [] };
 
-  const userMap = new Map((users ?? []).map((u) => [u.user_id, u]));
+  const userMap = buildUserMap(users as SleeperUserShape[]);
   const leagueRosters: LeagueRoster[] = [];
   const standings: TeamStanding[] = [];
 
   for (const r of rosters) {
     const user      = r.owner_id ? userMap.get(r.owner_id) : undefined;
-    const ownerName = user?.metadata?.team_name ?? user?.display_name ?? `Team ${r.roster_id}`;
+    // Was `??`, which kept a blank team name saved in Sleeper and rendered an
+    // empty label here while every other route fell through to the display name.
+    const ownerName = resolveTeamName(user as SleeperUserShape | undefined, r.roster_id);
     const players: SleeperRosterPlayer[] = (r.players ?? []).map((id) => ({
       playerId: id,
       name: playerMap[id] ?? id,

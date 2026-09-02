@@ -30,6 +30,17 @@ let memCacheTs = 0;
  *   2. SleeperCache DB row (survives server restarts, <24 h old)
  *   3. Sleeper API (at most once per 24 h)
  */
+/**
+ * `getPlayerMap()` that never rejects.
+ *
+ * Four routes join player names onto Sleeper data and treat a missing player map
+ * as cosmetic — they would rather render IDs than fail the request. Each of them
+ * had its own `.catch(() => new Map())`; this is that decision in one place.
+ */
+export async function getPlayerMapSafe(): Promise<Map<string, SleeperPlayerInfo>> {
+  return getPlayerMap().catch(() => new Map<string, SleeperPlayerInfo>());
+}
+
 export async function getPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
   const now = Date.now();
 
@@ -93,11 +104,17 @@ function parsePlayerJson(json: string): Map<string, SleeperPlayerInfo> {
 
     if (!name.trim()) continue; // skip placeholder entries
 
+    // Sleeper ships 22% of its gsis_id values with a leading space (" 00-0035700").
+    // Untrimmed they are truthy but match nothing in NflWeeklyStat, which is worse
+    // than absent: the player looks resolved and silently scores zero, instead of
+    // falling through to the name lookup. Blank becomes null for the same reason.
+    const rawGsis = (player.gsis_id as string | null | undefined)?.trim();
+
     map.set(id, {
       name,
       position: (player.position as string | undefined) ?? (player.fantasy_positions as string[] | undefined)?.[0] ?? '',
       team:     (player.team    as string | null | undefined) ?? null,
-      gsisId:   (player.gsis_id as string | null | undefined) ?? null,
+      gsisId:   rawGsis ? rawGsis : null,
     });
   }
 

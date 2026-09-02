@@ -13,6 +13,8 @@
 export type SyncSource =
   | 'NFL_WEEKLY'
   | 'NFL_SEASON_RESET'
+  | 'NFL_DEFENSE'
+  | 'NFL_SCHEDULE'
   | 'SLEEPER_SCORES'
   | 'SLEEPER_RANKINGS'
   | 'SLEEPER_LEAGUES';
@@ -94,6 +96,36 @@ export const SYNC_JOBS: SyncJob[] = [
     scope: 'global',
   },
   {
+    source: 'NFL_DEFENSE',
+    label: 'NFL Team Defenses',
+    description:
+      'Team-defense box scores. Assembled rather than fetched: nflverse has no '
+      + 'DEF position, so these come from the team feed, the schedule and the '
+      + 'opposing offence.',
+    provider: 'nflverse',
+    cron: '15 8 * * 2',
+    cadence: 'Tuesdays at 08:15 UTC, during the season',
+    workflow: 'sync_nfl_defense.yml',
+    forceOnManualRun: true,
+    seasonal: true,
+    scope: 'global',
+  },
+  {
+    source: 'NFL_SCHEDULE',
+    label: 'NFL Fixtures',
+    description:
+      'Who plays whom each week, where, and at what time. Feeds the matchup '
+      + 'context panel: weather at the right venue, the opposing defense, and '
+      + 'the game\'s betting line.',
+    provider: 'nflverse',
+    cron: '30 8 * * 2',
+    cadence: 'Tuesdays at 08:30 UTC, during the season',
+    workflow: 'sync_nfl_schedule.yml',
+    forceOnManualRun: true,
+    seasonal: true,
+    scope: 'global',
+  },
+  {
     source: 'SLEEPER_SCORES',
     label: 'Sleeper Scores',
     description: 'Final matchup points for the completed week.',
@@ -106,12 +138,17 @@ export const SYNC_JOBS: SyncJob[] = [
     scope: 'league',
   },
   {
+    // The source value stays NFL_SEASON_RESET because it is stored on every
+    // historical SyncRun row; the job itself no longer resets anything.
     source: 'NFL_SEASON_RESET',
-    label: 'NFL Season Reset',
-    description: 'Wipes and reloads the last three seasons of stats. Only runs on August 1st.',
+    label: 'NFL Annual Season Load',
+    description:
+      'Adds the season that just finished, in full and corrected. Nothing is deleted. Only runs on August 1st.',
     provider: 'nflverse',
     cron: '0 8 1 8 *',
     cadence: 'August 1st at 08:00 UTC',
+    // Workflow filename kept as-is: renaming it would lose the run history
+    // GitHub keys by file path. Its display name and step were updated.
     workflow: 'nfl_season_reset.yml',
     forceOnManualRun: false,
     seasonal: false,

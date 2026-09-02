@@ -19,12 +19,26 @@ export const SLEEPER_BASE = 'https://api.sleeper.app/v1';
  * Cache lifetimes, in seconds, keyed by how fast the underlying data moves.
  * Every Sleeper call should pick one of these rather than an inline number, so
  * the request rate against Sleeper stays reviewable in one place.
+ *
+ * The governing rule: if a manager can change it in the Sleeper app and would
+ * reasonably expect to see it here straight away, it belongs in LEAGUE. Sleeper
+ * is pull-only — there are no webhooks — so "immediately" can only ever mean
+ * "on the next request, with a window short enough that nobody notices". LEAGUE
+ * is that window.
  */
 export const SLEEPER_TTL = {
   /** Current season/week pointer. Short, so a week rollover is picked up fast. */
   NFL_STATE: 60,
-  /** Rosters, users, league settings, matchups. Move on waivers and trades. */
-  LEAGUE: 300,
+  /**
+   * League name, team names, rosters, settings, matchups — everything a manager
+   * or commissioner edits in Sleeper and expects to see reflected in the app.
+   *
+   * Deliberately short. This was 300s, which meant a renamed team could show the
+   * old name for five minutes on one screen while another screen had already
+   * moved on. Thirty seconds reads as instant to a person clicking between
+   * pages, and still collapses a burst of requests into a single Sleeper call.
+   */
+  LEAGUE: 30,
   /** Trending adds/drops. Sleeper recomputes these on the order of an hour. */
   TRENDING: 600,
   /** The full player index. Sleeper asks for at most one call per 24 hours. */

@@ -57,7 +57,25 @@ def is_in_season(today: datetime | None = None) -> bool:
 def is_reset_day(today: datetime | None = None) -> bool:
     """True only on August 1, or whenever FORCE=true."""
     if forced():
-        print("FORCE=true — skipping the reset-date check.")
+        print("FORCE=true — skipping the date check.")
         return True
     today = today or now()
     return today.month == RESET_MONTH and today.day == RESET_DAY
+
+
+def last_completed_season(today: datetime | None = None) -> int:
+    """The most recent NFL season that has finished.
+
+    A season labelled Y runs from September Y to February Y+1, so on August 1 of
+    year Y the season that has just wrapped up is Y-1 — the 2025 season ended in
+    February 2026, and the 2026 season has not kicked off yet.
+
+    Deliberately derived from the calendar rather than from NFL_SEASON. That
+    variable is pinned in the workflow file and has to be bumped by hand every
+    year; a job that quietly reloads the wrong season because nobody edited a
+    YAML file is worse than one that works out the date for itself.
+    """
+    today = today or now()
+    # Before August the current season is still in progress or in its playoffs,
+    # so the last finished one is still the year before.
+    return today.year - 1

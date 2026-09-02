@@ -13,6 +13,7 @@ import { NewsTab }        from '@/components/dashboard/NewsTab';
 import { SchedulesTab }   from '@/components/dashboard/SchedulesTab';
 import { DivisionsTab }   from '@/components/dashboard/DivisionsTab';
 import { LotteryTab }     from '@/components/dashboard/LotteryTab';
+import { openAppIntro }   from '@/components/intro/AppIntro';
 
 type Tab = 'league' | 'statistics' | 'news' | 'schedules' | 'divisions' | 'lottery';
 
@@ -136,6 +137,17 @@ export default function LeagueDashboardPage() {
         {/* Nothing here until the session resolves — swapping a Sign in button
             for the league selector a moment later reads as a glitch. */}
         <div className="flex items-center gap-3 mt-1">
+          {/* Replays the welcome tour. It opens itself on a first visit, so this
+              is here for everybody after that — including anyone who ticked
+              "Don't show this again". */}
+          <button
+            onClick={openAppIntro}
+            className="text-[11px] font-medium px-3 py-1.5 rounded transition-colors"
+            style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
+          >
+            How it works
+          </button>
+
           {sessionLoading ? null : isAuthed ? (
             <>
               <LeagueSelector

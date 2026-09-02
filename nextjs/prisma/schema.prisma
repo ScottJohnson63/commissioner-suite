@@ -163,6 +163,8 @@ model SleeperCache {
 enum SyncSource {
   NFL_WEEKLY
   NFL_SEASON_RESET
+  NFL_DEFENSE
+  NFL_SCHEDULE
   SLEEPER_SCORES
   SLEEPER_RANKINGS
   SLEEPER_LEAGUES
@@ -206,6 +208,119 @@ model SyncRun {
   @@index([startedAt])
 }
 
+/**
+ * Jersey numbers, one row per player per season.
+ * nflverse publishes these on the roster feed rather than the player-stat feed,
+ * so they cannot be read off NflWeeklyStat. A separate table rather than a
+ * column on it because the grain differs: stats are per week, a jersey number
+ * is per season.
+ * Only what the cards need is stored — the roster feed is far wider.
+ */
+model NflSeasonRoster {
+  id String @id @default(cuid())
+
+  season       Int
+  /**
+   * nflverse/GSIS player id, matching NflWeeklyStat.playerId.
+   */
+  playerId     String
+  jerseyNumber Int?
+  team         String?
+  syncedAt     DateTime @default(now())
+
+  @@unique([season, playerId])
+  @@index([season])
+}
+
+/**
+ * The portrait a player's cards actually show.
+ *
+ * nflverse's headshot_url — the `headshot` column on NflWeeklyStat — is an
+ * nfl.com Cloudinary link, and for roughly half the pool it answers 200 with
+ * the league's generic faceless-helmet silhouette instead of a photograph. A
+ * non-null column therefore never meant "there is a picture", and because the
+ * response is a 200 rather than a 404 the card's own onError fallback never
+ * fired: the card rendered the black helmet.
+ *
+ * This table is the resolved answer, written by sync_player_headshots.py after
+ * actually fetching the image and fingerprinting it. `url` null is meaningful —
+ * it says "checked, and no photograph exists anywhere", which is what tells the
+ * card to fall back to its team logo.
+ *
+ * Keyed on the player, not on (season, player): a portrait belongs to the man
+ * rather than the year, so one row serves every card he has.
+ */
+model NflPlayerHeadshot {
+  id String @id @default(cuid())
+
+  /**
+   * nflverse/GSIS player id, matching NflWeeklyStat.playerId.
+   */
+  playerId  String  @unique
+  /**
+   * A URL verified to serve a photograph, or null when none was found.
+   */
+  url       String?
+  /**
+   * Which source `url` points at — NFL, ESPN, WIKIPEDIA, or NONE when nothing
+   * was found. Kept so a later run can tell "nobody has a picture of him" apart
+   * from "this row predates the Wikipedia lookup", and so that a Commons image
+   * can be attributed if the league ever needs to.
+   */
+  source    HeadshotSource
+  checkedAt DateTime       @default(now())
+}
+
+/** Where a resolved portrait came from. */
+enum HeadshotSource {
+  /** nfl.com, verified not to be the generic silhouette. */
+  NFL
+  /** ESPN's headshot CDN, reached through the player's espn_id. */
+  ESPN
+  /**
+   * Wikimedia Commons, via the player's English Wikipedia article.
+   *
+   * The only source that covers pre-2009 players: nfl.com serves them the
+   * generic silhouette and ESPN 404s them outright, so for a 2003 card this is
+   * the difference between a face and a team logo. Commons images are freely
+   * licensed, but most carry a CC-BY-SA attribution requirement — which is the
+   * other reason the source is recorded rather than just the URL.
+   */
+  WIKIPEDIA
+  /** Checked everywhere and found nothing — the card shows its team logo. */
+  NONE
+}
+
+/// One NFL fixture. Populated by python/scripts/sync_nfl_schedule.py.
+///
+/// The app had no fixture source at all: Sleeper's /schedule endpoint 404s and
+/// nflverse ships parquet, so weather guessed at each player's home stadium, the
+/// opponent-defense lookup was removed for want of an opponent, and Vegas lines
+/// were shown unfiltered.
+model NflGame {
+  id         String   @id @default(cuid())
+  season     Int
+  week       Int
+  seasonType String?
+  homeTeam   String
+  awayTeam   String
+  /// ISO-8601 kickoff in US Eastern time, e.g. "2026-09-13T13:00" — the zone
+  /// nflverse publishes NFL kickoffs in, which is why the slate lands on 13:00,
+  /// 16:25 and 20:20, and the London games on 09:30.
+  kickoff    String?
+  stadium    String?
+  /// outdoors | dome | closed
+  roof       String?
+  /// Home | Neutral — a neutral site makes the home team's coordinates wrong.
+  location   String?
+  homeScore  Float?
+  awayScore  Float?
+  syncedAt   DateTime @default(now())
+
+  @@unique([season, week, homeTeam])
+  @@index([season, week])
+}
+
 model NflWeeklyStat {
   id String @id @default(cuid())
 
@@ -221,6 +336,14 @@ model NflWeeklyStat {
   seasonType        String?
   team              String?
   opponentTeam      String?
+
+  // ── Team defense ──────────────────────────────────
+  // Set only on DEF rows, where playerId is the team abbreviation. Both are
+  // properties of the game rather than of a player, so nflverse publishes
+  // neither per-player; the defense sync derives them from the schedule and the
+  // opponent's offensive totals.
+  pointsAllowed     Float?
+  yardsAllowed      Float?
 
   // ── Passing ───────────────────────────────────────
   completions            Float?
@@ -380,4 +503,402 @@ model NflWeeklyStat {
   @@unique([season, week, playerId])
   @@index([position, season])
   @@index([team, season])
+}
+
+// ─── Ultimate Team card collection game ───────────────────────────────────────
+//
+// A season-long collection game layered over the NFL stats the app already
+// syncs. Every (season, player) pair that scored fantasy points is a card; the
+// player's finishing rank within that season fixes its tier. Members earn a
+// weekly pack allowance, open packs, and build a collection that is wiped when
+// the game season rolls over.
+//
+// The card pool is derived data — CardDefinition rows are rebuilt from
+// NflWeeklyStat rather than hand-entered — so backfilling older seasons grows
+// the pool (and the weekly allowance) with no schema change.
+
+enum CardTier {
+  HALL_OF_FAME
+  GOLD
+  SILVER
+  BRONZE
+}
+
+/**
+ * One collectible card: a player's body of work in a single NFL season.
+ * Rebuilt wholesale by the pool builder, so nothing user-owned may hang off it
+ * by foreign key — CardOwnership stores the id as a plain column and tolerates
+ * a card that a rebuild removed.
+ */
+model CardDefinition {
+  id String @id @default(cuid())
+
+  /**
+   * NFL season this card's stat line comes from.
+   */
+  season     Int
+  /**
+   * nflverse/GSIS player id, or the synthetic "DEF-<TEAM>" id for a team
+   * defense, which nflverse has no single row for.
+   */
+  playerId   String
+  playerName String
+  /**
+   * QB | RB | WR | TE | K | DEF — the fantasy-eligible positions.
+   */
+  position   String
+  team       String?
+
+  tier          CardTier
+  /**
+   * 1-based finish within this card's position that season, by PPR points per
+   * game. Players short of the games minimum rank beneath everyone who met it.
+   */
+  seasonRank    Int
+  /**
+   * Regular-season PPR total, kept as the source for pointsPerGame.
+   */
+  fantasyPoints Float
+  /**
+   * Games the player actually appeared in. nflverse emits one row per game
+   * played rather than one per week, so this is a row count, not a guess.
+   */
+  gamesPlayed   Int      @default(0)
+  /**
+   * fantasyPoints ÷ gamesPlayed, and the number printed on the card face.
+   * Stored rather than divided on the client so the card, the API and any
+   * future sort all read the same value, and so a zero-game row cannot produce
+   * a NaN in the UI.
+   */
+  pointsPerGame Float    @default(0)
+  /**
+   * Jersey number worn that season, from the nflverse roster feed.
+   */
+  jerseyNumber  Int?
+  /**
+   * nfl.com headshot URL, or null for team defenses.
+   */
+  headshot      String?
+
+  builtAt DateTime @default(now())
+
+  @@unique([season, playerId])
+  @@index([season, tier])
+  @@index([tier])
+}
+
+/**
+ * A member's pack allowance for one week of one game season.
+ * The ledger is the source of truth for "how many packs may I still open": rows
+ * are created on demand when a member first looks at the game in a given week,
+ * and `packsOpened` is incremented as they spend them. Storing the grant rather
+ * than recomputing it means changing the allowance formula mid-season cannot
+ * retroactively hand back packs a member already spent.
+ */
+model PackGrant {
+  id String @id @default(cuid())
+
+  userId     String
+  /**
+   * Game season, which tracks NFL_SEASON. Reset wipes a whole season.
+   */
+  gameSeason Int
+  week       Int
+
+  packsGranted Int
+  packsOpened  Int       @default(0)
+  /**
+   * Bonus packs earned from Sleeper results this week, and how many have been
+   * opened. Counted apart from the ration because they are a different pack —
+   * ten cards, never below Silver — so the opener has to know which kind is
+   * next rather than inferring it from a single balance.
+   */
+  bonusGranted Int       @default(0)
+  bonusOpened  Int       @default(0)
+  /**
+   * The tier of the next pack this member will open, rolled in advance so the
+   * sealed pack can show what it is before it is torn.
+   * Persisted rather than rolled at open time for the obvious reason: a tier
+   * decided on render would change every time the page reloaded, and a member
+   * would refresh until a Hall of Fame pack appeared. Rolled once, stored, and
+   * replaced only when the pack it describes is actually opened.
+   */
+  nextPackTier CardTier?
+  createdAt    DateTime  @default(now())
+
+  @@unique([userId, gameSeason, week])
+  @@index([userId, gameSeason])
+}
+
+/**
+ * A wildcard pulled out of a pack, and the die it entitles its finder to throw.
+ *
+ * The wildcard used to be a weekly entitlement — one nullable column on
+ * PackGrant, one throw a week, available whether or not you had opened
+ * anything. That made it a login bonus. As a card it has to be found, which is
+ * the only version of it that interacts with the game: it drops from Silver,
+ * Gold and Hall of Fame packs, so the packs worth opening are the ones that can
+ * pay out again.
+ *
+ * A row per pull rather than a counter, because each one is thrown separately
+ * and a member can be holding several. `rolledValue` null means the die is
+ * still on the table; setting it is what grants the extra packs, and the update
+ * that sets it is conditional on it still being null — that is the whole
+ * defence against a double-click paying out twice.
+ *
+ * No foreign key to User, matching the rest of the card game: these rows are
+ * scoped by gameSeason and cleared wholesale by a season reset.
+ */
+model WildcardCard {
+  id String @id @default(cuid())
+
+  userId     String
+  gameSeason Int
+  /** The week the pack it came out of was opened. */
+  week       Int
+  pulledAt   DateTime @default(now())
+
+  /** The face that stuck, or null while the die is still unthrown. */
+  rolledValue Int?
+  rolledAt    DateTime?
+
+  @@index([userId, gameSeason])
+}
+
+/**
+ * Who owns a card this game season.
+ * Ownership is exclusive: the unique key is (gameSeason, cardId) with no user
+ * in it, so one card has exactly one owner and two members opening packs at the
+ * same instant cannot both be dealt the 2025 Christian McCaffrey — the second
+ * insert is rejected and that slot is redrawn.
+ * This is what makes the game a race for the scarce top of the pool rather than
+ * a completion challenge, and it is why there is no `count` column: under
+ * exclusive ownership a duplicate cannot happen.
+ */
+model CardOwnership {
+  id String @id @default(cuid())
+
+  userId     String
+  gameSeason Int
+  /**
+   * CardDefinition.id. Deliberately not a relation — see CardDefinition.
+   */
+  cardId     String
+
+  claimedAt DateTime @default(now())
+
+  /**
+   * What the owner calls this card, or null for the player's real name.
+   *
+   * Lives on the ownership rather than the CardDefinition because it belongs to
+   * the member, not to the card: the pool is rebuilt wholesale from the stat
+   * table and would drop anything written onto a definition.
+   */
+  nickname    String?
+  // The exclusivity constraint. Deliberately does NOT include userId.
+  @@unique([gameSeason, cardId])
+  @@index([userId, gameSeason])
+}
+
+/**
+ * A member's own picture on a card that already had one — a vanity override.
+ *
+ * Season-scoped and disposable. Putting your dog on Patrick Mahomes is a joke
+ * for this season, not a change to the deck, so it is listed in OWNED_TABLES
+ * and cleared by the end-of-season reset along with the ownership it decorates.
+ *
+ * The permanent counterpart is CardPortrait — see the note there for why the
+ * two are separate tables rather than one with a flag.
+ *
+ * Stored inline as base64 because the app has no object storage, and in its own
+ * table rather than on CardOwnership because that row is read for every card a
+ * member holds: inline, forty customized cards meant ten megabytes on the wire
+ * on every page load. Here the deck read carries a URL and the bytes are
+ * fetched per card from GET /api/cards/image, which the browser caches.
+ *
+ * Keyed like CardOwnership: unique on (gameSeason, cardId), because a card has
+ * one owner and so at most one override.
+ */
+model CardImage {
+  id String @id @default(cuid())
+
+  userId     String
+  gameSeason Int
+  /** CardDefinition.id. Deliberately not a relation — see CardDefinition. */
+  cardId     String
+
+  /** Checked against an allowlist on upload; used as the response Content-Type. */
+  mimeType   String
+  /** The image bytes, base64-encoded. */
+  data       String
+
+  uploadedAt DateTime @default(now())
+
+  @@unique([gameSeason, cardId])
+  @@index([userId, gameSeason])
+}
+
+/**
+ * A picture contributed for a card that had no photograph at all — permanent.
+ *
+ * About 1,900 cards in the pool show a team logo because nobody has a
+ * photograph of that player anywhere: nfl.com serves the generic silhouette,
+ * ESPN 404s them, and Wikipedia has no article image. See docs/CARDS.md.
+ *
+ * When a member gives one of those cards a face, that is not decoration — it is
+ * a contribution to the pool, and it is the only way that card will ever have
+ * one. So it outlives the member's ownership of it: **this table is not
+ * season-scoped and the reset does not touch it.** Next season's owner inherits
+ * the face, and the card stops being one of the faceless ones.
+ *
+ * That is why this is a separate table from CardImage rather than a flag on it.
+ * The reset clears everything in OWNED_TABLES, which is every model keyed by
+ * gameSeason; a permanent row inside a season-scoped table would be one
+ * `where` clause away from being destroyed by a routine reset, and the whole
+ * point is that it cannot be.
+ *
+ * `cardId` is unique with no season in the key, because the portrait belongs to
+ * the card rather than to anybody's season. That uniqueness is also what makes
+ * the pack reward once-per-card-ever: the insert either wins or it does not.
+ */
+model CardPortrait {
+  id String @id @default(cuid())
+
+  /** CardDefinition.id. Deliberately not a relation — see CardDefinition. */
+  cardId String @unique
+
+  /** Who gave the card its face. Credit and cap accounting, not ownership. */
+  contributedBy     String
+  /**
+   * The game season it was contributed in.
+   *
+   * Provenance and the reward cap only. It is deliberately NOT used to scope a
+   * delete anywhere — this table survives every reset.
+   */
+  contributedSeason Int
+
+  /** Checked against an allowlist on upload; used as the response Content-Type. */
+  mimeType String
+  /** The image bytes, base64-encoded. */
+  data     String
+
+  createdAt DateTime @default(now())
+
+  @@index([contributedBy, contributedSeason])
+}
+
+/**
+ * The one-off welcome packs a member gets the first time they open the game.
+ * Separate from PackGrant because it is not weekly: one row per member per game
+ * season, granted the first time they look at the card page and never refilled.
+ * Scoped to the season rather than the account so the end-of-season reset,
+ * which clears everyone's cards, hands out a fresh set of starters along with
+ * them — a member returning to an empty deck needs the same leg up as a new one.
+ */
+model StarterGrant {
+  id String @id @default(cuid())
+
+  userId     String
+  gameSeason Int
+
+  packsGranted Int      @default(0)
+  packsOpened  Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  @@unique([userId, gameSeason])
+}
+
+/**
+ * A bonus pack earned from a Sleeper result.
+ * Two ways to earn one: winning a matchup, or scoring over the points
+ * threshold. Each is worth one pack **per week**, however many Sleeper leagues
+ * the member plays in — which is exactly what the unique key on
+ * (userId, gameSeason, week, kind) enforces. A member in four leagues who wins
+ * all four gets one win pack, not four.
+ * The league and points that triggered it are recorded so a member can be shown
+ * *why* they got it, and so a disputed award can be checked against Sleeper.
+ */
+model PackBonus {
+  id String @id @default(cuid())
+
+  userId     String
+  gameSeason Int
+  week       Int
+  /**
+   * WIN or HIGH_SCORE. Text rather than an enum to match the other card tables.
+   */
+  kind       String
+
+  /**
+   * Sleeper league id that triggered the award.
+   */
+  sleeperLeagueId String?
+  /**
+   * Points scored in that league that week.
+   */
+  points          Float?
+  awardedAt       DateTime @default(now())
+
+  // One award per rule per week, whatever the member's league count.
+  @@unique([userId, gameSeason, week, kind])
+  @@index([userId, gameSeason])
+}
+
+/**
+ * A card a member has started in their lineup.
+ * The deck is everything they own; the roster is the ten they field, and it is
+ * the roster that decides the standings. Slots are stored one row each rather
+ * than as ten columns so the lineup shape can change without a migration.
+ * Two unique keys, doing different jobs: one slot holds one card, and one card
+ * sits in at most one slot. The second is what stops the same running back
+ * being started at RB1 and FLEX1 at once.
+ */
+model RosterSlot {
+  id String @id @default(cuid())
+
+  userId     String
+  gameSeason Int
+  /**
+   * Slot id — QB, RB1, RB2, WR1, WR2, TE, FLEX1, FLEX2, K, DEF. Kept as text
+   * rather than an enum so the lineup can be reshaped in one file.
+   */
+  slot       String
+  /**
+   * CardDefinition.id. Deliberately not a relation — see CardDefinition.
+   */
+  cardId     String
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, gameSeason, slot])
+  @@unique([userId, gameSeason, cardId])
+  @@index([userId, gameSeason])
+}
+
+/**
+ * One opened pack, kept so the reveal can be replayed and so pull rates can be
+ * audited if a member says the odds feel wrong.
+ */
+model PackOpening {
+  id String @id @default(cuid())
+
+  userId     String
+  gameSeason Int
+  week       Int
+  packTier   CardTier
+  /**
+   * Which supply the pack came out of: STARTER, BONUS or RATION.
+   * Not just bookkeeping. Both the starter grant and the weekly ration promise
+   * a number of Gold-or-better packs, and each promise is about its own supply
+   * — a Sleeper bonus pack that happens to roll Gold must not satisfy either.
+   */
+  kind       String   @default("RATION")
+  /**
+   * JSON array of CardDefinition ids, in reveal order.
+   */
+  cardIds    String
+  openedAt   DateTime @default(now())
+
+  @@index([userId, gameSeason])
+  @@index([openedAt])
 }

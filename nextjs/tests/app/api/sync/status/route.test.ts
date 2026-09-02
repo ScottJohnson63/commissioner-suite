@@ -2,8 +2,14 @@
 //
 // Tests for GET /api/sync/status — the auth gate, and how SyncRun rows are
 // collapsed to one "last run" per feed.
+//
+// The clock is frozen. "Overdue" is measured from the last time a cron should
+// have fired, so a test that asks whether a never-run weekly feed is overdue is
+// really asking what day it is: NFL_WEEKLY fires Tuesdays at 08:00 UTC with a
+// six-hour grace, so against a live clock it passed six days a week and failed
+// every Tuesday morning.
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, afterAll, beforeEach, jest } from '@jest/globals';
 
 jest.mock('@/auth', () => ({ auth: jest.fn() }));
 jest.mock('@/lib/prisma', () => ({ prisma: { syncRun: { findMany: jest.fn() } } }));
@@ -12,6 +18,12 @@ import { GET } from '@/app/api/sync/status/route';
 import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { SYNC_JOBS } from '@/lib/syncSchedule';
+
+// A Thursday, comfortably past Tuesday's fire and well inside the season, so
+// every cadence in SYNC_JOBS has a previous run to be measured against.
+const FROZEN_NOW = new Date('2026-09-10T12:00:00Z');
+jest.useFakeTimers({ now: FROZEN_NOW, doNotFake: ['performance'] });
+afterAll(() => { jest.useRealTimers(); });
 
 const mockAuth    = auth as jest.MockedFunction<typeof auth>;
 const mockFindMany = prisma.syncRun.findMany as jest.MockedFunction<typeof prisma.syncRun.findMany>;

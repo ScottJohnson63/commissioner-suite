@@ -101,13 +101,13 @@ Improve  application infrastructure
 
 [x] Setup GitHub Pipeline
 [ ] Load test it
-[ ] Set up Claude testing
+[x] Set up Claude testing
 [ ] Complete phased unit testing
 
 -- Part 11: Feature updates --
 Overall: 
 Match league requirements
 
-[ ] Fix divisions page
-[ ] Fix lottery page
-[ ] Remove league/schedule page and associated unit tests
+[x] Fix divisions page
+[x] Fix lottery page
+[x] Remove league/schedule page and associated unit tests

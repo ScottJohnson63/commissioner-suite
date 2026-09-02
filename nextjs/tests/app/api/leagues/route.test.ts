@@ -15,12 +15,19 @@ jest.mock('@/lib/prisma', () => ({
 
 jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
+// Without this the list's live-name overlay would reach the real Sleeper API.
+jest.mock('@/lib/sleeper/liveNames', () => ({
+  fetchLeagueNames: jest.fn(),
+}));
+
 import { GET } from '@/app/api/leagues/route';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
+import { fetchLeagueNames } from '@/lib/sleeper/liveNames';
 
 const mockFindMany = prisma.league.findMany as jest.MockedFunction<typeof prisma.league.findMany>;
 const mockAuth     = auth                  as jest.MockedFunction<typeof auth>;
+const mockLeagueNames = fetchLeagueNames as jest.MockedFunction<typeof fetchLeagueNames>;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -34,7 +41,38 @@ const fakeLeagues = [
 describe('GET /api/leagues', () => {
   beforeEach(() => {
     mockFindMany.mockReset();
+    mockLeagueNames.mockReset();
     mockAuth.mockResolvedValue({ user: { id: '1', role: 'COMMISSIONER' } } as never);
+    // Default: Sleeper has no opinion, so stored names pass through unchanged.
+    mockLeagueNames.mockResolvedValue(new Map());
+  });
+
+  // WHY: this is the bug that started the redesign. League.name is written only
+  //      by a sync, and the league feed has no cron, so a league renamed in
+  //      Sleeper kept its old name on the cards indefinitely.
+  it('returns the live Sleeper name over the stored one', async () => {
+    mockFindMany.mockResolvedValue(fakeLeagues as never);
+    mockLeagueNames.mockResolvedValue(new Map([['111', 'Discount Double Perc']]));
+
+    const res  = await GET();
+    const body = await res.json() as { sleeperLeagueId: string; name: string }[];
+
+    expect(body.find((l) => l.sleeperLeagueId === '111')?.name).toBe('Discount Double Perc');
+  });
+
+  // WHY: GET /api/leagues is on every page load and gates what the app shows at
+  //      all. One unreachable league must not blank the others, and a total
+  //      Sleeper outage must not empty the allowlist.
+  it('keeps stored names for leagues Sleeper cannot answer for', async () => {
+    mockFindMany.mockResolvedValue(fakeLeagues as never);
+    mockLeagueNames.mockResolvedValue(new Map([['111', 'Renamed Alpha']]));
+
+    const res  = await GET();
+    const body = await res.json() as { sleeperLeagueId: string; name: string }[];
+
+    expect(body.find((l) => l.sleeperLeagueId === '111')?.name).toBe('Renamed Alpha');
+    expect(body.find((l) => l.sleeperLeagueId === '222')?.name).toBe('Beta League');
+    expect(body).toHaveLength(2);
   });
 
   // WHY: Authenticated users should receive the full league list.

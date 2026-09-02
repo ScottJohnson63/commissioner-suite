@@ -13,20 +13,30 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { auth } from '@/auth';
 import { syncLeague } from '@/lib/sleeper/sync';
 import { recordSyncRun } from '@/lib/syncRun';
 import { ok, err } from '@/lib/api';
+import { requireCommissioner, requireSession } from '@/lib/apiAuth';
+import { fetchLeagueNames } from '@/lib/sleeper/liveNames';
 
 export async function GET(): Promise<NextResponse> {
-  const session = await auth();
-  if (!session) return err('Unauthorized', 401);
+  const denied = await requireSession();
+  if (denied) return denied;
 
   try {
     const leagues = await prisma.league.findMany({
       orderBy: { createdAt: 'desc' },
     });
-    return ok(leagues);
+
+    // League.name is a sync-time copy and there is no cron behind the league
+    // feed, so a league renamed in Sleeper would otherwise keep its old name in
+    // this list until someone pressed Sync. Overlay the current names; a league
+    // Sleeper cannot answer for keeps the stored one.
+    const liveNames = await fetchLeagueNames(leagues.map((l) => l.sleeperLeagueId));
+
+    return ok(
+      leagues.map((l) => ({ ...l, name: liveNames.get(l.sleeperLeagueId) ?? l.name })),
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to fetch leagues';
     return err(message);
@@ -37,8 +47,8 @@ export async function GET(): Promise<NextResponse> {
 const SLEEPER_ID = /^\d{6,25}$/;
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  const session = await auth();
-  if (session?.user?.role !== 'COMMISSIONER') return err('Forbidden', 403);
+  const denied = await requireCommissioner();
+  if (denied) return denied;
 
   const body = (await req.json()) as { sleeperLeagueId?: string };
   const sleeperLeagueId = body.sleeperLeagueId?.trim();

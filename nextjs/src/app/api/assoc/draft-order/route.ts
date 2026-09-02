@@ -18,9 +18,9 @@
 // (lottery winner vs. inverse-standings placement) for full transparency.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
+import { findLeagueIdByAnyId } from '@/lib/league';
 
 /** A single pick slot in the draft order, as submitted by the Lottery tab UI. */
 interface DraftPick {
@@ -39,12 +39,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return err('leagueId and draftOrder are required', 400);
   }
 
-  const league = await prisma.league.findFirst({
-    where: { OR: [{ id: body.leagueId }, { sleeperLeagueId: body.leagueId }] },
-    select: { id: true },
-  });
+  const leagueDbId = await findLeagueIdByAnyId(body.leagueId);
 
-  await writeAuditLog('GENERATE', league?.id ?? body.leagueId, {
+  await writeAuditLog('GENERATE', leagueDbId ?? body.leagueId, {
     type: 'draft_order',
     picks: body.draftOrder.map((p) => ({
       pick: p.pick,

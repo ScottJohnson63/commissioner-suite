@@ -9,11 +9,12 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { sleeperGet } from '@/lib/sleeper/client';
+import { buildUserMap, resolveTeamName } from '@/lib/sleeper/teams';
 import type { SleeperMatchupRaw, SleeperRoster, SleeperUser } from '@/lib/sleeper/types';
-import { RouteCache } from '@/lib/cache';
+import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import { ok, err } from '@/lib/api';
 
-const TTL = 5 * 60 * 1000;
+const TTL = ROUTE_CACHE_TTL.LIVE;
 
 export interface MatchupTeam {
   rosterId: number;
@@ -62,14 +63,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // Build lookup maps
     const rosterById = new Map(rosters.map((r) => [r.roster_id, r]));
-    const userById = new Map(users.map((u) => [u.user_id, u]));
+    const userById = buildUserMap(users);
 
     function buildTeam(raw: SleeperMatchupRaw): MatchupTeam {
       const roster = rosterById.get(raw.roster_id);
       const user = roster?.owner_id ? userById.get(roster.owner_id) : undefined;
+      // This route labels an unowned roster "Roster N" rather than the shared
+      // default "Team N", so the fallback is passed explicitly.
       const displayName = user?.display_name ?? `Roster ${raw.roster_id}`;
-      const teamName =
-        user?.metadata?.team_name?.trim() || displayName;
+      const teamName = resolveTeamName(user, raw.roster_id, displayName);
       return {
         rosterId: raw.roster_id,
         ownerId: roster?.owner_id ?? null,

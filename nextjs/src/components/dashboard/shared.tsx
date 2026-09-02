@@ -73,3 +73,23 @@ export function PanelSkeleton({ rows = 3, height = 10 }: { rows?: number; height
 export function NoLeague() {
   return <p className="text-xs text-center py-6" style={{ color: '#444' }}>Select a league first</p>;
 }
+
+/**
+ * Says which season a panel's numbers came from, when that is not the season
+ * being played.
+ *
+ * Between the Sleeper rollover and kickoff there are no rows for the live
+ * season, so the panels fall back to the last one that has them (see
+ * src/lib/statsSeason.ts). Form and fairness read as current-year numbers
+ * otherwise, which is the one thing this must not let happen.
+ */
+export function StatsSeasonNote({
+  season, fallback,
+}: { season?: number; fallback?: boolean }) {
+  if (!fallback || !season) return null;
+  return (
+    <p className="text-[10px]" style={{ color: '#6b6b6b' }}>
+      Based on {season} stats — the current season has no results yet.
+    </p>
+  );
+}

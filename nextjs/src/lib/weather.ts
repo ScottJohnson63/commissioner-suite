@@ -1,8 +1,8 @@
-// src/lib/weather.ts — Open-Meteo weather lookup for NFL stadiums.
+// src/lib/weather.ts — Open-Meteo forecast lookup for a game venue.
 // Free API — no key required.
 
 import { RouteCache } from '@/lib/cache';
-import { STADIUM_COORDS } from '@/lib/stadiums';
+import type { Stadium } from '@/lib/stadiums';
 import type { WeatherInfo } from '@/types/projections';
 
 const weatherCache = new RouteCache<WeatherInfo>();
@@ -10,21 +10,35 @@ const weatherCache = new RouteCache<WeatherInfo>();
 const ENRICHMENT_TTL = 60 * 60 * 1000; // 1 hour
 
 /**
- * Fetches a game-time weather forecast for the given NFL team's home stadium.
- * Returns null for dome stadiums or if the fetch fails.
+ * Fetches a game-time forecast for a venue.
+ *
+ * Takes coordinates rather than a team. A team-keyed lookup would only reach the
+ * thirty-two home grounds, which leaves out every international game —
+ * Melbourne, Wembley, the Maracanã — and gets a road game wrong besides, since
+ * the venue is the *other* team's ground. Resolving a fixture to its venue is
+ * `venueOf` in src/lib/matchupContext.ts.
+ *
+ * @param key      Cache key and the `team` reported on the result. For a
+ *                 neutral site this is the nominal home team, so the caller can
+ *                 still find the forecast by the team it asked about.
+ * @param venue    Coordinates and name. A covered venue returns null.
+ * @param week     Part of the cache key; forecasts are per week.
  */
-export async function getWeather(team: string, week: number): Promise<WeatherInfo | null> {
-  const stadium = STADIUM_COORDS[team];
-  if (!stadium || stadium.dome) return null;
+export async function getVenueWeather(
+  key: string,
+  venue: Stadium,
+  week: number,
+): Promise<WeatherInfo | null> {
+  if (venue.dome) return null;
 
-  const cacheKey = `${team}-${week}`;
+  const cacheKey = `${key}-${week}`;
   const hit = weatherCache.get(cacheKey, ENRICHMENT_TTL);
   if (hit) return hit;
 
   try {
     const url =
       `https://api.open-meteo.com/v1/forecast` +
-      `?latitude=${stadium.lat}&longitude=${stadium.lon}` +
+      `?latitude=${venue.lat}&longitude=${venue.lon}` +
       `&hourly=temperature_2m,precipitation_probability,wind_speed_10m` +
       `&forecast_days=7&timezone=auto&temperature_unit=fahrenheit&wind_speed_unit=mph`;
     const res = await fetch(url, { next: { revalidate: 3600 } });
@@ -63,8 +77,8 @@ export async function getWeather(team: string, week: number): Promise<WeatherInf
     if (tempF    <  20) notes.push(`Extreme cold (${tempF}°F)`);
 
     const data: WeatherInfo = {
-      team, tempF, windMph, precipPct,
-      stadiumName: stadium.name,
+      team: key, tempF, windMph, precipPct,
+      stadiumName: venue.name,
       note: notes.join('; ') || 'Good conditions',
     };
     weatherCache.set(cacheKey, data);

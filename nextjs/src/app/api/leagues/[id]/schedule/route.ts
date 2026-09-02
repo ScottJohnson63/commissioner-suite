@@ -4,16 +4,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { generateSchedule } from '@/lib/scheduler/engine';
 import { Team } from '@/lib/scheduler/types';
-import { fetchLeagueData } from '@/lib/sleeper/sync';
+import { fetchLeagueData, upsertLeague, upsertTeams } from '@/lib/sleeper/sync';
 import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
+import { leagueWhere } from '@/lib/league';
+import { teamNameResolver } from '@/lib/sleeper/liveNames';
 
 type LeagueWithTeams = NonNullable<Awaited<ReturnType<typeof findLeague>>>;
 
 /** Find a league by internal DB id OR Sleeper league id — whichever the caller provides. */
 async function findLeague(id: string) {
   return prisma.league.findFirst({
-    where: { OR: [{ id }, { sleeperLeagueId: id }] },
+    where: leagueWhere(id),
     include: { teams: true },
   });
 }
@@ -25,21 +27,8 @@ async function findLeague(id: string) {
 async function syncLeagueFromSleeper(sleeperLeagueId: string): Promise<LeagueWithTeams> {
   const { leagueId, name, season, teams: sleeperTeams } = await fetchLeagueData(sleeperLeagueId);
 
-  const league = await prisma.league.upsert({
-    where: { sleeperLeagueId: leagueId },
-    update: { name, season },
-    create: { sleeperLeagueId: leagueId, name, season },
-  });
-
-  await Promise.all(
-    sleeperTeams.map((t) =>
-      prisma.team.upsert({
-        where: { leagueId_sleeperRosterId: { leagueId: league.id, sleeperRosterId: t.id } },
-        update: { name: t.name, divisionId: t.divisionId },
-        create: { leagueId: league.id, sleeperRosterId: t.id, name: t.name, divisionId: t.divisionId },
-      }),
-    ),
-  );
+  const league = await upsertLeague(leagueId, name, season);
+  await upsertTeams(league.id, sleeperTeams);
 
   const refreshed = await findLeague(league.id);
   if (!refreshed) throw new Error('League not found after sync');
@@ -68,15 +57,7 @@ export async function POST(
   if (league.teams.length === 0) {
     try {
       const { teams: sleeperTeams } = await fetchLeagueData(league.sleeperLeagueId);
-      await Promise.all(
-        sleeperTeams.map((t) =>
-          prisma.team.upsert({
-            where: { leagueId_sleeperRosterId: { leagueId: league!.id, sleeperRosterId: t.id } },
-            update: { name: t.name, divisionId: t.divisionId },
-            create: { leagueId: league!.id, sleeperRosterId: t.id, name: t.name, divisionId: t.divisionId },
-          }),
-        ),
-      );
+      await upsertTeams(league.id, sleeperTeams);
       const refreshed = await findLeague(league.id);
       if (!refreshed) return err('League not found after team sync', 500);
       league = refreshed;
@@ -153,7 +134,17 @@ export async function GET(
 
   if (!schedule) return err('No schedule found', 404);
 
-  return ok(schedule);
+  // Team.name is a sync-time copy; Sleeper is what the manager actually renamed.
+  // Overlay the current names so the schedule agrees with every other screen
+  // rather than showing whatever was true at the last sync.
+  const nameFor = await teamNameResolver(league.sleeperLeagueId);
+  const matchups = schedule.matchups.map((m) => ({
+    ...m,
+    homeTeam: { ...m.homeTeam, name: nameFor(m.homeTeam.sleeperRosterId, m.homeTeam.name) },
+    awayTeam: { ...m.awayTeam, name: nameFor(m.awayTeam.sleeperRosterId, m.awayTeam.name) },
+  }));
+
+  return ok({ ...schedule, matchups });
 }
 
 export async function DELETE(

@@ -21,6 +21,7 @@ export function LeagueManager({
   onChange,
   selectedId,
   onSelect,
+  reloadKey = 0,
 }: {
   /**
    * Called after the allowlist changes, with a predicate over the leagues that
@@ -30,6 +31,12 @@ export function LeagueManager({
   /** Sleeper id of the card currently chosen, or null for none. */
   selectedId: string | null;
   onSelect: (sleeperLeagueId: string) => void;
+  /**
+   * Bump to re-read the allowlist. Adds and removes reload on their own; this
+   * is for changes made elsewhere — a Sleeper sync rewrites the stored name of
+   * a league that was renamed, and the card would otherwise keep the old one.
+   */
+  reloadKey?: number;
 }) {
   const [leagues, setLeagues] = useState<RegisteredLeague[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -59,7 +66,7 @@ export function LeagueManager({
   }, []);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, reloadKey]);
 
   async function add(e: React.FormEvent) {
     e.preventDefault();

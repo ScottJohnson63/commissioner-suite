@@ -14,7 +14,7 @@
 //
 // Mocks:
 //   @/lib/sleeper/client       — sleeperGet  (rosters + users)
-//   @/lib/sleeper/playerCache  — getPlayerMap
+//   @/lib/sleeper/playerCache  — getPlayerMapSafe
 //   @/lib/prisma               — nflWeeklyStat.groupBy (season totals)
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
@@ -29,25 +29,37 @@ jest.mock('@/lib/sleeper/client', () => ({
 }));
 
 jest.mock('@/lib/sleeper/playerCache', () => ({
-  getPlayerMap: jest.fn(),
+  getPlayerMapSafe: jest.fn(),
+}));
+
+// Mocked as a module rather than through sleeperGet: the fixtures queue
+// sleeperGet responses in order, and an extra call would shift that sequence.
+jest.mock('@/lib/sleeper/scoringSettings', () => ({
+  getScoringSettings: jest.fn(async () => ({ rec: 0.5, fgm_30_39: 3, xpm: 1, sack: 1, int: 2 })),
 }));
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
     nflWeeklyStat: {
-      groupBy: jest.fn(),
+      groupBy:   jest.fn(),
+      findMany:  jest.fn(),
+      aggregate: jest.fn(),
     },
   },
 }));
 
 import { GET } from '@/app/api/sleeper/trade-suggestions/route';
 import { sleeperGet } from '@/lib/sleeper/client';
-import { getPlayerMap } from '@/lib/sleeper/playerCache';
+import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { prisma } from '@/lib/prisma';
+import { clearStatsSeasonCache } from '@/lib/statsSeason';
+import { clearGsisXrefCache } from '@/lib/sleeper/gsisXref';
 
 const mockSleeperGet   = sleeperGet   as jest.MockedFunction<typeof sleeperGet>;
-const mockGetPlayerMap = getPlayerMap as jest.MockedFunction<typeof getPlayerMap>;
+const mockGetPlayerMap = getPlayerMapSafe as jest.MockedFunction<typeof getPlayerMapSafe>;
 const mockGroupBy      = prisma.nflWeeklyStat.groupBy as jest.MockedFunction<typeof prisma.nflWeeklyStat.groupBy>;
+const mockFindMany     = prisma.nflWeeklyStat.findMany as jest.MockedFunction<typeof prisma.nflWeeklyStat.findMany>;
+const mockAggregate    = prisma.nflWeeklyStat.aggregate as jest.MockedFunction<typeof prisma.nflWeeklyStat.aggregate>;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -72,27 +84,39 @@ const users = [
 ];
 
 // Player map: uid-1 strong at QB, weak at TE; uid-2 vice versa.
+// gsisId is the key NflWeeklyStat actually stores; the roster IDs above are
+// Sleeper's. The two are deliberately different strings here, because a fixture
+// where they coincide cannot tell a working translation from a missing one.
+// Every player carries one, so gsisXref never falls through to its name index —
+// which matters because that index also runs through groupBy, and would
+// otherwise consume the season-totals mock below.
 const playerMapData = new Map([
-  ['qb-elite',  { name: 'Josh Allen',     position: 'QB', team: 'BUF' }],
-  ['qb-backup', { name: 'Geno Smith',     position: 'QB', team: 'SEA' }],
-  ['wr-1',      { name: 'Stefon Diggs',   position: 'WR', team: 'BUF' }],
-  ['rb-1',      { name: 'Saquon Barkley', position: 'RB', team: 'PHI' }],
-  ['te-elite',  { name: 'Travis Kelce',   position: 'TE', team: 'KC'  }],
-  ['te-backup', { name: 'Mo Alie-Cox',    position: 'TE', team: 'IND' }],
-  ['wr-2',      { name: 'Tyreek Hill',    position: 'WR', team: 'MIA' }],
-  ['rb-2',      { name: 'Derrick Henry',  position: 'RB', team: 'TEN' }],
+  ['qb-elite',  { name: 'Josh Allen',     position: 'QB', team: 'BUF', gsisId: '00-gsis-qb-elite'  }],
+  ['qb-backup', { name: 'Geno Smith',     position: 'QB', team: 'SEA', gsisId: '00-gsis-qb-backup' }],
+  ['wr-1',      { name: 'Stefon Diggs',   position: 'WR', team: 'BUF', gsisId: '00-gsis-wr-1'      }],
+  ['rb-1',      { name: 'Saquon Barkley', position: 'RB', team: 'PHI', gsisId: '00-gsis-rb-1'      }],
+  ['te-elite',  { name: 'Travis Kelce',   position: 'TE', team: 'KC',  gsisId: '00-gsis-te-elite'  }],
+  ['te-backup', { name: 'Mo Alie-Cox',    position: 'TE', team: 'IND', gsisId: '00-gsis-te-backup' }],
+  ['wr-2',      { name: 'Tyreek Hill',    position: 'WR', team: 'MIA', gsisId: '00-gsis-wr-2'      }],
+  ['rb-2',      { name: 'Derrick Henry',  position: 'RB', team: 'TEN', gsisId: '00-gsis-rb-2'      }],
 ]);
 
-// Season totals — balanced enough to produce a fairness score ≥ 60.
-const groupByRows = [
-  { playerId: 'qb-elite',  _sum: { fantasyPointsPpr: 380 } },
-  { playerId: 'qb-backup', _sum: { fantasyPointsPpr: 200 } },
-  { playerId: 'wr-1',      _sum: { fantasyPointsPpr: 260 } },
-  { playerId: 'rb-1',      _sum: { fantasyPointsPpr: 290 } },
-  { playerId: 'te-elite',  _sum: { fantasyPointsPpr: 350 } },
-  { playerId: 'te-backup', _sum: { fantasyPointsPpr: 180 } },
-  { playerId: 'wr-2',      _sum: { fantasyPointsPpr: 280 } },
-  { playerId: 'rb-2',      _sum: { fantasyPointsPpr: 270 } },
+// Season totals — balanced enough to produce a fairness score ≥ 60. Keyed on
+// GSIS IDs, as the real table is.
+//
+// Weekly rows rather than a pre-summed total, because the route now scores each
+// week under the league's own rules and adds them up itself; a SQL SUM can only
+// add the stored column, which is full PPR and zero for kickers and defenses.
+// One row per player stands in for a whole season here.
+const statRows = [
+  { playerId: '00-gsis-qb-elite',  position: 'QB', fantasyPoints: 380, receptions: 0 },
+  { playerId: '00-gsis-qb-backup', position: 'QB', fantasyPoints: 200, receptions: 0 },
+  { playerId: '00-gsis-wr-1',      position: 'WR', fantasyPoints: 260, receptions: 0 },
+  { playerId: '00-gsis-rb-1',      position: 'RB', fantasyPoints: 290, receptions: 0 },
+  { playerId: '00-gsis-te-elite',  position: 'TE', fantasyPoints: 350, receptions: 0 },
+  { playerId: '00-gsis-te-backup', position: 'TE', fantasyPoints: 180, receptions: 0 },
+  { playerId: '00-gsis-wr-2',      position: 'WR', fantasyPoints: 280, receptions: 0 },
+  { playerId: '00-gsis-rb-2',      position: 'RB', fantasyPoints: 270, receptions: 0 },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -109,13 +133,13 @@ function makeReq(leagueId: string, userId: string): NextRequest {
 }
 
 // Sets up the live-path mock chain:
-//   sleeperGet × 3 (rosters, users, player map via getPlayerMap) + DB season totals.
+//   sleeperGet × 3 (rosters, users, player map via getPlayerMapSafe) + DB season totals.
 function setupHappyPath(): void {
   mockSleeperGet
     .mockResolvedValueOnce(rosters as never)  // /league/{id}/rosters
     .mockResolvedValueOnce(users   as never); // /league/{id}/users
   mockGetPlayerMap.mockResolvedValueOnce(playerMapData as never);
-  mockGroupBy.mockResolvedValueOnce(groupByRows as never);
+  mockFindMany.mockResolvedValue(statRows as never);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -125,10 +149,18 @@ describe('GET /api/sleeper/trade-suggestions', () => {
     mockSleeperGet.mockReset();
     mockGetPlayerMap.mockReset();
     mockGroupBy.mockReset();
-    // Safe defaults — getPlayerMap is called with .catch() in the route.
+    mockFindMany.mockReset();
+    mockAggregate.mockReset();
+    // Safe defaults — getPlayerMapSafe is called with .catch() in the route.
     // Without a Promise-returning default, the .catch() call crashes the worker.
     mockGetPlayerMap.mockResolvedValue(new Map() as never);
     mockGroupBy.mockResolvedValue([] as never);
+    mockFindMany.mockResolvedValue([] as never);
+    // The requested season has rows, so no season fallback unless a test says so.
+    mockAggregate.mockResolvedValue({ _max: { week: 18 } } as never);
+    // Both helpers memoise per season across calls; each test starts clean.
+    clearStatsSeasonCache();
+    clearGsisXrefCache();
   });
 
   // WHY: leagueId drives every Sleeper roster/user call — missing it means no
@@ -153,7 +185,7 @@ describe('GET /api/sleeper/trade-suggestions', () => {
       .mockResolvedValueOnce(rosters as never)
       .mockResolvedValueOnce(users   as never);
     mockGetPlayerMap.mockResolvedValueOnce(playerMapData as never);
-    mockGroupBy.mockResolvedValueOnce(groupByRows as never);
+    mockFindMany.mockResolvedValue(statRows as never);
 
     const res = await GET(makeReq(leagueId, 'uid-nobody'));
     expect(res.status).toBe(404);
@@ -216,6 +248,82 @@ describe('GET /api/sleeper/trade-suggestions', () => {
       expect(p.fairnessScore).toBeGreaterThanOrEqual(60);
       expect(typeof p.summary).toBe('string');
     }
+  });
+
+  // ── Stat lookup: Sleeper IDs vs GSIS IDs ────────────────────────────────────
+
+  // WHY: rosters are Sleeper IDs, NflWeeklyStat is keyed on GSIS IDs. Querying
+  //      with the former returns nothing, every seasonPts falls to 0, and a trade
+  //      between two rosters of zeroes scores as perfectly fair — a confident,
+  //      meaningless answer rather than a visible failure.
+  it('queries season totals with GSIS IDs, never Sleeper IDs', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+
+    await GET(makeReq(leagueId, userId));
+
+    const queried = (mockFindMany.mock.calls[0]?.[0] as
+      { where: { playerId: { in: string[] } } }).where.playerId.in;
+
+    expect(queried).toEqual(expect.arrayContaining(['00-gsis-qb-elite', '00-gsis-te-elite']));
+    expect(queried).not.toContain('qb-elite');
+  });
+
+  // WHY: the totals come back on GSIS IDs and every roster, rank and proposal
+  //      downstream is on Sleeper IDs. Without the map back the points land on
+  //      keys nothing reads, which is indistinguishable from no data.
+  it('carries season points through onto the Sleeper-keyed proposals', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as {
+      proposals: { give: { playerId: string; seasonPts: number }[];
+                   receive: { playerId: string; seasonPts: number }[] }[];
+    };
+
+    const everyPlayer = json.proposals.flatMap((pr) => [...pr.give, ...pr.receive]);
+    expect(everyPlayer.length).toBeGreaterThan(0);
+    // A zero here means the totals never made it back from the query.
+    expect(everyPlayer.every((pl) => pl.seasonPts > 0)).toBe(true);
+
+    const allen = everyPlayer.find((pl) => pl.playerId === 'qb-elite');
+    if (allen) expect(allen.seasonPts).toBe(380);
+  });
+
+  // ── Season resolution ───────────────────────────────────────────────────────
+
+  // WHY: before kickoff the live season has no rows. Scoring fairness off an
+  //      empty season rates every proposal 100; last season's totals are the
+  //      honest baseline, and the response flags which season it used.
+  it('falls back to the last season with data and flags it', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+    mockAggregate.mockImplementation((async (args: { where: { season: number } }) => ({
+      _max: { week: args.where.season === 2024 ? 18 : null },
+    })) as never);
+    clearStatsSeasonCache();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { statsSeason: number; statsFallback: boolean };
+
+    expect(json.statsSeason).toBe(2024);
+    expect(json.statsFallback).toBe(true);
+    expect((mockFindMany.mock.calls[0]?.[0] as { where: { season: number } }).where.season)
+      .toBe(2024);
+  });
+
+  // WHY: the flag drives a caption in the UI. Setting it when the season is the
+  //      live one would caption every panel with a disclaimer that is not true.
+  it('does not flag a fallback when the requested season has rows', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { statsSeason: number; statsFallback: boolean };
+
+    expect(json.statsSeason).toBe(2025);
+    expect(json.statsFallback).toBe(false);
   });
 
   // WHY (Rate-limit invariant): The route caches results for 10 minutes keyed

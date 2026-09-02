@@ -1,7 +1,7 @@
 // src/app/api/news/route.ts
 //
-// Aggregates NFL headlines from multiple public RSS feeds.
-// Each feed is cached independently for 15 minutes.
+// Aggregates NFL headlines from several public feeds (RSS, plus ESPN's JSON
+// site API). Each feed is cached independently for 15 minutes.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';
@@ -20,25 +20,44 @@ export interface NewsArticle {
 
 // ── Feed definitions ──────────────────────────────────────────────────────────
 
-const FEEDS: { key: NewsSource; label: string; url: string }[] = [
+interface FeedDef {
+  key: NewsSource;
+  label: string;
+  url: string;
+  /**
+   * `rss`  — RSS 2.0 document, parsed with the regex helpers below.
+   * `json` — ESPN's site API payload. ESPN's RSS feed carries no imagery of any
+   *          kind (no media:*, no enclosure, no inline <img>), so the JSON API
+   *          is the only ESPN source that yields thumbnails.
+   */
+  kind: 'rss' | 'json';
+}
+
+const FEEDS: FeedDef[] = [
   {
     key: 'espn',
     label: 'ESPN',
-    url: 'https://www.espn.com/espn/rss/nfl/news',
+    kind: 'json',
+    // NOTE: the `site.web.api` host — not `site.api` — is the one that serves
+    // this unauthenticated; `site.api.espn.com` answers 403 behind Akamai.
+    url: 'https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/news?limit=12',
   },
   {
     key: 'yahoo',
     label: 'Yahoo Sports',
+    kind: 'rss',
     url: 'https://sports.yahoo.com/nfl/rss.xml',
   },
   {
     key: 'pft',
     label: 'Pro Football Talk',
+    kind: 'rss',
     url: 'https://www.nbcsports.com/profootballtalk.rss',
   },
   {
     key: 'cbs',
     label: 'CBS Sports',
+    kind: 'rss',
     url: 'https://www.cbssports.com/rss/headlines/nfl/',
   },
 ];
@@ -143,11 +162,11 @@ function stripHtml(s: string): string {
  * dependency — which keeps this lightweight and handles malformed feeds.
  *
  * @param key    Source identifier used to tag each article.
- * @param label  Human-readable source name (e.g. "ESPN").
+ * @param label  Human-readable source name (e.g. "CBS Sports").
  * @param url    RSS feed URL.
  * @throws       `Error` if the HTTP response is not 2xx.
  */
-async function fetchFeed(
+async function fetchRss(
   key: NewsSource,
   label: string,
   url: string,
@@ -173,10 +192,66 @@ async function fetchFeed(
       extractAttr(item, 'media:content', 'url') ??
       extractAttr(item, 'media:thumbnail', 'url') ??
       extractAttr(item, 'enclosure', 'url') ??
+      // Yahoo publishes no media:*/enclosure tags at all — its lead image is an
+      // <img> inside the <content:encoded> HTML, so fall back to the first one.
+      extractAttr(item, 'img', 'src') ??
       null,
     source: key,
     sourceLabel: label,
   }));
+}
+
+// ── ESPN JSON API ─────────────────────────────────────────────────────────────
+
+/** Subset of ESPN's news payload that we actually read. */
+interface EspnNewsResponse {
+  articles?: {
+    headline?: string;
+    description?: string;
+    published?: string;
+    lastModified?: string;
+    images?: { url?: string; type?: string }[];
+    links?: { web?: { href?: string } };
+  }[];
+}
+
+/**
+ * Fetches ESPN headlines from the site API, returning up to 12 articles.
+ * Used instead of ESPN's RSS feed, which carries headlines but no imagery.
+ *
+ * @throws `Error` if the HTTP response is not 2xx.
+ */
+async function fetchEspn(
+  key: NewsSource,
+  label: string,
+  url: string,
+): Promise<NewsArticle[]> {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CommissionerSuite/1.0)' },
+    next: { revalidate: 900 },
+  });
+  if (!res.ok) throw new Error(`${label} API ${res.status}`);
+
+  const body = await res.json() as EspnNewsResponse;
+
+  return (body.articles ?? []).slice(0, 12).map((a): NewsArticle => {
+    const images = a.images ?? [];
+    // Stories carry a `header` image; video entries only carry a Media still.
+    const image =
+      images.find((i) => i.type === 'header' && i.url) ??
+      images.find((i) => i.url);
+
+    return {
+      title: stripHtml(a.headline ?? ''),
+      description: stripHtml(a.description ?? '').slice(0, 180),
+      link: a.links?.web?.href ?? '#',
+      // ISO 8601 — `new Date()` parses it the same as the RSS pubDate strings.
+      pubDate: a.published ?? a.lastModified ?? '',
+      imageUrl: image?.url ?? null,
+      source: key,
+      sourceLabel: label,
+    };
+  });
 }
 
 // ── Cached fetch ──────────────────────────────────────────────────────────────
@@ -186,18 +261,15 @@ async function fetchFeed(
  * otherwise re-fetches. On fetch failure, returns the stale cached articles
  * rather than an error — partial results are better than no results.
  */
-async function getCached(
-  key: NewsSource,
-  label: string,
-  url: string,
-): Promise<NewsArticle[]> {
+async function getCached(feed: FeedDef): Promise<NewsArticle[]> {
   const now = Date.now();
-  const hit = cache.get(key);
+  const hit = cache.get(feed.key);
   if (hit && now - hit.ts < TTL) return hit.articles;
 
   try {
-    const articles = await fetchFeed(key, label, url);
-    cache.set(key, { articles, ts: now });
+    const fetcher = feed.kind === 'json' ? fetchEspn : fetchRss;
+    const articles = await fetcher(feed.key, feed.label, feed.url);
+    cache.set(feed.key, { articles, ts: now });
     return articles;
   } catch {
     // Return stale cache rather than an error if available
@@ -221,7 +293,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   const results = await Promise.all(
-    feeds.map((f) => getCached(f.key, f.label, f.url)),
+    feeds.map((f) => getCached(f)),
   );
 
   // Merge all sources, sort newest-first, cap at 40

@@ -12,10 +12,16 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getPlayerMap } from '@/lib/sleeper/playerCache';
+import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
+import { resolveTeamName } from '@/lib/sleeper/teams';
+import { resolveSeason } from '@/lib/sleeper/week';
+import { resolveStatsSeason } from '@/lib/statsSeason';
+import { buildGsisXref } from '@/lib/sleeper/gsisXref';
+import { getScoringSettings } from '@/lib/sleeper/scoringSettings';
+import { scoreRow, STAT_LINE_SELECT } from '@/lib/scoring';
 import { sleeperGet } from '@/lib/sleeper/client';
 import type { SleeperRoster, SleeperUser } from '@/lib/sleeper/types';
-import { RouteCache } from '@/lib/cache';
+import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import type { TradePlayer, TradeProposal, TradeSuggestionsResponse } from '@/types/suggestions';
 import { ok, err } from '@/lib/api';
 import MOCK_MATCHUP from '@/mock_data/matchup.json';
@@ -23,8 +29,8 @@ import MOCK_MATCHUP from '@/mock_data/matchup.json';
 export type { TradePlayer, TradeProposal, TradeSuggestionsResponse };
 
 const IS_DEMO  = process.env.DEMO_MODE === 'true';
-const DEMO_TTL = 60 * 1_000;      // 1 min
-const LIVE_TTL = 10 * 60 * 1_000; // 10 min
+const DEMO_TTL = ROUTE_CACHE_TTL.DEMO;
+const LIVE_TTL = ROUTE_CACHE_TTL.LIVE;
 
 // ─── Fallback season totals for demo (used when DB returns 0 for a player) ───
 
@@ -117,13 +123,47 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     let teamNameMap:  Map<string, string>;
     let playerMap:    Map<string, PlayerInfo>;
     let seasonPtsMap: Map<string, number>;
-    let season:       number;
     // GSIS ID → Sleeper numeric ID for CDN image resolution (populated in demo mode)
     const gsisToSleeperIdMap = new Map<string, string>();
 
+    const season = await resolveSeason(searchParams.get('season'));
+
+    // Which season the totals actually come from. Fairness is scored on season
+    // points, so before kickoff — when the live season has no rows — the honest
+    // baseline is last season's totals rather than a roster of zeroes, which
+    // would score every proposal as perfectly balanced.
+    const { season: statsSeason, fallback: statsFallback } =
+      await resolveStatsSeason(season);
+
+    // Totals are summed here rather than by the database. A SQL SUM can only add
+    // a stored column, and the stored one is full PPR with kickers at zero and
+    // no defenses — so each week is scored under this league's own rules first.
+    const scoring = await getScoringSettings(leagueId);
+
+    /**
+     * Season points per player, summed from weekly rows under `scoring`.
+     *
+     * @param ids  Stat-table player IDs — GSIS IDs, or team codes for defenses.
+     * @returns    Points keyed by the same IDs; callers map them back themselves.
+     */
+    async function seasonTotals(ids: string[]): Promise<Map<string, number>> {
+      const totals = new Map<string, number>();
+      if (ids.length === 0) return totals;
+
+      const rows = await prisma.nflWeeklyStat.findMany({
+        // Regular season only: postseason points accrue to players whose team
+        // went deep, which is not a measure of trade value.
+        where:  { season: statsSeason, seasonType: 'REG', playerId: { in: ids } },
+        select: { playerId: true, ...STAT_LINE_SELECT },
+      });
+      for (const row of rows) {
+        totals.set(row.playerId, (totals.get(row.playerId) ?? 0) + scoreRow(row, scoring));
+      }
+      return totals;
+    }
+
     if (IS_DEMO) {
       // ── Demo branch ───────────────────────────────────────────────────────────
-      season = Number(process.env.NFL_SEASON ?? '2025');
 
       const team1 = MOCK_MATCHUP.team1;
       const team2 = MOCK_MATCHUP.team2;
@@ -160,14 +200,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const allIds = [...team1.players, ...team2.players].map((p) => p.id);
       seasonPtsMap = new Map<string, number>();
 
-      const dbRows = await prisma.nflWeeklyStat.groupBy({
-        by:    ['playerId'],
-        where: { season, playerId: { in: allIds } },
-        _sum:  { fantasyPointsPpr: true },
-      });
-      for (const r of dbRows) {
-        const pts = r._sum.fantasyPointsPpr ?? 0;
-        if (pts > 0) seasonPtsMap.set(r.playerId, pts);
+      for (const [pid, pts] of await seasonTotals(allIds)) {
+        if (pts > 0) seasonPtsMap.set(pid, pts);
       }
       // Fill gaps with curated mock fallbacks
       for (const [pid, pts] of Object.entries(DEMO_SEASON_PTS)) {
@@ -178,12 +212,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     } else {
       // ── Live branch ────────────────────────────────────────────────────────────
-      season = Number(searchParams.get('season') ?? '2025');
-
       const [liveRosters, users, livePlayerMap] = await Promise.all([
         sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
         sleeperGet<SleeperUser[]>(`/league/${leagueId}/users`),
-        getPlayerMap().catch(() => new Map<string, PlayerInfo>()),
+        getPlayerMapSafe(),
       ]);
 
       rosters   = liveRosters;
@@ -191,20 +223,22 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       teamNameMap = new Map<string, string>();
       for (const u of users) {
-        teamNameMap.set(u.user_id, u.metadata?.team_name?.trim() || u.display_name);
+        teamNameMap.set(u.user_id, resolveTeamName(u, u.user_id));
       }
 
-      // Season totals from DB
+      // ── Season totals from the DB ──────────────────────────────────────────
+      // Rosters speak Sleeper IDs and NflWeeklyStat is keyed on GSIS IDs, so the
+      // totals have to be looked up through the cross-reference and mapped back.
+      // Querying with the Sleeper IDs directly returns nothing, which reads as
+      // every player having scored zero — and a trade between two rosters of
+      // zeroes scores as perfectly fair.
       const allPlayerIds = [...new Set(liveRosters.flatMap((r) => r.players ?? []))];
       seasonPtsMap = new Map<string, number>();
       if (allPlayerIds.length > 0) {
-        const rows = await prisma.nflWeeklyStat.groupBy({
-          by:    ['playerId'],
-          where: { season, playerId: { in: allPlayerIds } },
-          _sum:  { fantasyPointsPpr: true },
-        });
-        for (const r of rows) {
-          seasonPtsMap.set(r.playerId, r._sum.fantasyPointsPpr ?? 0);
+        const xref = await buildGsisXref(allPlayerIds, livePlayerMap, statsSeason);
+        for (const [statId, pts] of await seasonTotals(xref.gsisIds)) {
+          const sleeperId = xref.toSleeper.get(statId);
+          if (sleeperId) seasonPtsMap.set(sleeperId, pts);
         }
       }
     }
@@ -329,6 +363,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const result: TradeSuggestionsResponse = {
       myPositionRanks,
       proposals: deduped,
+      statsSeason,
+      statsFallback,
       ...(IS_DEMO && { demo: true }),
     };
     cache.set(cacheKey, result);

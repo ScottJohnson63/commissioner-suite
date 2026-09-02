@@ -14,7 +14,7 @@
 //
 // Mocks:
 //   @/lib/sleeper/client       — sleeperGet  (rosters + NFL state + trending)
-//   @/lib/sleeper/playerCache  — getPlayerMap
+//   @/lib/sleeper/playerCache  — getPlayerMapSafe
 //   @/lib/prisma               — nflWeeklyStat.findMany
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
@@ -29,25 +29,37 @@ jest.mock('@/lib/sleeper/client', () => ({
 }));
 
 jest.mock('@/lib/sleeper/playerCache', () => ({
-  getPlayerMap: jest.fn(),
+  getPlayerMapSafe: jest.fn(),
+}));
+
+// Mocked as a module rather than through sleeperGet: the fixtures queue
+// sleeperGet responses in order, and an extra call would shift that sequence.
+jest.mock('@/lib/sleeper/scoringSettings', () => ({
+  getScoringSettings: jest.fn(async () => ({ rec: 0.5, fgm_30_39: 3, xpm: 1, sack: 1, int: 2 })),
 }));
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
     nflWeeklyStat: {
-      findMany: jest.fn(),
+      findMany:  jest.fn(),
+      groupBy:   jest.fn(),
+      aggregate: jest.fn(),
     },
   },
 }));
 
 import { GET } from '@/app/api/sleeper/waiver-suggestions/route';
 import { sleeperGet } from '@/lib/sleeper/client';
-import { getPlayerMap } from '@/lib/sleeper/playerCache';
+import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { prisma } from '@/lib/prisma';
+import { clearStatsSeasonCache } from '@/lib/statsSeason';
+import { clearGsisXrefCache } from '@/lib/sleeper/gsisXref';
 
 const mockSleeperGet   = sleeperGet   as jest.MockedFunction<typeof sleeperGet>;
-const mockGetPlayerMap = getPlayerMap as jest.MockedFunction<typeof getPlayerMap>;
+const mockGetPlayerMap = getPlayerMapSafe as jest.MockedFunction<typeof getPlayerMapSafe>;
 const mockFindMany     = prisma.nflWeeklyStat.findMany as jest.MockedFunction<typeof prisma.nflWeeklyStat.findMany>;
+const mockAggregate    = prisma.nflWeeklyStat.aggregate as jest.MockedFunction<typeof prisma.nflWeeklyStat.aggregate>;
+const mockGroupBy      = prisma.nflWeeklyStat.groupBy as jest.MockedFunction<typeof prisma.nflWeeklyStat.groupBy>;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -64,12 +76,15 @@ const trendingRaw = [
 ];
 
 // Player map covering both rostered and available players.
+// gsisId is what NflWeeklyStat is keyed on. Sleeper populates it for a minority
+// of players in reality, so one entry here deliberately leaves it null — that
+// player is only reachable through the name fallback in gsisXref.
 const playerMapData = new Map([
-  ['qb-1',         { name: 'Patrick Mahomes', position: 'QB', team: 'KC'  }],
-  ['qb-2',         { name: 'Josh Allen',      position: 'QB', team: 'BUF' }],
-  ['rb-1',         { name: 'Saquon Barkley',  position: 'RB', team: 'PHI' }],
-  ['rb-2',         { name: 'Derrick Henry',   position: 'RB', team: 'TEN' }],
-  ['te-available', { name: 'Tucker Kraft',    position: 'TE', team: 'GB'  }],
+  ['qb-1',         { name: 'Patrick Mahomes', position: 'QB', team: 'KC',  gsisId: '00-gsis-qb-1' }],
+  ['qb-2',         { name: 'Josh Allen',      position: 'QB', team: 'BUF', gsisId: '00-gsis-qb-2' }],
+  ['rb-1',         { name: 'Saquon Barkley',  position: 'RB', team: 'PHI', gsisId: '00-gsis-rb-1' }],
+  ['rb-2',         { name: 'Derrick Henry',   position: 'RB', team: 'TEN', gsisId: null           }],
+  ['te-available', { name: 'Tucker Kraft',    position: 'TE', team: 'GB',  gsisId: '00-gsis-te-1' }],
 ]);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -105,10 +120,20 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
     mockSleeperGet.mockReset();
     mockGetPlayerMap.mockReset();
     mockFindMany.mockReset();
-    // Safe defaults — getPlayerMap is called with .catch() in the route.
+    mockGroupBy.mockReset();
+    mockAggregate.mockReset();
+    // Safe defaults — getPlayerMapSafe is called with .catch() in the route.
     // Without a Promise-returning default, the .catch() call crashes the worker.
     mockGetPlayerMap.mockResolvedValue(new Map() as never);
     mockFindMany.mockResolvedValue([] as never);
+    // The gsisXref name index; every fixture player carries a gsisId bar one,
+    // and that one is meant to stay unresolved.
+    mockGroupBy.mockResolvedValue([] as never);
+    // The requested season has rows through week 5, so no season fallback.
+    mockAggregate.mockResolvedValue({ _max: { week: 5 } } as never);
+    // Both helpers memoise per season across calls; each test starts clean.
+    clearStatsSeasonCache();
+    clearGsisXrefCache();
   });
 
   // WHY: leagueId is required to fetch rosters — without it no Sleeper call can
@@ -168,6 +193,120 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
     const suggestedIds = json.suggestions.map((s) => s.playerId);
     expect(suggestedIds).not.toContain('qb-1');  // already rostered
     expect(suggestedIds).not.toContain('qb-2');  // already rostered
+  });
+
+
+  // ── Stat lookup: Sleeper IDs vs GSIS IDs ────────────────────────────────────
+
+  // WHY: this is the bug that made live mode look plausible and be empty. Rosters
+  //      and the trending feed are Sleeper IDs; NflWeeklyStat is keyed on GSIS
+  //      IDs. Querying with the former returns no rows, and no rows reads as
+  //      "every player averaged zero" — which is exactly what the panel showed.
+  it('queries the stat table with GSIS IDs, never Sleeper IDs', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+
+    await GET(makeReq(leagueId, userId));
+
+    const statsCall = mockFindMany.mock.calls.find(
+      (c) => (c[0] as { where?: { week?: unknown } })?.where?.week !== undefined,
+    );
+    const queried = (statsCall?.[0] as { where: { playerId: { in: string[] } } })
+      .where.playerId.in;
+
+    expect(queried).toEqual(expect.arrayContaining(['00-gsis-qb-1', '00-gsis-te-1']));
+    expect(queried).not.toContain('qb-1');
+    expect(queried).not.toContain('te-available');
+  });
+
+  // WHY: the positional-weakness test compares my best starter against the league
+  //      median. Looking up only my players leaves every other roster at zero, so
+  //      the median is zero and no position is ever weak.
+  it('looks up every rostered player, not just the requesting user\'s', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+
+    await GET(makeReq(leagueId, userId));
+
+    const statsCall = mockFindMany.mock.calls.find(
+      (c) => (c[0] as { where?: { week?: unknown } })?.where?.week !== undefined,
+    );
+    const queried = (statsCall?.[0] as { where: { playerId: { in: string[] } } })
+      .where.playerId.in;
+
+    // rb-1 belongs to the *other* roster and must still be looked up.
+    expect(queried).toContain('00-gsis-rb-1');
+  });
+
+  // WHY: rows come back keyed on GSIS IDs, and the suggestion rows the UI renders
+  //      are keyed on Sleeper IDs. Skipping the map back leaves the averages
+  //      attached to IDs nothing else in the response uses.
+  it('maps returned stat rows back onto Sleeper IDs', async () => {
+    const { leagueId, userId } = freshIds();
+    mockSleeperGet
+      .mockResolvedValueOnce(rosters as never)
+      .mockResolvedValueOnce(trendingRaw as never);
+    mockGetPlayerMap.mockResolvedValueOnce(playerMapData as never);
+    mockFindMany.mockResolvedValue([
+      { playerId: '00-gsis-te-1', position: 'TE', fantasyPoints: 18, receptions: 0 },
+      { playerId: '00-gsis-te-1', position: 'TE', fantasyPoints: 12, receptions: 0 },
+    ] as never);
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { suggestions: { playerId: string; recentAvg: number }[] };
+
+    const kraft = json.suggestions.find((x) => x.playerId === 'te-available');
+    expect(kraft?.recentAvg).toBe(15);
+  });
+
+  // ── Season resolution ───────────────────────────────────────────────────────
+
+  // WHY: before kickoff the live season has no rows, so the panel would score
+  //      every player at zero. Reading the last season that has data is the
+  //      honest baseline — and the response says so, so the UI can label it.
+  it('falls back to the last season with data and flags it', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+    // 2025 asked for; only 2024 has rows, through week 21.
+    mockAggregate.mockImplementation((async (args: { where: { season: number } }) => ({
+      _max: { week: args.where.season === 2024 ? 21 : null },
+    })) as never);
+    clearStatsSeasonCache();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as {
+      statsSeason: number; statsFallback: boolean;
+      suggestions: { reason: string }[];
+    };
+
+    expect(json.statsSeason).toBe(2024);
+    expect(json.statsFallback).toBe(true);
+    // The reason string must name the season too — "last 3 wks" on its own
+    // reads as this year.
+    expect(json.suggestions[0]?.reason).toContain('2024');
+
+    const statsCall = mockFindMany.mock.calls.find(
+      (c) => (c[0] as { where?: { week?: unknown } })?.where?.week !== undefined,
+    );
+    expect((statsCall?.[0] as { where: { season: number } }).where.season).toBe(2024);
+  });
+
+  // WHY: mid-season the nflverse sync trails live play. A window ending on a week
+  //      that has not been written yet comes back empty, so it is anchored on the
+  //      last week that has rows instead.
+  it('clamps the stat window to the last week that has rows', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+    mockAggregate.mockResolvedValue({ _max: { week: 3 } } as never);
+    clearStatsSeasonCache();
+
+    await GET(makeReq(leagueId, userId)); // ?week=5, but only 3 weeks are synced
+
+    const statsCall = mockFindMany.mock.calls.find(
+      (c) => (c[0] as { where?: { week?: unknown } })?.where?.week !== undefined,
+    );
+    expect((statsCall?.[0] as { where: { week: { lte: number; gt: number } } }).where.week)
+      .toEqual({ lte: 3, gt: 0 });
   });
 
   // WHY: Each suggestion must carry the fields the UI needs:

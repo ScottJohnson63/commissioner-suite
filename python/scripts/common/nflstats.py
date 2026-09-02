@@ -1,6 +1,7 @@
 """Loading and upserting nflverse weekly player stats.
 
-Shared by sync_nfl_weekly (one week, in season) and season_reset (full reload).
+Shared by sync_nfl_weekly (one week, in season), load_completed_season (the
+finished season each August) and backfill_nfl_seasons (history, run by hand).
 
 COLUMN_MAP is deliberately narrower than what nflverse returns: it lists exactly
 the columns NflWeeklyStat keeps. Anything not named here is dropped before it
@@ -219,6 +220,19 @@ def load_latest_week(season: int) -> tuple[pl.DataFrame, int]:
     return _narrow(df.filter(pl.col("week") == week)), week
 
 
+def rows_per_season() -> dict[int, int]:
+    """How many rows NflWeeklyStat already holds for each season.
+
+    Used to skip a season that is already loaded. Re-uploading one costs
+    minutes and achieves nothing when the row count already matches what
+    nflverse is offering.
+    """
+    rows = turso.query(
+        'SELECT season, COUNT(*) AS n FROM "NflWeeklyStat" GROUP BY season'
+    )
+    return {int(r["season"]): int(r["n"]) for r in rows}
+
+
 def upsert(df: pl.DataFrame) -> int:
     """Upserts every row keyed on (season, week, playerId). Returns rows written."""
     cols = df.columns
@@ -239,6 +253,18 @@ def upsert(df: pl.DataFrame) -> int:
 
 
 def truncate() -> None:
+    """Empties NflWeeklyStat.
+
+    No scheduled job calls this any more. The annual August load used to
+    truncate before reloading a rolling window of seasons; it now appends the
+    finished season and deletes nothing, because the card pool is built from
+    every season in the table and a wipe threw away history the game depends on
+    — including a 1999+ backfill that takes four hours to rebuild.
+
+    Kept as a maintenance tool for a deliberate, manual rebuild. If you are
+    about to call it, you are about to lose every season not in whatever you
+    load next.
+    """
     print("Truncating NflWeeklyStat...")
     turso.execute_one('DELETE FROM "NflWeeklyStat"')
     print("  Table cleared.")

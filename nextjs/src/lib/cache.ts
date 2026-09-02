@@ -11,6 +11,33 @@
 // deployment reset produces an empty cache and warms up on the next request.
 
 /**
+ * How long an assembled route response may be reused, in milliseconds.
+ *
+ * This is the outermost of the app's caching layers, and the one that actually
+ * decides what a user sees: a RouteCache hit returns without touching the
+ * Sleeper fetch cache underneath it, so a long value here overrides every
+ * SLEEPER_TTL below it. A 15-minute response cache in front of a 30-second
+ * fetch TTL is a 15-minute page.
+ *
+ * These were four separate per-route constants (5, 10, 10 and 15 minutes) with
+ * no shared rationale. They are one decision, so they live in one place.
+ */
+export const ROUTE_CACHE_TTL = {
+  /**
+   * Responses built from live league state — matchups, reports, suggestions.
+   *
+   * Short enough that a score or a roster move shows up on the next click, long
+   * enough that re-renders and multiple panels on one page share a single build.
+   */
+  LIVE: 60_000,
+  /**
+   * Demo mode, which picks a random week per cache key. Kept short so repeated
+   * clicks cycle through different weeks instead of pinning one.
+   */
+  DEMO: 60_000,
+} as const;
+
+/**
  * Lightweight in-process key→value cache with per-lookup TTL enforcement.
  *
  * @template T  Type of the cached values.
@@ -51,5 +78,16 @@ export class RouteCache<T> {
    */
   clear(key: string): void {
     this.store.delete(key);
+  }
+
+  /**
+   * Drops every entry.
+   *
+   * Exists for tests: a module-scope cache outlives an individual test, so one
+   * that memoises per league or per season leaks its first answer into the rest
+   * of the file unless it can be emptied between cases.
+   */
+  clearAll(): void {
+    this.store.clear();
   }
 }

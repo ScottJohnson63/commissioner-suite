@@ -12,6 +12,10 @@ export interface WaiverSuggestion {
 export interface WaiverSuggestionsResponse {
   weakPositions: string[];
   suggestions:   WaiverSuggestion[];
+  /** Season the underlying stats came from — see src/lib/statsSeason.ts. */
+  statsSeason?:   number;
+  /** True when statsSeason is not the season being played (pre-kickoff, sync lag). */
+  statsFallback?: boolean;
   demo?:         boolean;
 }
 
@@ -36,5 +40,9 @@ export interface TradeProposal {
 export interface TradeSuggestionsResponse {
   myPositionRanks: Record<string, number>;
   proposals:       TradeProposal[];
+  /** Season the underlying stats came from — see src/lib/statsSeason.ts. */
+  statsSeason?:   number;
+  /** True when statsSeason is not the season being played (pre-kickoff, sync lag). */
+  statsFallback?: boolean;
   demo?:           boolean;
 }

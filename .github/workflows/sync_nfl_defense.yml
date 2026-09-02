@@ -1,0 +1,52 @@
+name: Sync NFL Team Defenses
+
+on:
+  schedule:
+    # Fifteen minutes after the weekly player sync. Same nflverse release, so
+    # there is nothing to wait for beyond not hammering it with two jobs at once.
+    - cron: '15 8 * * 2'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force sync regardless of season window'
+        required: false
+        default: 'false'
+      seasons:
+        description: 'Season, or an inclusive range ("2022 2025"). Blank = current.'
+        required: false
+        default: ''
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('python/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          cd python
+          pip install -r requirements.txt
+
+      - name: Run defense sync
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          cd python
+          python scripts/sync_nfl_defense.py ${{ github.event.inputs.seasons }}

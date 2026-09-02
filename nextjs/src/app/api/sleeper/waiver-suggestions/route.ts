@@ -13,10 +13,15 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getPlayerMap } from '@/lib/sleeper/playerCache';
+import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
-import type { SleeperRoster, SleeperNflState, SleeperTrendingRaw } from '@/lib/sleeper/types';
-import { RouteCache } from '@/lib/cache';
+import { resolveSeason, resolveWeek } from '@/lib/sleeper/week';
+import { resolveStatsSeason } from '@/lib/statsSeason';
+import { buildGsisXref } from '@/lib/sleeper/gsisXref';
+import { getScoringSettings } from '@/lib/sleeper/scoringSettings';
+import { scoreRow, STAT_LINE_SELECT } from '@/lib/scoring';
+import type { SleeperRoster, SleeperTrendingRaw } from '@/lib/sleeper/types';
+import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import type { WaiverSuggestion, WaiverSuggestionsResponse } from '@/types/suggestions';
 import { ok, err } from '@/lib/api';
 import MOCK_MATCHUP from '@/mock_data/matchup.json';
@@ -25,8 +30,8 @@ import MOCK_WAIVER  from '@/mock_data/waiver.json';
 export type { WaiverSuggestion, WaiverSuggestionsResponse };
 
 const IS_DEMO  = process.env.DEMO_MODE === 'true';
-const DEMO_TTL = 60 * 1_000;      // 1 min — short so re-clicking after a min picks a new random week
-const LIVE_TTL = 10 * 60 * 1_000; // 10 min
+const DEMO_TTL = ROUTE_CACHE_TTL.DEMO;
+const LIVE_TTL = ROUTE_CACHE_TTL.LIVE;
 
 // ─── In-process cache ─────────────────────────────────────────────────────────
 
@@ -78,7 +83,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // same format live mode uses. This ensures SLEEPER_THUMB(id) resolves to
       // a valid CDN URL. A separate gsisId field (when present) is used for DB
       // headshot / stats lookups via the nflverse-populated NflWeeklyStat table.
-      season        = Number(process.env.NFL_SEASON ?? '2025');
+      season        = await resolveSeason(searchParams.get('season'));
       week          = Math.floor(Math.random() * 17) + 1;
       trendingCount = new Map();
       mockAvgMap    = new Map();
@@ -114,22 +119,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     } else {
       // ── Live branch: real Sleeper data ─────────────────────────────────────────
-      season     = Number(searchParams.get('season') ?? '2025');
+      season     = await resolveSeason(searchParams.get('season'));
       mockAvgMap = new Map();
 
-      let rawWeek = searchParams.get('week') ? Number(searchParams.get('week')) : null;
-      if (!rawWeek) {
-        try {
-          const state = await sleeperGet<SleeperNflState>('/state/nfl', SLEEPER_TTL.NFL_STATE);
-          rawWeek = Math.max(1, state.week - 1);
-        } catch { rawWeek = 1; }
-      }
-      week = rawWeek;
+      week = await resolveWeek(searchParams.get('week'), 'completed');
 
       const [rosters, trendingRaw, livePlayerMap] = await Promise.all([
         sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
         sleeperGet<SleeperTrendingRaw[]>('/players/nfl/trending/add?lookback_hours=168&limit=50', SLEEPER_TTL.TRENDING),
-        getPlayerMap().catch(() => new Map<string, PlayerInfo>()),
+        getPlayerMapSafe(),
       ]);
 
       rosterList    = rosters;
@@ -153,46 +151,64 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── Fetch stats from DB (last 3 weeks) ─────────────────────────────────────
+    //
+    // Every rostered player counts, not just mine: the positional-weakness test
+    // below compares my best starter against the league median, which is zero
+    // for everyone if the other nine rosters are never looked up.
+    const allRelevantIds = [...new Set([
+      ...rosterList.flatMap((r) => r.players ?? []),
+      ...myPlayerIds,
+      ...availableIds,
+    ])];
 
-    const allRelevantIds = [...new Set([...myPlayerIds, ...availableIds])];
+    // ── Which season, and how far into it, the stat table can answer for ──────
+    // Before kickoff the live season has no rows at all, so this falls back to
+    // the last season that does and the panel reads last year's form rather than
+    // a column of zeros. `statsWeek` does the same for the week: mid-season the
+    // nflverse sync trails live play, and a window ending on a week that has not
+    // landed yet would come back empty.
+    const stats     = await resolveStatsSeason(season);
+    // This league's rules — the stored PPR column is full PPR and scores kickers
+    // and defenses at zero. See src/lib/scoring.ts.
+    const scoring   = await getScoringSettings(leagueId);
+    const statsWeek = stats.maxWeek > 0 ? Math.min(week, stats.maxWeek) : week;
 
-    // ── Build Sleeper ↔ GSIS ID cross-reference for available players ─────────
-    // The DB (NflWeeklyStat) stores nflverse GSIS IDs (e.g. "00-0034796").
-    // Sleeper uses its own numeric IDs (e.g. "4046"). They never coincide, so
-    // we must translate via the gsis_id field in the Sleeper player map before
-    // querying the DB for headshots.
-    const sleeperToGsis = new Map<string, string>(); // sleeperPlayerId → gsisId
-    const gsisToSleeper = new Map<string, string>(); // gsisId → sleeperPlayerId
-    for (const pid of availableIds) {
-      const info = playerMap.get(pid);
-      if (info?.gsisId) {
-        sleeperToGsis.set(pid, info.gsisId);
-        gsisToSleeper.set(info.gsisId, pid);
-      }
-    }
-    const availableGsisIds = [...sleeperToGsis.values()];
+    // ── Build the Sleeper → GSIS cross-reference ──────────────────────────────
+    // NflWeeklyStat is keyed on GSIS IDs; everything above is keyed on Sleeper
+    // IDs. Querying with the wrong ones returns no rows and reads as "nobody
+    // scored", so the translation has to happen before either query. See
+    // src/lib/sleeper/gsisXref.ts for why the Sleeper gsis_id field alone is not
+    // enough live. Demo needs no special case: every mock player carries its own
+    // gsisId, so this resolves from the map without a query.
+    const xref = await buildGsisXref(allRelevantIds, playerMap, stats.season);
+
+    const availableGsisIds = availableIds
+      .map((pid) => xref.toGsis.get(pid))
+      .filter((g): g is string => g != null);
 
     // ── Two parallel DB queries ────────────────────────────────────────────────
-    // 1. Recent stats (last 3 weeks, by Sleeper ID) — scoring/avg calculation.
-    //    Rostered players' IDs are also Sleeper IDs but the scoring query only
-    //    needs points, not headshots, so the ID mismatch doesn't matter here.
-    // 2. Season-wide headshot lookup (by GSIS ID) — correct cross-reference
-    //    for the nflverse-sourced headshot URLs in the DB.
+    // 1. Recent stats over the last 3 resolvable weeks — scoring/avg calculation.
+    // 2. Season-wide headshot lookup for the waiver pool — the nflverse-sourced
+    //    headshot URLs the component prefers over Sleeper's CDN.
     const [statsRows, headshotRows] = await Promise.all([
-      allRelevantIds.length > 0
+      xref.gsisIds.length > 0
         ? prisma.nflWeeklyStat.findMany({
             where: {
-              season,
-              week:     { lte: week, gt: Math.max(0, week - 3) },
-              playerId: { in: allRelevantIds },
+              season:     stats.season,
+              // Regular season only: postseason weeks cover a shrinking subset
+              // of players, so including them scores a non-playoff player's
+              // absence as a zero game.
+              seasonType: 'REG',
+              week:       { lte: statsWeek, gt: Math.max(0, statsWeek - 3) },
+              playerId:   { in: xref.gsisIds },
             },
-            select: { playerId: true, fantasyPointsPpr: true, position: true },
+            select: { playerId: true, ...STAT_LINE_SELECT },
           })
         : Promise.resolve([]),
       availableGsisIds.length > 0
         ? prisma.nflWeeklyStat.findMany({
             where: {
-              season,
+              season:   stats.season,
               playerId: { in: availableGsisIds },
               headshot:  { not: null },
             },
@@ -207,16 +223,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const playerPoints   = new Map<string, number[]>();
     const playerHeadshot = new Map<string, string>(); // sleeperPlayerId → NFL CDN URL
 
+    // Both queries came back keyed on GSIS IDs; everything downstream — rosters,
+    // the waiver pool, the rendered rows — speaks Sleeper IDs, so map back here.
     for (const row of headshotRows) {
-      const sleeperId = gsisToSleeper.get(row.playerId);
+      const sleeperId = xref.toSleeper.get(row.playerId);
       if (sleeperId && row.headshot) playerHeadshot.set(sleeperId, row.headshot);
     }
     for (const row of statsRows) {
-      if (row.fantasyPointsPpr !== null) {
-        const arr = playerPoints.get(row.playerId) ?? [];
-        arr.push(row.fantasyPointsPpr);
-        playerPoints.set(row.playerId, arr);
-      }
+      const sleeperId = xref.toSleeper.get(row.playerId);
+      if (!sleeperId) continue;
+      const arr = playerPoints.get(sleeperId) ?? [];
+      arr.push(scoreRow(row, scoring));
+      playerPoints.set(sleeperId, arr);
     }
 
     function avg(pid: string): number {
@@ -272,6 +290,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     type ScoredSuggestion = WaiverSuggestion & { _score: number };
     const suggestions: ScoredSuggestion[] = [];
 
+    // Say which weeks the average covers. Naming the season matters only when it
+    // is not the one being played — "last 3 wks" would otherwise imply this year.
+    const windowLabel = stats.fallback
+      ? `last 3 wks of ${stats.season}`
+      : 'last 3 wks';
+
     for (const pid of availableIds) {
       const info = playerMap.get(pid);
       if (!info) continue;
@@ -285,8 +309,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const trendCount = trendingCount.get(pid) ?? null;
 
       const reason = isWeak
-        ? `Addresses ${pos} weakness — ${recentAvg.toFixed(1)} pts avg last 3 wks`
-        : `Strong recent form — ${recentAvg.toFixed(1)} pts avg last 3 wks${trendCount ? ` · ${trendCount.toLocaleString()} adds` : ''}`;
+        ? `Addresses ${pos} weakness — ${recentAvg.toFixed(1)} pts avg ${windowLabel}`
+        : `Strong recent form — ${recentAvg.toFixed(1)} pts avg ${windowLabel}${trendCount ? ` · ${trendCount.toLocaleString()} adds` : ''}`;
 
       suggestions.push({
         playerId: pid, name: info.name, position: pos, team: info.team,
@@ -311,6 +335,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const result: WaiverSuggestionsResponse = {
       weakPositions,
       suggestions: top8,
+      statsSeason:   stats.season,
+      statsFallback: stats.fallback,
       ...(IS_DEMO && { demo: true }),
     };
     cache.set(cacheKey, result);

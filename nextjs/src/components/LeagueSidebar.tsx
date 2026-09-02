@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import React, { useState, useEffect } from 'react';
 import { signOut, useSession } from 'next-auth/react';
 import type { Route } from 'next';
+import { requestDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
 
 // ─── Nav definition ───────────────────────────────────────────────────────────
 
@@ -16,7 +17,10 @@ const PUBLIC_NAV: { label: string; href: Route; icon: React.ReactNode }[] = [
 ];
 
 const AUTHED_NAV: { label: string; href: Route; icon: React.ReactNode }[] = [
-  { label: 'AI Assistant', href: '/league/ai',        icon: <SparkleIcon /> },
+  { label: 'AI Assistant',  href: '/league/ai',    icon: <SparkleIcon /> },
+  // Any signed-in account can collect, PLAYER included — the card game is the
+  // one feature that is not about running the league.
+  { label: 'Draft Deck', href: '/league/cards', icon: <CardsIcon />   },
 ];
 
 // ─── Tooltip shown beside collapsed nav icons ─────────────────────────────────
@@ -138,6 +142,11 @@ export function LeagueSidebar() {
             <div key={item.href} className="relative group">
               <Link
                 href={item.href}
+                // Draft Deck explains itself when you go there. The ask is made
+                // before the navigation and picked up once the page mounts, so
+                // it survives the route change; a member who ticked "Don't show
+                // this again" is not re-asked.
+                onClick={item.href === '/league/cards' ? requestDraftDeckIntro : undefined}
                 className="flex items-center gap-3 rounded px-2 py-2 text-sm transition-colors"
                 style={{
                   background: active ? 'rgba(128,255,73,0.1)' : 'transparent',
@@ -203,6 +212,15 @@ function SparkleIcon() {
     <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
       <path d="M7.5 1v2M7.5 12v2M1 7.5h2M12 7.5h2M3.05 3.05l1.42 1.42M10.53 10.53l1.42 1.42M10.53 4.47l1.42-1.42M3.05 11.95l1.42-1.42" />
       <circle cx="7.5" cy="7.5" r="2.5" />
+    </svg>
+  );
+}
+
+function CardsIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <rect x="5" y="2.5" width="8" height="10.5" rx="1.5" />
+      <path d="M3.6 4.2 2.2 4.6a1.5 1.5 0 0 0-1.05 1.84l1.6 5.9" strokeLinecap="round" />
     </svg>
   );
 }

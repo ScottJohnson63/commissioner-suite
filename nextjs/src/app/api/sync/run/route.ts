@@ -17,8 +17,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { auth } from '@/auth';
 import { ok, err } from '@/lib/api';
+import { requireCommissioner } from '@/lib/apiAuth';
 import { jobFor } from '@/lib/syncSchedule';
 import { syncLeague, type LeagueSyncResult } from '@/lib/sleeper/sync';
 import { recordSyncRun } from '@/lib/syncRun';
@@ -114,8 +114,8 @@ async function syncLeagues(leagueId: string | null): Promise<NextResponse> {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  const session = await auth();
-  if (session?.user?.role !== 'COMMISSIONER') return err('Forbidden', 403);
+  const denied = await requireCommissioner();
+  if (denied) return denied;
 
   const { source, leagueId } = (await req.json()) as {
     source?: string;

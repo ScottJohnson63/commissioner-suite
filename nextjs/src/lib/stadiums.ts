@@ -41,3 +41,27 @@ export const STADIUM_COORDS: Record<string, Stadium> = {
   TEN: { lat: 36.1665,  lon: -86.7713,  name: 'Nissan Stadium',           dome: false },
   WAS: { lat: 38.9079,  lon: -76.8645,  name: 'Northwest Stadium',        dome: false },
 };
+
+/**
+ * Venues outside the thirty-two home grounds.
+ *
+ * The NFL plays a handful of games a season abroad, and STADIUM_COORDS only
+ * covers home stadiums — so a game at the MCG or Wembley had no coordinates and
+ * therefore no forecast, however clear the reason it was missing.
+ *
+ * Keyed on the stadium name nflverse reports. `dome` is asserted here rather
+ * than taken from the schedule feed, which marks the Melbourne Cricket Ground —
+ * an open bowl with no roof at all — as a dome.
+ */
+export const NEUTRAL_VENUE_COORDS: Record<string, Stadium> = {
+  'Melbourne Cricket Ground':  { lat: -37.8200, lon: 144.9834, name: 'Melbourne Cricket Ground',  dome: false },
+  'Maracana Stadium':          { lat: -22.9121, lon:  -43.2302, name: 'Maracanã',                 dome: false },
+  'Tottenham Hotspur Stadium': { lat:  51.6043, lon:   -0.0665, name: 'Tottenham Hotspur Stadium', dome: false },
+  'Wembley Stadium':           { lat:  51.5560, lon:   -0.2796, name: 'Wembley Stadium',          dome: false },
+  'Stade de France':           { lat:  48.9245, lon:    2.3601, name: 'Stade de France',          dome: false },
+  'FC Bayern Munich Stadium':  { lat:  48.2188, lon:   11.6247, name: 'Allianz Arena',            dome: false },
+  'Estadio Banorte':           { lat:  19.3029, lon:  -99.1505, name: 'Estadio Banorte',          dome: false },
+  // Retractable, and closed for events often enough that a forecast would be
+  // asserting more than is known.
+  'Bernabeu':                  { lat:  40.4531, lon:   -3.6883, name: 'Santiago Bernabéu',        dome: true  },
+};

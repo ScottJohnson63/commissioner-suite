@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Image from 'next/image';
 import type { WaiverSuggestionsResponse } from '@/types/suggestions';
-import { SLEEPER_THUMB, PANEL_BG, PanelActionBtn, PanelSkeleton, NoLeague } from './shared';
+import { SLEEPER_THUMB, PANEL_BG, PanelActionBtn, PanelSkeleton, NoLeague, StatsSeasonNote } from './shared';
 
 // Two-stage image loader: DB headshot (NFL CDN) → Sleeper CDN → letter avatar.
 // Each stage only fires if the previous one returned an error or was unavailable.
@@ -58,7 +58,7 @@ export function WaiverSuggestionsPanel({
     setLoading(true); setError(null);
     try {
       const res = await fetch(
-        // No season param: the server uses NFL_SEASON, which is the live Sleeper season.
+        // No season param: the server resolves it from NFL_SEASON (see resolveSeason).
         `/api/sleeper/waiver-suggestions?leagueId=${leagueId}&userId=${userId}`,
       );
       if (!res.ok) throw new Error('Failed to load suggestions');
@@ -86,6 +86,7 @@ export function WaiverSuggestionsPanel({
 
       {data && !loading && (
         <>
+          <StatsSeasonNote season={data.statsSeason} fallback={data.statsFallback} />
           {data.weakPositions.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-[10px] uppercase tracking-wider" style={{ color: '#555' }}>

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { TradeSuggestionsResponse } from '@/types/suggestions';
-import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton, NoLeague, PlayerAvatar } from './shared';
+import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton, NoLeague, PlayerAvatar, StatsSeasonNote } from './shared';
 
 export function TradeAnalyzerPanel({
   leagueId, userId,
@@ -16,7 +16,7 @@ export function TradeAnalyzerPanel({
     setLoading(true); setError(null);
     try {
       const res = await fetch(
-        // No season param: the server uses NFL_SEASON, which is the live Sleeper season.
+        // No season param: the server resolves it from NFL_SEASON (see resolveSeason).
         `/api/sleeper/trade-suggestions?leagueId=${leagueId}&userId=${userId}`,
       );
       if (!res.ok) throw new Error('Failed to load trades');
@@ -47,6 +47,7 @@ export function TradeAnalyzerPanel({
 
       {data && !loading && (
         <>
+          <StatsSeasonNote season={data.statsSeason} fallback={data.statsFallback} />
           {Object.keys(data.myPositionRanks).length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-[10px] uppercase tracking-wider shrink-0" style={{ color: '#555' }}>

@@ -23,10 +23,19 @@ jest.mock('@/lib/audit', () => ({ writeAuditLog: jest.fn() }));
 
 jest.mock('@/lib/sleeper/sync', () => ({
   fetchLeagueData: jest.fn(),
+  upsertLeague:    jest.fn(),
+  upsertTeams:     jest.fn(),
+}));
+
+// Without this the route's live-name overlay would reach the real Sleeper API
+// from a unit test.
+jest.mock('@/lib/sleeper/liveNames', () => ({
+  teamNameResolver: jest.fn(),
 }));
 
 import { GET, POST } from '@/app/api/leagues/[id]/schedule/route';
 import { fetchLeagueData } from '@/lib/sleeper/sync';
+import { teamNameResolver } from '@/lib/sleeper/liveNames';
 import { prisma } from '@/lib/prisma';
 import { generateSchedule } from '@/lib/scheduler/engine';
 import { writeAuditLog } from '@/lib/audit';
@@ -38,6 +47,7 @@ const mockScheduleFindFirst = prisma.schedule.findFirst as jest.MockedFunction<t
 const mockScheduleCreate    = prisma.schedule.create    as jest.MockedFunction<typeof prisma.schedule.create>;
 const mockGenerateSchedule  = generateSchedule          as jest.MockedFunction<typeof generateSchedule>;
 const mockAuditLog          = writeAuditLog             as jest.MockedFunction<typeof writeAuditLog>;
+const mockTeamNameResolver  = teamNameResolver          as jest.MockedFunction<typeof teamNameResolver>;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -72,7 +82,8 @@ const fakeSavedSchedule = {
   seed: 12345,
   matchups: [
     { week: 1, homeTeamId: 't1', awayTeamId: 't2', type: 'division',
-      homeTeam: { name: 'Team 1' }, awayTeam: { name: 'Team 2' } },
+      homeTeam: { name: 'Team 1', sleeperRosterId: '1' },
+      awayTeam: { name: 'Team 2', sleeperRosterId: '2' } },
   ],
 };
 
@@ -101,7 +112,10 @@ describe('GET /api/leagues/[id]/schedule', () => {
   beforeEach(() => {
     mockLeagueFindFirst.mockReset();
     mockScheduleFindFirst.mockReset();
+    mockTeamNameResolver.mockReset();
     mockLeagueFindFirst.mockResolvedValue(fakeLeague as never);
+    // Default: Sleeper agrees with the database, so names pass through.
+    mockTeamNameResolver.mockResolvedValue((_id, stored) => stored);
   });
 
   // WHY: If a schedule exists, return it with 200 so the UI can display the grid.
@@ -113,6 +127,44 @@ describe('GET /api/leagues/[id]/schedule', () => {
 
     const body = await res.json() as typeof fakeSavedSchedule;
     expect(body.id).toBe('sched-1');
+  });
+
+  // WHY: the point of the live-read redesign. Team.name is a sync-time copy;
+  //      what the schedule renders must be what Sleeper says now, or this page
+  //      disagrees with the standings page about the same team.
+  it('renders the live Sleeper name, not the stored one', async () => {
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSavedSchedule as never);
+    mockTeamNameResolver.mockResolvedValue((rosterId) =>
+      rosterId === '1' ? 'Discount Double Perc' : 'Renamed Two');
+
+    const res  = await GET(makeReq('lg1'), makeParams('lg1'));
+    const body = await res.json() as typeof fakeSavedSchedule;
+
+    expect(body.matchups[0].homeTeam.name).toBe('Discount Double Perc');
+    expect(body.matchups[0].awayTeam.name).toBe('Renamed Two');
+  });
+
+  // WHY: the overlay sits in front of the schedule page. If Sleeper is down the
+  //      page must still render with stored names rather than 500.
+  it('falls back to stored names when Sleeper cannot be reached', async () => {
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSavedSchedule as never);
+    mockTeamNameResolver.mockResolvedValue((_id, stored) => stored);
+
+    const res  = await GET(makeReq('lg1'), makeParams('lg1'));
+    const body = await res.json() as typeof fakeSavedSchedule;
+
+    expect(res.status).toBe(200);
+    expect(body.matchups[0].homeTeam.name).toBe('Team 1');
+  });
+
+  // WHY: the overlay must read names from the league the schedule belongs to,
+  //      not from whatever id the caller happened to pass in the URL.
+  it('resolves names against the league Sleeper id', async () => {
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSavedSchedule as never);
+
+    await GET(makeReq('lg1'), makeParams('lg1'));
+
+    expect(mockTeamNameResolver).toHaveBeenCalledWith('sleeper-999');
   });
 
   // WHY: When no schedule has been generated yet, return 404 so the UI can

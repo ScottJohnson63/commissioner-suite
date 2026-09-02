@@ -14,8 +14,8 @@
 // immediately instead of after the cache expires.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
-import type { SleeperRoster, SleeperUser } from '@/lib/sleeper/types';
+import { SLEEPER_TTL } from '@/lib/sleeper/client';
+import { fetchRosterInfo } from '@/lib/sleeper/teams';
 import type { SleeperLeagueTeam } from '@/types/lottery';
 import { ok, err } from '@/lib/api';
 
@@ -28,25 +28,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     : SLEEPER_TTL.LEAGUE;
 
   try {
-    const [users, rosters] = await Promise.all([
-      sleeperGet<SleeperUser[]>(`/league/${leagueId}/users`, revalidate),
-      sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`, revalidate),
-    ]);
+    const info = await fetchRosterInfo(leagueId, revalidate);
 
-    const userMap = new Map((users ?? []).map((u) => [u.user_id, u]));
-    const teams: SleeperLeagueTeam[] = (rosters ?? [])
-      .map((r) => {
-        const u = r.owner_id ? userMap.get(r.owner_id) : undefined;
-        // Managers can save a blank team name in Sleeper, so fall back on
-        // anything that is empty or whitespace — not just null/undefined.
-        const teamName = u?.metadata?.team_name?.trim();
-        const owner    = u?.display_name?.trim();
-        return {
-          rosterId:  r.roster_id,
-          name:      teamName || owner || `Team ${r.roster_id}`,
-          ownerName: owner || null,
-        };
-      })
+    const teams: SleeperLeagueTeam[] = [...info.values()]
+      .map(({ rosterId, name, ownerName }) => ({ rosterId, name, ownerName }))
       .sort((a, b) => a.rosterId - b.rosterId);
 
     return ok({ teams });

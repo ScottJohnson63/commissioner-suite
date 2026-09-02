@@ -1,10 +1,17 @@
 // src/app/api/sleeper/matchup-report/route.ts
 //
 // Projects floor/ceiling for both sides of the user's current-week matchup.
-// Enriches with:
+//
+// The projection is player form and nothing else. Defensive strength, weather
+// and the betting line ride alongside it as context — read from the fixture the
+// player is actually in, and reported rather than folded into the number. See
+// src/lib/matchupContext.ts.
+//
+// Sources:
 //   • Defensive strength  (from local NflWeeklyStat DB)
 //   • Weather forecasts   (Open-Meteo — free, no key)
 //   • Vegas/live odds     (The Odds API — needs ODDS_API_KEY env var)
+//   • Fixtures            (local NflGame, synced from nflverse)
 //
 // GET /api/sleeper/matchup-report?leagueId=&userId=&season=&week=
 //
@@ -17,14 +24,23 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getPlayerMap, type SleeperPlayerInfo } from '@/lib/sleeper/playerCache';
-import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
-import type { SleeperRoster, SleeperUser, SleeperMatchupRaw, SleeperNflState } from '@/lib/sleeper/types';
-import { RouteCache } from '@/lib/cache';
+import { getPlayerMapSafe, type SleeperPlayerInfo } from '@/lib/sleeper/playerCache';
+import { buildUserMap, resolveTeamName } from '@/lib/sleeper/teams';
+import { resolveSeason, resolveWeek } from '@/lib/sleeper/week';
+import { resolveStatsSeason } from '@/lib/statsSeason';
+import { buildGsisXref } from '@/lib/sleeper/gsisXref';
+import { getScoringSettings } from '@/lib/sleeper/scoringSettings';
+import { scoreRow, STAT_LINE_SELECT } from '@/lib/scoring';
+import { buildBaselines, project } from '@/lib/projection';
+import {
+  fixturesByTeam, unitStrengths, venueForecasts, buildPlayerContext,
+} from '@/lib/matchupContext';
+import { abbrOf } from '@/lib/nflTeams';
+import { sleeperGet } from '@/lib/sleeper/client';
+import type { SleeperRoster, SleeperUser, SleeperMatchupRaw } from '@/lib/sleeper/types';
+import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import type { PlayerProjection, TeamProjection, WeatherInfo, VegasLine, MatchupReportResponse } from '@/types/projections';
-import { STADIUM_COORDS } from '@/lib/stadiums';
-import { stdDev } from '@/lib/math';
-import { getWeather } from '@/lib/weather';
+import type { StatLine } from '@/types/scoring';
 import { getLiveOdds, getNflOdds } from '@/lib/odds';
 import { ok, err } from '@/lib/api';
 import MOCK_MATCHUP from '@/mock_data/matchup.json';
@@ -41,15 +57,82 @@ const IS_DEMO = process.env.DEMO_MODE === 'true';
 // ─── Mock data types (used only when IS_DEMO) ─────────────────────────────────
 
 interface MockPlayer { id: string; sleeperId?: string; name: string; position: string; team: string }
-interface MockRoster { name: string; rosterId: number; players: MockPlayer[] }
+/** `starters` mirrors the live Sleeper payload: the IDs in the lineup this week. */
+interface MockRoster { name: string; rosterId: number; starters: string[]; players: MockPlayer[] }
 const mockData = MOCK_MATCHUP as unknown as { team1: MockRoster; team2: MockRoster };
 
 // ─── Caches ───────────────────────────────────────────────────────────────────
 
 const matchupCache = new RouteCache<MatchupReportResponse>();
 
-const MATCHUP_TTL = 15 * 60 * 1000; // 15 min
-const DEMO_TTL    =      60 * 1000; // 1 min  (short so random week refreshes quickly)
+const MATCHUP_TTL = ROUTE_CACHE_TTL.LIVE;
+const DEMO_TTL    = ROUTE_CACHE_TTL.DEMO;
+
+/**
+ * The window's whole population, as both readings of it need it.
+ *
+ * `StatLine` is what scoring needs; the three join columns are what the
+ * defense-strength reading needs.
+ */
+type WindowRow = StatLine & {
+  playerId:     string;
+  team:         string | null;
+  opponentTeam: string | null;
+  week:         number;
+};
+
+/** Positional baselines are the same rows for every request in a window. */
+const baselineCache = new RouteCache<WindowRow[]>();
+const BASELINE_TTL = 5 * 60_000;
+
+/** Test seam — the baseline outlives a single request by design. */
+export function clearBaselineCache(): void {
+  baselineCache.clearAll();
+}
+
+/**
+ * Every scored-position row in the form window, for the positional baselines.
+ *
+ * Deliberately not restricted to the two rosters in the matchup: thirty players
+ * is too thin to say what a tight end typically scores, and the whole window is
+ * only a couple of thousand rows.
+ */
+async function baselineRows(
+  season: number,
+  sinceWk: number,
+  completedWk: number,
+): Promise<WindowRow[]> {
+  const key = `${season}-${sinceWk}-${completedWk}`;
+  const hit = baselineCache.get(key, BASELINE_TTL);
+  if (hit) return hit;
+
+  const rows = await prisma.nflWeeklyStat.findMany({
+    where: {
+      season,
+      seasonType: 'REG',
+      week:       { gte: sinceWk, lte: completedWk },
+      position:   { in: ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'] },
+    },
+    // team, opponentTeam and week are for the defense-strength reading; the
+    // rest is what scoring a row needs.
+    select: {
+      playerId: true, team: true, opponentTeam: true, week: true,
+      ...STAT_LINE_SELECT,
+    },
+  });
+  baselineCache.set(key, rows);
+  return rows;
+}
+
+/**
+ * Extracts real player IDs from a Sleeper `starters` array.
+ *
+ * Sleeper fills unused lineup slots with the string "0" rather than omitting
+ * them, so the raw array is not a usable ID list.
+ */
+function starterIdsOf(starters: string[] | undefined): string[] {
+  return (starters ?? []).filter((id) => id && id !== '0');
+}
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 
@@ -74,6 +157,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // ── Variables set differently between demo and live ──────────────────────
     let myPlayerIds:  string[];
     let oppPlayerIds: string[];
+    let myStarterIds:  string[];
+    let oppStarterIds: string[];
     let myName:       string;
     let oppName:      string;
     let myRosterId:   number;
@@ -86,11 +171,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     if (IS_DEMO) {
       // ── DEMO: load mock rosters, pick random regular-season week ─────────
-      effectiveSeason = Number(process.env.NFL_SEASON ?? '2025');
+      effectiveSeason = await resolveSeason(searchParams.get('season'));
       effectiveWeek   = Math.floor(Math.random() * 17) + 1; // weeks 1-17
 
-      myPlayerIds  = mockData.team1.players.map((p) => p.id);
-      oppPlayerIds = mockData.team2.players.map((p) => p.id);
+      myPlayerIds   = mockData.team1.players.map((p) => p.id);
+      oppPlayerIds  = mockData.team2.players.map((p) => p.id);
+      myStarterIds  = mockData.team1.starters;
+      oppStarterIds = mockData.team2.starters;
       myName       = mockData.team1.name;
       oppName      = mockData.team2.name;
       myRosterId   = mockData.team1.rosterId;
@@ -104,31 +191,22 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       }
     } else {
       // ── LIVE: resolve from Sleeper API ────────────────────────────────────
-      effectiveSeason = Number(searchParams.get('season') ?? '2025');
-      let rawWeek = searchParams.get('week') ? Number(searchParams.get('week')) : null;
-      if (!rawWeek) {
-        try {
-          const state = await sleeperGet<SleeperNflState>('/state/nfl', SLEEPER_TTL.NFL_STATE);
-          rawWeek = state.week;
-        } catch {
-          rawWeek = 1;
-        }
-      }
-      effectiveWeek = rawWeek;
+      effectiveSeason = await resolveSeason(searchParams.get('season'));
+      effectiveWeek = await resolveWeek(searchParams.get('week'), 'current');
 
       const [rosters, users, matchupsRaw, playerMapFull] = await Promise.all([
         sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
         sleeperGet<SleeperUser[]>(`/league/${leagueId}/users`),
         sleeperGet<SleeperMatchupRaw[]>(`/league/${leagueId}/matchups/${effectiveWeek}`),
-        getPlayerMap().catch(() => new Map<string, SleeperPlayerInfo>()),
+        getPlayerMapSafe(),
       ]);
       localPlayerMap = playerMapFull;
 
-      const teamNameOf = (ownerId: string | null) => {
-        if (!ownerId) return 'Unknown';
-        const u = users.find((u) => u.user_id === ownerId);
-        return u?.metadata?.team_name?.trim() || u?.display_name || 'Unknown';
-      };
+      // "Unknown" rather than the shared "Team N" default: an empty opponent
+      // slot in a report reads better unnamed than numbered.
+      const usersById = buildUserMap(users);
+      const teamNameOf = (ownerId: string | null) =>
+        ownerId ? resolveTeamName(usersById.get(ownerId), ownerId, 'Unknown') : 'Unknown';
 
       const myRoster = rosters.find((r) => r.owner_id === userId);
       if (!myRoster) return err('Roster not found for this user', 404);
@@ -147,6 +225,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       myPlayerIds  = myRoster.players ?? [];
       oppPlayerIds = oppRoster?.players ?? [];
+
+      // Sleeper pads unfilled lineup slots with "0", which is not a player ID.
+      // An empty result is a real state — a league that has not set a lineup
+      // yet, which before kickoff is most of them — and `starterIdsOf` leaves it
+      // empty so the caller can decide what to do about it.
+      myStarterIds  = starterIdsOf(myMatchup.starters);
+      oppStarterIds = starterIdsOf(oppMatchup.starters);
       myName       = teamNameOf(myRoster.owner_id);
       oppName      = teamNameOf(oppRoster?.owner_id ?? null);
       myRosterId   = myRoster.roster_id;
@@ -154,81 +239,71 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── Build player stats (shared) ──────────────────────────────────────────
-    const allIds      = [...new Set([...myPlayerIds, ...oppPlayerIds])];
-    const completedWk = Math.max(1, effectiveWeek - 1);
+    const allIds = [...new Set([...myPlayerIds, ...oppPlayerIds])];
+
+    // Which season the form window can actually be drawn from. In week 1 the
+    // live season has no completed weeks, so this falls back to the last season
+    // with rows and the report is built on last year's form instead of nothing.
+    const stats = await resolveStatsSeason(effectiveSeason);
+
+    // Anchor the window on the last week that has data, not the last week that
+    // has been played: those differ before kickoff and whenever the nflverse
+    // sync trails live play.
+    const lastWk      = stats.maxWeek > 0 ? stats.maxWeek : Math.max(1, effectiveWeek - 1);
+    const completedWk = stats.fallback ? lastWk : Math.min(lastWk, Math.max(1, effectiveWeek - 1));
     const sinceWk     = Math.max(1, completedWk - 5);
 
-    let statsRows: { playerId: string; week: number; fantasyPointsPpr: number | null }[] = [];
-    if (allIds.length > 0) {
+    // NflWeeklyStat is keyed on GSIS IDs; live rosters are Sleeper IDs. Demo
+    // needs no special case — every mock player carries its own gsisId, so this
+    // resolves from the map without a query.
+    const xref = await buildGsisXref(allIds, localPlayerMap, stats.season);
+
+    // This league's rules, not nflverse's. The stored `fantasyPointsPpr` column
+    // is full PPR, scores every kicker at zero and has no defense rows at all —
+    // see src/lib/scoring.ts.
+    const scoring = await getScoringSettings(leagueId);
+
+    let statsRows: ({ playerId: string; week: number } & Parameters<typeof scoreRow>[0])[] = [];
+    if (xref.gsisIds.length > 0) {
       statsRows = await prisma.nflWeeklyStat.findMany({
         where: {
-          season:   effectiveSeason,
-          playerId: { in: allIds },
-          week:     { gte: sinceWk, lte: completedWk },
+          season:     stats.season,
+          // Regular season only — see src/lib/statsSeason.ts on why postseason
+          // weeks make a poor form window.
+          seasonType: 'REG',
+          playerId:   { in: xref.gsisIds },
+          week:       { gte: sinceWk, lte: completedWk },
         },
-        select: { playerId: true, week: true, fantasyPointsPpr: true },
+        select: { playerId: true, week: true, ...STAT_LINE_SELECT },
       });
     }
 
     const playerWeeklyPts = new Map<string, number[]>();
     for (const row of statsRows) {
-      if (row.fantasyPointsPpr === null) continue;
-      const arr = playerWeeklyPts.get(row.playerId) ?? [];
-      arr.push(row.fantasyPointsPpr);
-      playerWeeklyPts.set(row.playerId, arr);
+      const sleeperId = xref.toSleeper.get(row.playerId);
+      if (!sleeperId) continue;
+      const arr = playerWeeklyPts.get(sleeperId) ?? [];
+      arr.push(scoreRow(row, scoring));
+      playerWeeklyPts.set(sleeperId, arr);
     }
 
-    // ── Defensive strength ───────────────────────────────────────────────────
-    const defRows = await prisma.nflWeeklyStat.groupBy({
-      by:    ['opponentTeam', 'position'],
-      where: { season: effectiveSeason, opponentTeam: { not: null }, fantasyPointsPpr: { not: null } },
-      _avg:  { fantasyPointsPpr: true },
-    });
+    // What each position typically does over the same weeks. A player with one
+    // game or none is blended toward this rather than reported as a certainty —
+    // see src/lib/projection.ts. Drawn from every player in the window, not just
+    // the two rosters, which would be a sample of about thirty.
+    // One population, two readings: what each position typically scores, and
+    // what each defense concedes to it.
+    const windowRows = await baselineRows(stats.season, sinceWk, completedWk);
+    const baselines  = buildBaselines(windowRows, scoring);
 
-    const leagueAvgByPos = new Map<string, number[]>();
-    const defAllowed     = new Map<string, number>(); // "TEAM-POS" → avg pts allowed
-    for (const row of defRows) {
-      const key = `${row.opponentTeam}-${row.position}`;
-      defAllowed.set(key, row._avg.fantasyPointsPpr ?? 0);
-      const arr = leagueAvgByPos.get(row.position ?? '') ?? [];
-      arr.push(row._avg.fantasyPointsPpr ?? 0);
-      leagueAvgByPos.set(row.position ?? '', arr);
-    }
-
-    /** Returns the mean fantasy points allowed to the given position across all defenses. */
-    function leagueAvgForPos(pos: string): number {
-      const arr = leagueAvgByPos.get(pos);
-      if (!arr || arr.length === 0) return 0;
-      return arr.reduce((a, b) => a + b, 0) / arr.length;
-    }
-    /**
-     * Returns a defensive adjustment multiplier (0.85–1.15) for the given
-     * position against the given opponent. Above 1 = soft defense (more points
-     * expected); below 1 = stiff defense (fewer points expected).
-     * Returns 1 when no defensive data is available.
-     */
-    function defAdjMultiplier(opponentTeam: string | null, pos: string): number {
-      if (!opponentTeam) return 1;
-      const allowed = defAllowed.get(`${opponentTeam}-${pos}`);
-      const avg     = leagueAvgForPos(pos);
-      if (!allowed || avg === 0) return 1;
-      return Math.max(0.85, Math.min(1.15, allowed / avg));
-    }
-
-    // ── Weather (always calls the real Open-Meteo API) ───────────────────────
-    const outdoorTeams = new Set<string>();
-    for (const pid of allIds) {
-      const info = localPlayerMap.get(pid);
-      if (info?.team && !STADIUM_COORDS[info.team]?.dome) {
-        outdoorTeams.add(info.team);
-      }
-    }
-    const weatherResults = await Promise.all(
-      [...outdoorTeams].map((t) => getWeather(t, effectiveWeek)),
-    );
-    const weatherMap = new Map<string, WeatherInfo>();
-    for (const w of weatherResults) { if (w) weatherMap.set(w.team, w); }
-    const weatherArr = weatherResults.filter(Boolean) as WeatherInfo[];
+    // ── Context for the reader, not for the arithmetic ───────────────────────
+    // None of this changes a projection. It is the fixture each player is in,
+    // the unit opposite them and the betting line — the things a manager needs
+    // to judge a number, and the things the app could not look up at all until
+    // NflGame existed. See src/lib/matchupContext.ts.
+    const fixtures  = await fixturesByTeam(effectiveSeason, effectiveWeek);
+    const strengths = unitStrengths(windowRows, (row) => scoreRow(row, scoring));
+    const forecasts = await venueForecasts(fixtures, effectiveWeek);
 
     // ── Vegas / live odds ────────────────────────────────────────────────────
     const apiKey   = process.env.ODDS_API_KEY;
@@ -237,6 +312,22 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       vegasLines = IS_DEMO
         ? await getLiveOdds(apiKey).catch(() => null)       // any currently-active sport
         : await getNflOdds(effectiveWeek).catch(() => null); // NFL only
+    }
+
+    // Betting lines indexed by fixture, so a player's own game can be found.
+    // They used to be rendered unfiltered — the first three on the slate,
+    // whoever was playing.
+    //
+    // Keyed on both teams rather than one: the odds endpoint returns every
+    // upcoming game in the season at once, so indexing by team would leave each
+    // one holding whichever of its games came last in the response. Home and
+    // away together are unique even for divisional rivals, who meet twice but
+    // host once each.
+    const linesByGame = new Map<string, VegasLine>();
+    for (const line of vegasLines ?? []) {
+      const home = abbrOf(line.homeTeam);
+      const away = abbrOf(line.awayTeam);
+      if (home && away) linesByGame.set(`${home}|${away}`, line);
     }
 
     // ── Project each player ──────────────────────────────────────────────────
@@ -249,64 +340,121 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
      *      completed weeks (or fewer if the player has limited data).
      *   2. Floor = mean − 1.28σ  (≈10th percentile); clamped to 0.
      *   3. Ceiling = mean + 1.28σ (≈90th percentile).
-     *   4. Apply a defensive-strength multiplier (0.85–1.15) based on how
-     *      many points that position has historically scored against the
-     *      opponent's defense in the current season.
-     *   5. Apply a weather multiplier for passing/kicking positions if the
-     *      game is in an outdoor stadium with high wind or precipitation.
+     *
+     * There are no adjustments. Two used to be applied here and both are gone:
+     *
+     *   - A defensive-strength multiplier, which never actually ran — the lookup
+     *     needed each player's week-N opponent and nothing supplied one, so it
+     *     returned 1 every time while its query still scanned the season.
+     *   - A weather multiplier, which did run, on the wrong forecast: it was
+     *     keyed on each player's own home stadium rather than the venue, so a
+     *     player on the road was adjusted for a city he was not in.
+     *
+     * Both factors are now shown rather than applied. The context dialog reads
+     * the real venue and the real opponent and says which way each pushes,
+     * leaving the judgement to the reader — see src/lib/matchupContext.ts.
+     *
+     * Every rostered player is projected, starter or not. Only starters reach
+     * the team totals — see sumTeam — but the bench is projected so the
+     * breakdown is complete and its points can be reported alongside them.
+     *
+     * `sigma` is returned alongside the band because sumTeam needs it and it
+     * cannot be read back off floor/ceiling: the floor is clamped at 0, so a
+     * volatile low-scorer's visible band understates his real spread.
      */
-    function projectPlayer(pid: string): PlayerProjection {
+    function projectPlayer(pid: string, isStarter: boolean): PlayerProjection {
       const info = localPlayerMap.get(pid);
       const name = info?.name      ?? `#${pid}`;
       const pos  = info?.position  ?? 'UNK';
       const team = info?.team      ?? null;
       const pts  = playerWeeklyPts.get(pid) ?? [];
 
-      const mean       = pts.length > 0 ? pts.reduce((a, b) => a + b, 0) / pts.length : 0;
-      const sd         = stdDev(pts);
+      const { mean, sigma: sd, games } = project(pts, baselines.get(pos));
       const rawFloor   = Math.max(0, mean - 1.28 * sd);
       const rawCeiling = mean + 1.28 * sd;
 
-      const defMult = defAdjMultiplier(null, pos); // team's opponent unknown without weekly schedule
-
-      let weatherMult = 1;
-      let weatherNote: string | null = null;
-      const wx = team ? weatherMap.get(team) : null;
-      if (wx) {
-        const isPassingPos = ['QB', 'WR', 'TE'].includes(pos);
-        const isKicker     = pos === 'K';
-        if (wx.windMph > 20 && (isPassingPos || isKicker)) {
-          weatherMult *= 0.92;
-          weatherNote  = `Wind ${wx.windMph}mph`;
-        }
-        if (wx.precipPct > 60 && isPassingPos) {
-          weatherMult *= 0.95;
-          weatherNote  = (weatherNote ? weatherNote + ', ' : '') + `Rain ${wx.precipPct}%`;
-        }
-      }
-
-      const adj       = defMult * weatherMult;
-      const floor     = parseFloat((rawFloor   * adj).toFixed(1));
-      const ceiling   = parseFloat((rawCeiling * adj).toFixed(1));
-      const projected = parseFloat((mean       * adj).toFixed(1));
+      const floor     = parseFloat(rawFloor.toFixed(1));
+      const ceiling   = parseFloat(rawCeiling.toFixed(1));
+      const projected = parseFloat(mean.toFixed(1));
+      const sigma     = parseFloat(sd.toFixed(2));
 
       // In demo mode pid is a GSIS ID; remap to Sleeper numeric ID for CDN images.
       // In live mode pid is already the Sleeper ID, so the map is empty and we use pid.
       const sleeperPlayerId = gsisToSleeperIdMap.get(pid) ?? pid;
-      return { playerId: pid, sleeperPlayerId, name, position: pos, team, floor, ceiling, projected, defAdjustment: adj, weatherNote };
+      return {
+        playerId: pid, sleeperPlayerId, name, position: pos, team,
+        floor, ceiling, projected, sigma, games,
+        starter: isStarter,
+        context: buildPlayerContext(team, pos, fixtures, strengths, forecasts, linesByGame),
+      };
     }
 
-    const myProjections  = myPlayerIds.map((pid)  => projectPlayer(pid));
-    const oppProjections = oppPlayerIds.map((pid) => projectPlayer(pid));
+    /**
+     * Marks which players start, then projects the whole roster.
+     *
+     * A league that has not set its lineup yet reports no starters at all. The
+     * roster is treated as all-starting in that case: showing a team total of
+     * zero would read as a broken panel, where showing the full roster is at
+     * least a truthful "here is everything you have".
+     */
+    function projectRoster(playerIds: string[], starterIds: string[]): PlayerProjection[] {
+      // Sleeper's `starters` array is in lineup-slot order (QB, RB, RB, WR …),
+      // which the roster array is not. Ordering by slot is what makes the
+      // breakdown read as a lineup rather than an arbitrary list.
+      const slotOf = new Map(starterIds.map((pid, i) => [pid, i]));
+      const lineupSet = slotOf.size > 0;
+      if (!lineupSet) return playerIds.map((pid) => projectPlayer(pid, true));
 
-    /** Aggregates individual player projections into a team-level projection. */
+      const ordered = [...playerIds].sort((a, b) =>
+        (slotOf.get(a) ?? Number.MAX_SAFE_INTEGER) - (slotOf.get(b) ?? Number.MAX_SAFE_INTEGER),
+      );
+      return ordered.map((pid) => projectPlayer(pid, slotOf.has(pid)));
+    }
+
+    const myProjections  = projectRoster(myPlayerIds,  myStarterIds);
+    const oppProjections = projectRoster(oppPlayerIds, oppStarterIds);
+
+    /**
+     * Aggregates individual player projections into a team-level projection.
+     *
+     * Only starters are counted: a bench player cannot score for you, so
+     * including one inflates a deep roster against an opponent who simply
+     * carries fewer players. The bench is reported separately rather than
+     * dropped.
+     *
+     * The band is rebuilt from the combined spread, not by adding the players'
+     * own floors and ceilings. Summing nine 10th-percentiles does not give the
+     * team's 10th percentile — it gives the case where every starter has a bad
+     * week at once, which is far less likely than any one of them doing so, and
+     * produced a band more than twice as wide as it should be. Standard
+     * deviations do not add; variances do:
+     *
+     *     team sigma = sqrt( sum of each starter's sigma squared )
+     *     band       = team projection +/- 1.28 * team sigma
+     *
+     * This treats the starters as independent. They are not quite — a QB and
+     * his own receiver rise and fall together — so the real spread is a little
+     * wider than this. Correlated variance needs each player's game, which is
+     * the same NFL fixture source the weather and defensive adjustments want.
+     */
     function sumTeam(projs: PlayerProjection[], name: string, rosterId: number): TeamProjection {
+      const starters = projs.filter((p) => p.starter);
+      const bench    = projs.filter((p) => !p.starter);
+
+      const projected = starters.reduce((s, p) => s + p.projected, 0);
+      const teamSigma = Math.sqrt(starters.reduce((s, p) => s + p.sigma ** 2, 0));
+      const spread    = 1.28 * teamSigma;
+
       return {
         name,
         rosterId,
-        floor:     parseFloat(projs.reduce((s, p) => s + p.floor,     0).toFixed(1)),
-        ceiling:   parseFloat(projs.reduce((s, p) => s + p.ceiling,   0).toFixed(1)),
-        projected: parseFloat(projs.reduce((s, p) => s + p.projected, 0).toFixed(1)),
+        floor:     parseFloat(Math.max(0, projected - spread).toFixed(1)),
+        ceiling:   parseFloat((projected + spread).toFixed(1)),
+        projected: parseFloat(projected.toFixed(1)),
+        sigma:     parseFloat(teamSigma.toFixed(2)),
+        starterCount:   starters.length,
+        benchProjected: parseFloat(bench.reduce((s, p) => s + p.projected, 0).toFixed(1)),
+        benchCount:     bench.length,
       };
     }
 
@@ -317,7 +465,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const myWins   = myTeam.floor > opponent.ceiling;
     const myLikely = myTeam.projected > opponent.projected;
     const close    = Math.abs(myTeam.projected - opponent.projected) < 10;
-    const wxImpact = weatherArr.some((w) => w.windMph > 20 || w.precipPct > 60);
+    // Weather worth mentioning, taken from the venues these players are actually
+    // at rather than from their home grounds. Deduped by team: a whole roster in
+    // one bad game should read as one warning, not nine.
+    const roughWeather = new Map<string, WeatherInfo>();
+    for (const p of [...myProjections, ...oppProjections]) {
+      const wx = p.context.weather;
+      if (wx && (wx.windMph > 20 || wx.precipPct > 60 || wx.tempF < 20)) {
+        roughWeather.set(wx.team, wx);
+      }
+    }
+    const wxImpact = roughWeather.size > 0;
 
     let narrative = '';
     if (myWins) {
@@ -330,21 +488,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       narrative = `You're the underdog (${myTeam.projected.toFixed(1)} vs ${opponent.projected.toFixed(1)}), but your ceiling (${myTeam.ceiling}) still gives you a path. `;
     }
     if (wxImpact) {
-      narrative += `Weather may be a factor: ${weatherArr.filter((w) => w.windMph > 20 || w.precipPct > 60).map((w) => w.note).join('; ')}.`;
+      narrative += `Weather may be a factor: ${[...roughWeather.values()].map((w) => w.note).join('; ')}.`;
     }
     if (IS_DEMO) {
-      narrative += ` [Demo — ${effectiveSeason} W${effectiveWeek} stats · live ${vegasLines?.[0]?.sport ?? 'no'} odds]`;
+      // Name the season the numbers came from, not the one being played — they
+      // differ whenever the stat table has no rows for the live season yet.
+      narrative += ` [Demo — ${stats.season} stats, W${effectiveWeek} · live ${vegasLines?.[0]?.sport ?? 'no'} odds]`;
     }
 
     const result: MatchupReportResponse = {
       week:    effectiveWeek,
       season:  effectiveSeason,
+      statsSeason:   stats.season,
+      statsFallback: stats.fallback,
       myTeam,
       opponent,
       myPlayers:       myProjections,
       opponentPlayers: oppProjections,
-      weather:   weatherArr.length > 0 ? weatherArr : null,
-      vegasLines,
       narrative: narrative.trim(),
       ...(IS_DEMO && { demo: true }),
     };

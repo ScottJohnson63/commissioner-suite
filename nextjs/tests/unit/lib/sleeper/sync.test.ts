@@ -249,6 +249,34 @@ describe('syncLeague()', () => {
     expect(mockAuditLog).toHaveBeenCalledWith('SYNC', 'db-lg-1', expect.anything());
   });
 
+  // WHY: The commissioner owns division assignment — the app exists to set next
+  //      season's divisions from last season's results, which the Divisions tab
+  //      writes to this same column. A sync that included divisionId in `update`
+  //      would silently revert that work every time it ran.
+  it('does not overwrite divisionId on an existing team', async () => {
+    await syncLeague('999');
+
+    for (const call of mockTeamUpsert.mock.calls) {
+      const arg = call[0] as { update: Record<string, unknown> };
+      expect(arg.update).not.toHaveProperty('divisionId');
+      expect(arg.update).toEqual({ name: expect.any(String) });
+    }
+  });
+
+  // WHY: A brand-new team row has no commissioner assignment to preserve, so
+  //      Sleeper's own division is the only sensible starting value.
+  it('seeds divisionId from Sleeper when creating a team', async () => {
+    await syncLeague('999');
+
+    const created = mockTeamUpsert.mock.calls.map(
+      (c) => (c[0] as { create: { sleeperRosterId: string; divisionId: number } }).create,
+    );
+
+    // rosters 1–5 are Sleeper division 1 → divisionId 0; 6–10 → divisionId 1.
+    expect(created.find((c) => c.sleeperRosterId === '1')?.divisionId).toBe(0);
+    expect(created.find((c) => c.sleeperRosterId === '10')?.divisionId).toBe(1);
+  });
+
   // WHY: A league that fails validation must not leave half-written rows.
   it('does not touch the database when the league fails validation', async () => {
     mockSleeperGet.mockReset();

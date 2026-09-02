@@ -24,3 +24,77 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ── Draft Deck card game ──────────────────────────────────────────────────
+   Keyframes live here rather than in the components because several of them are
+   shared between the card face and the pack opener, and because Tailwind has no
+   arbitrary-keyframe syntax that stays readable at this length. Everything is
+   namespaced `ut-` so it cannot collide with the rest of the app. */
+
+/* Holographic sweep across a Hall of Fame card. */
+@keyframes ut-holo {
+  0%   { transform: translateX(-120%) skewX(-18deg); }
+  100% { transform: translateX(320%)  skewX(-18deg); }
+}
+
+/* Slow prismatic drift on the Hall of Fame frame. */
+@keyframes ut-prism {
+  0%, 100% { filter: hue-rotate(0deg)   saturate(1); }
+  50%      { filter: hue-rotate(28deg)  saturate(1.25); }
+}
+
+/* The card flip itself is styled inline in PackOpener.tsx — Tailwind's build
+   drops bare class selectors from this file, so the transform never arrived and
+   every card rendered face-up. Only the keyframes below survive that build,
+   which is why animations live here and static rules do not. */
+
+/* The lift a card gets as it turns over. */
+@keyframes ut-pop {
+  0%   { transform: scale(1); }
+  45%  { transform: scale(1.07); }
+  100% { transform: scale(1); }
+}
+
+/* The burst behind a card as it lands. */
+@keyframes ut-burst {
+  0%   { opacity: 0;    transform: scale(0.4); }
+  35%  { opacity: 0.85; }
+  100% { opacity: 0;    transform: scale(1.9); }
+}
+
+/* Pack sitting idle, waiting to be torn open. */
+/* The torn-off top strip flicking away, once the drag has committed. */
+@keyframes ut-lid-off {
+  0%   { opacity: 1; transform: translate(110px, -6px) rotate(9deg); }
+  100% { opacity: 0; transform: translate(330px, -54px) rotate(38deg); }
+}
+
+/* The body of the pack falling back as its contents come out. */
+@keyframes ut-body-off {
+  0%   { opacity: 1; transform: scale(1)    translateY(0); }
+  55%  { opacity: 1; transform: scale(1.04) translateY(4px); }
+  100% { opacity: 0; transform: scale(0.9)  translateY(26px); }
+}
+
+/* Light leaking out of the torn pack. */
+@keyframes ut-flare {
+  0%   { opacity: 0; transform: scale(0.2); }
+  40%  { opacity: 1; }
+  100% { opacity: 0; transform: scale(2.6); }
+}
+
+/* "NEW" badge drawing attention to a first-time pull. */
+/* Cards sliding up into the summary row after the reveal. */
+@media (prefers-reduced-motion: reduce) {
+  /* Keep the reveal legible without the motion. Every animation above is
+     decorative and the reveal is driven by React state rather than by them, so
+     cutting them changes nothing about what is shown.
+
+     These !important declarations are what override the inline `animation` and
+     `transition` the components set — a stylesheet !important beats an inline
+     declaration, which is the only reason this works at all given the inline
+     styling elsewhere. */
+  .ut-holo, .ut-prism, .ut-burst, .ut-flare { animation: none !important; }
+  .ut-pop { animation-duration: 0.01ms !important; }
+  .ut-card-flip { transition-duration: 0.01ms !important; }
+}

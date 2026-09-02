@@ -11,6 +11,9 @@ const nextConfig: NextConfig = {
       new URL('https://*.cbssports.com/**'),
       new URL('https://*.nbcsports.com/**'),
       new URL('https://static.www.nfl.com/**'),
+      // Wikimedia Commons — the only portrait source that reaches pre-2009
+      // players. See python/scripts/sync_player_headshots.py.
+      new URL('https://upload.wikimedia.org/**'),
     ],
   },
 };

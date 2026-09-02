@@ -21,6 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
+import { findLeagueByAnyId } from '@/lib/league';
 import type { StandingEntry } from '@/app/api/assoc/standings/route';
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -32,9 +33,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const { leagueId, standings } = body;
 
-  const league = await prisma.league.findFirst({
-    where: { OR: [{ id: leagueId }, { sleeperLeagueId: leagueId }] },
-  });
+  const league = await findLeagueByAnyId(leagueId);
   if (!league) return err('League not found', 404);
 
   await Promise.all(

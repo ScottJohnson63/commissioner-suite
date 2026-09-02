@@ -15,6 +15,8 @@
 import { Team } from '@/lib/scheduler/types';
 import { prisma } from '@/lib/prisma';
 import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
+import { buildUserMap, resolveTeamName } from '@/lib/sleeper/teams';
+import type { SleeperUser } from '@/lib/sleeper/types';
 import { writeAuditLog } from '@/lib/audit';
 
 /** Minimal roster shape needed for a sync — only fields we actually use. */
@@ -68,21 +70,14 @@ export async function fetchLeagueData(
     );
   }
 
-  const userMap = new Map(users.map((u) => [u.user_id, u]));
+  const userMap = buildUserMap(users as SleeperUser[]);
 
   const teams: Team[] = rosters.map((roster) => {
     const user = userMap.get(roster.owner_id);
-    // Prefer the custom team name the manager set in Sleeper, fall back to their
-    // display name, and finally to a generic "Team N" label. Managers can save a
-    // blank team name, so treat empty/whitespace as absent rather than storing it.
-    const name =
-      user?.metadata?.team_name?.trim() ||
-      user?.display_name?.trim() ||
-      `Team ${roster.roster_id}`;
 
     return {
       id: String(roster.roster_id),
-      name,
+      name: resolveTeamName(user, roster.roster_id),
       // Sleeper divisions are 1-indexed; the scheduler uses 0-indexed (0 | 1).
       divisionId: (roster.settings.division - 1) as 0 | 1,
     };
@@ -94,6 +89,53 @@ export async function fetchLeagueData(
     season: Number(league.season),
     teams,
   };
+}
+
+/**
+ * Writes the League row for a Sleeper league, creating it if it is new.
+ *
+ * Split out so the schedule route can reuse it — that route also has to
+ * materialise a league on demand when Generate Schedule is clicked before any
+ * sync has run.
+ */
+export async function upsertLeague(sleeperLeagueId: string, name: string, season: number) {
+  return prisma.league.upsert({
+    where: { sleeperLeagueId },
+    update: { name, season },
+    create: { sleeperLeagueId, name, season },
+  });
+}
+
+/**
+ * Writes one Team row per Sleeper roster.
+ *
+ * `divisionId` is deliberately absent from the `update` branch. The commissioner
+ * owns division assignment — the whole point of the app is to set next season's
+ * divisions from last season's results, which is what the Divisions tab writes.
+ * Sleeper's own division numbers only seed a brand-new team row; syncing again
+ * must not drag a league back to Sleeper's layout.
+ *
+ * This lived in three places before it was pulled out here, which meant that
+ * rule had to be fixed three times to take effect once.
+ *
+ * @param leagueDbId  Internal League.id (not the Sleeper league ID).
+ * @param teams       Teams as returned by `fetchLeagueData`.
+ */
+export async function upsertTeams(leagueDbId: string, teams: Team[]): Promise<void> {
+  await Promise.all(
+    teams.map((t) =>
+      prisma.team.upsert({
+        where: { leagueId_sleeperRosterId: { leagueId: leagueDbId, sleeperRosterId: t.id } },
+        update: { name: t.name },
+        create: {
+          leagueId: leagueDbId,
+          sleeperRosterId: t.id,
+          name: t.name,
+          divisionId: t.divisionId,
+        },
+      }),
+    ),
+  );
 }
 
 export interface LeagueSyncResult {
@@ -116,26 +158,8 @@ export async function syncLeague(sleeperId: string): Promise<LeagueSyncResult> {
     SLEEPER_TTL.FRESH,
   );
 
-  const league = await prisma.league.upsert({
-    where: { sleeperLeagueId },
-    update: { name, season },
-    create: { sleeperLeagueId, name, season },
-  });
-
-  await Promise.all(
-    teams.map((t) =>
-      prisma.team.upsert({
-        where: { leagueId_sleeperRosterId: { leagueId: league.id, sleeperRosterId: t.id } },
-        update: { name: t.name, divisionId: t.divisionId },
-        create: {
-          leagueId: league.id,
-          sleeperRosterId: t.id,
-          name: t.name,
-          divisionId: t.divisionId,
-        },
-      }),
-    ),
-  );
+  const league = await upsertLeague(sleeperLeagueId, name, season);
+  await upsertTeams(league.id, teams);
 
   await writeAuditLog('SYNC', league.id, {
     sleeperLeagueId,

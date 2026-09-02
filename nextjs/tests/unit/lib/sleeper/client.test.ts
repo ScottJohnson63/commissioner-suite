@@ -4,7 +4,7 @@
 // Mocks global.fetch so no real network calls are made.
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import { sleeperGet, SLEEPER_BASE } from '@/lib/sleeper/client';
+import { sleeperGet, SLEEPER_BASE, SLEEPER_TTL } from '@/lib/sleeper/client';
 
 describe('SLEEPER_BASE', () => {
   // WHY: Any change to the base URL would silently break every Sleeper API call.
@@ -82,9 +82,12 @@ describe('sleeperGet()', () => {
     );
   });
 
-  // WHY: Default revalidate should be 300 (5 minutes) per the source comments.
-  //      Without this default every caller would have to specify it.
-  it('uses a default revalidate of 300 seconds when not specified', async () => {
+  // WHY: An unspecified call must land on the shared league window rather than
+  //      on some per-call-site number. Asserted against the constant, not a
+  //      literal, so tuning the policy in one place does not break this test —
+  //      the point is that the default *is* SLEEPER_TTL.LEAGUE, not what that
+  //      value happens to be today.
+  it('defaults to the shared league TTL when not specified', async () => {
     mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({}), { status: 200 }),
     );
@@ -93,7 +96,14 @@ describe('sleeperGet()', () => {
 
     expect(mockFetch).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ next: { revalidate: 300 } }),
+      expect.objectContaining({ next: { revalidate: SLEEPER_TTL.LEAGUE } }),
     );
+  });
+
+  // WHY: The redesign turns on this window being short. If someone raises it
+  //      back to minutes, names go stale again across every live route at once —
+  //      so the bound is asserted explicitly, with the reason attached.
+  it('keeps the league window short enough to read as live', () => {
+    expect(SLEEPER_TTL.LEAGUE).toBeLessThanOrEqual(60);
   });
 });

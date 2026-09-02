@@ -15,14 +15,14 @@
 // error message. The caller can retry the failed league independently.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/auth';
 import { syncLeague, type LeagueSyncResult } from '@/lib/sleeper/sync';
 import { recordSyncRun } from '@/lib/syncRun';
 import { ok, err } from '@/lib/api';
+import { requireCommissioner } from '@/lib/apiAuth';
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  const session = await auth();
-  if (session?.user?.role !== 'COMMISSIONER') return err('Forbidden', 403);
+  const denied = await requireCommissioner();
+  if (denied) return denied;
 
   const body = await req.json() as { leagueIds?: string[] };
 

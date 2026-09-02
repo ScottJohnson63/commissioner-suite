@@ -14,15 +14,15 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { auth } from '@/auth';
 import { ok, err } from '@/lib/api';
+import { requireCommissioner } from '@/lib/apiAuth';
 
 export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
-  const session = await auth();
-  if (session?.user?.role !== 'COMMISSIONER') return err('Forbidden', 403);
+  const denied = await requireCommissioner();
+  if (denied) return denied;
 
   const { id } = await params;
 

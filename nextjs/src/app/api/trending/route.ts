@@ -1,7 +1,7 @@
 // src/app/api/trending/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getPlayerMap } from '@/lib/sleeper/playerCache';
+import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { SLEEPER_BASE } from '@/lib/sleeper/client';
 import type { TrendingPlayer } from '@/types/trending';
 import { ok, err } from '@/lib/api';
@@ -98,7 +98,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         : Promise.all([fetchFromSleeper(buildUrl('add')), fetchFromSleeper(buildUrl('drop'))]).then(
             ([adds, drops]) => ({ both: { adds, drops } }),
           ),
-      getPlayerMap().catch(() => new Map()), // player map failure is non-fatal
+      getPlayerMapSafe(),
     ]);
 
     function enrich(p: SleeperTrendingPlayer, t: 'add' | 'drop'): TrendingPlayer {

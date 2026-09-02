@@ -17,13 +17,20 @@ jest.mock('@/lib/prisma', () => ({
 
 jest.mock('@/lib/audit', () => ({ writeAuditLog: jest.fn() }));
 
+// Without this the export's live-name overlay would reach the real Sleeper API.
+jest.mock('@/lib/sleeper/liveNames', () => ({
+  teamNameResolver: jest.fn(),
+}));
+
 import { GET } from '@/app/api/leagues/[id]/schedule/export/route';
 import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
+import { teamNameResolver } from '@/lib/sleeper/liveNames';
 
 const mockLeagueFindFirst  = prisma.league.findFirst   as jest.MockedFunction<typeof prisma.league.findFirst>;
 const mockScheduleFindFirst = prisma.schedule.findFirst as jest.MockedFunction<typeof prisma.schedule.findFirst>;
 const mockAuditLog          = writeAuditLog             as jest.MockedFunction<typeof writeAuditLog>;
+const mockTeamNameResolver  = teamNameResolver          as jest.MockedFunction<typeof teamNameResolver>;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -44,8 +51,12 @@ const fakeSchedule = {
   leagueId: 'lg1',
   season: 2025,
   matchups: [
-    { week: 1, type: 'division',       homeTeam: { name: 'Team A' }, awayTeam: { name: 'Team B' } },
-    { week: 1, type: 'cross-division', homeTeam: { name: 'Team C' }, awayTeam: { name: 'Team D' } },
+    { week: 1, type: 'division',
+      homeTeam: { name: 'Team A', sleeperRosterId: '1' },
+      awayTeam: { name: 'Team B', sleeperRosterId: '2' } },
+    { week: 1, type: 'cross-division',
+      homeTeam: { name: 'Team C', sleeperRosterId: '3' },
+      awayTeam: { name: 'Team D', sleeperRosterId: '4' } },
   ],
 };
 
@@ -56,8 +67,25 @@ describe('GET /api/leagues/[id]/schedule/export', () => {
     mockLeagueFindFirst.mockReset();
     mockScheduleFindFirst.mockReset();
     mockAuditLog.mockReset();
+    mockTeamNameResolver.mockReset();
     mockLeagueFindFirst.mockResolvedValue(fakeLeague as never);
     mockAuditLog.mockResolvedValue(undefined);
+    // Default: Sleeper agrees with the database, so names pass through.
+    mockTeamNameResolver.mockResolvedValue((_id, stored) => stored);
+  });
+
+  // WHY: a CSV leaves the building. Shipping a name that was renamed weeks ago
+  //      is worse here than anywhere else in the app, because the recipient has
+  //      no way to tell it is stale.
+  it('exports live Sleeper names rather than stored ones', async () => {
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSchedule as never);
+    mockTeamNameResolver.mockResolvedValue((rosterId) => `Live ${rosterId}`);
+
+    const res = await GET(makeReq('lg1'), makeParams('lg1'));
+    const csv = await res.text();
+
+    expect(csv).toContain('Live 1,Live 2');
+    expect(csv).not.toContain('Team A');
   });
 
   // WHY: A valid schedule must be exported as CSV with the correct Content-Type
