@@ -95,8 +95,9 @@ export default function CardsPage() {
   const [resultsWeek, setResultsWeek] = useState<number | null>(null);
   const [resultsLoading, setResultsLoading] = useState(false);
 
-  // The lineup is one card wide on a phone — see the Lineup tab below — and a
-  // 52px collapsed sidebar is still real estate that card wants. Only takes
+  // A lineup row is a card chip plus a name, a tier line and a PPG figure on
+  // one line — see the Lineup tab below — and a 52px collapsed sidebar is real
+  // estate that row wants before any of that starts truncating. Only takes
   // effect on a narrow viewport; a member with the sidebar pinned open on a
   // wide screen keeps it.
   useForceSidebarCollapsed(rawTab === 'lineup');
@@ -484,11 +485,15 @@ export default function CardsPage() {
         </div>
       )}
 
-      {/* Rendered alongside the grid rather than nested in `tab === 'deck'`
-          only up above, so switching tabs — which unmounts that block — also
-          closes this: there is nothing here worth keeping open once you have
-          navigated away, unlike a pack mid-reveal. */}
-      {tab === 'deck' && (
+      {/* Rendered alongside the grid rather than nested in the block up above,
+          so switching tabs — which unmounts that block — also closes this:
+          there is nothing here worth keeping open once you have navigated
+          away, unlike a pack mid-reveal.
+
+          Reachable from the lineup too, because the lineup's rows draw their
+          cards as 46px chips: this is where the chip's tap goes, and the
+          reason shrinking them costs nothing. */}
+      {(tab === 'deck' || tab === 'lineup') && (
         <CardsDialog
           open={Boolean(selected)}
           onClose={() => setSelectedId(null)}
@@ -534,6 +539,7 @@ export default function CardsPage() {
               stats={stats}
               onAssign={assignSlot}
               busySlot={busySlot}
+              onInspect={setSelectedId}
             />
           </div>
 
