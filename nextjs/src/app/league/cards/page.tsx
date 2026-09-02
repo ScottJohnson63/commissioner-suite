@@ -27,6 +27,8 @@ import { BonusBanner } from '@/components/cards/BonusBanner';
 import { CardAdminPanel } from '@/components/cards/CardAdminPanel';
 import { PendingWildcards } from '@/components/cards/WildcardReveal';
 import { CardDetail } from '@/components/cards/CardDetail';
+import { CardsDialog } from '@/components/cards/CardsDialog';
+import { useForceSidebarCollapsed } from '@/components/useSidebarForceCollapse';
 import { PANEL_BG } from '@/components/dashboard/shared';
 import { DraftDeckIntro, openDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
 import { ROSTER_SIZE } from '@/lib/cards/roster';
@@ -74,6 +76,16 @@ export default function CardsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  // The pack opener lives behind a dialog opened from the "Packs left" stat —
+  // see the Packs tab below. Kept separate from `pack` state inside PackOpener
+  // itself, which is why closing this never discards a reveal in progress.
+  const [packDialogOpen, setPackDialogOpen] = useState(false);
+
+  // The lineup is one card wide on a phone — see the Lineup tab below — and a
+  // 52px collapsed sidebar is still real estate that card wants. Only takes
+  // effect on a narrow viewport; a member with the sidebar pinned open on a
+  // wide screen keeps it.
+  useForceSidebarCollapsed(rawTab === 'lineup');
 
   // Derived rather than stored, so a member who loses the commissioner role
   // mid-session falls back to Packs instead of staring at a tab that is no
@@ -282,25 +294,38 @@ export default function CardsPage() {
           a torn pack and a half-turned reveal in local state, and looking
           something up in the deck mid-pack should not throw the pack away. */}
       <div style={{ display: tab === 'packs' ? undefined : 'none' }}>
-        {/* ── This week's ration ── */}
-        <div
-          className="grid gap-3 mb-6"
-          style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}
-        >
-          <Stat label="Packs left" value={String(allowance.remaining)} accent
-                hint={
-                  // Before the ration starts, say when it starts. "2 a week"
-                  // beside a week-1 deck reads as two packs waiting, and there
-                  // are none — week 1 is the starter grant and nothing else.
-                  [
-                    allowance.starterRemaining > 0
-                      ? `${allowance.starterRemaining} starter`
-                      : null,
-                    allowance.week < allowance.rationStartsWeek
-                      ? `${allowance.perWeek} a week from week ${allowance.rationStartsWeek}`
-                      : `${allowance.perWeek} a week`,
-                  ].filter(Boolean).join(' · ')
-                } />
+        {/* ── This week's ration ──
+            Three tiles in one row even on the smallest current iPhone: the
+            grid is a fixed three columns rather than auto-fit, so it never
+            wraps, and Stat shrinks its own type at the sm breakpoint instead
+            of the tiles reflowing. */}
+        <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-6">
+          {/* The pack itself stays off-screen until this is tapped — see the
+              dialog below. The card doubles as that button, so opening a pack
+              starts from the same number that says how many you have. */}
+          <button
+            type="button"
+            onClick={() => setPackDialogOpen(true)}
+            disabled={poolEmpty}
+            className="text-left disabled:cursor-default"
+            aria-haspopup="dialog"
+          >
+            <Stat label="Packs left" value={String(allowance.remaining)} accent
+                  hint={
+                    // Before the ration starts, say when it starts. "2 a week"
+                    // beside a week-1 deck reads as two packs waiting, and
+                    // there are none — week 1 is the starter grant and
+                    // nothing else.
+                    [
+                      allowance.starterRemaining > 0
+                        ? `${allowance.starterRemaining} starter`
+                        : null,
+                      allowance.week < allowance.rationStartsWeek
+                        ? `${allowance.perWeek} a week from week ${allowance.rationStartsWeek}`
+                        : `${allowance.perWeek} a week`,
+                    ].filter(Boolean).join(' · ')
+                  } />
+          </button>
           <Stat label="Lineup" value={`${stats.rosterPpg.toFixed(1)} PPG`}
                 hint={`${stats.started} of ${ROSTER_SIZE} started`} />
           <Stat
@@ -337,13 +362,38 @@ export default function CardsPage() {
           <BonusBanner bonus={bonus} remaining={allowance.bonusRemaining} />
         </div>
 
-        {/* ── Opener ── */}
-        <div className="rounded p-6" style={PANEL_BG}>
-          {poolEmpty ? (
+        {/* ── Opener, in place on the page ──
+            Nothing to tear open, so there is nothing worth hiding behind a
+            dialog for it — the pool being empty is a commissioner problem,
+            and no packs left this week is stated plainly right here rather
+            than making a member open a dialog to be told the same thing. */}
+        {poolEmpty ? (
+          <div className="rounded p-6" style={PANEL_BG}>
             <p className="text-xs text-center py-10" style={{ color: '#555' }}>
               No cards have been built yet — a commissioner needs to build the card pool first.
             </p>
-          ) : (
+          </div>
+        ) : allowance.remaining === 0 ? (
+          <p className="text-xs text-center py-6" style={{ color: '#555' }}>
+            No packs left to open. More next week.
+          </p>
+        ) : (
+          <p className="text-xs text-center py-6" style={{ color: '#555' }}>
+            Tap <span style={{ color: '#80ff49' }}>Packs left</span> above to open one.
+          </p>
+        )}
+
+        {/* ── The pack, in its dialog ──
+            Kept mounted regardless of `open`: the opener holds a torn pack and
+            a half-turned reveal in local state, and dismissing the dialog —
+            by an outside tap, Escape, or the close button — should not throw
+            a pack away any more than switching tabs used to. */}
+        {!poolEmpty && (
+          <CardsDialog
+            open={packDialogOpen}
+            onClose={() => setPackDialogOpen(false)}
+            title="Draft Deck · Packs"
+          >
             <PackOpener
               remaining={allowance.remaining}
               nextPackTier={allowance.nextPackTier}
@@ -352,45 +402,52 @@ export default function CardsPage() {
               onRollWildcard={rollWildcard}
               onFinished={onFinished}
             />
-          )}
-        </div>
+          </CardsDialog>
+        )}
       </div>
 
       {/* ── Deck ───────────────────────────────────────────────────────────
-          One card, large, with everything you can do to it — then the tier
-          tiles, the filters and the grid, which is now the picker for it.
-          The lineup used to sit in the middle of this and has its own tab.
-
-          The detail panel is above the tiles rather than in DeckGrid's
-          afterTiers slot: the tiles are the tier filter and belong to the
-          grid, but the selected card is the subject of the tab and belongs
-          at the top of it. */}
+          The tier tiles, the filters and the grid — picking a card opens it in
+          a dialog with everything you can do to it, the same frame the packs
+          dialog uses. That used to be a panel pinned above the grid, which
+          cost every phone screen the height of a 260px card before the grid
+          even started; a dialog only spends that space while a card is
+          actually open. */}
       {tab === 'deck' && (
-        <>
-          <div className="mb-6">
-            <CardDetail
-              // Remounts on a change of selection, which is what resets the
-              // form. See the note on its useState initialisers.
-              key={selectedId ?? 'none'}
-              card={selected}
-              roster={roster}
-              onSave={saveCard}
-              onAssign={assignSlot}
-              busySlot={busySlot}
-              rewardsRemaining={rewardsRemaining}
-            />
-          </div>
+        <div className="mb-8">
+          <DeckGrid
+            cards={cards}
+            stats={stats}
+            seasons={seasons}
+            selectedId={selectedId}
+            onSelect={(card) => setSelectedId(card.id)}
+          />
+        </div>
+      )}
 
-          <div className="mb-8">
-            <DeckGrid
-              cards={cards}
-              stats={stats}
-              seasons={seasons}
-              selectedId={selectedId}
-              onSelect={(card) => setSelectedId(card.id)}
-            />
-          </div>
-        </>
+      {/* Rendered alongside the grid rather than nested in `tab === 'deck'`
+          only up above, so switching tabs — which unmounts that block — also
+          closes this: there is nothing here worth keeping open once you have
+          navigated away, unlike a pack mid-reveal. */}
+      {tab === 'deck' && (
+        <CardsDialog
+          open={Boolean(selected)}
+          onClose={() => setSelectedId(null)}
+          title="Draft Deck · Card"
+          widthClassName="sm:max-w-2xl"
+        >
+          <CardDetail
+            // Remounts on a change of selection, which is what resets the
+            // form. See the note on its useState initialisers.
+            key={selectedId ?? 'none'}
+            card={selected}
+            roster={roster}
+            onSave={saveCard}
+            onAssign={assignSlot}
+            busySlot={busySlot}
+            rewardsRemaining={rewardsRemaining}
+          />
+        </CardsDialog>
       )}
 
       {/* ── Lineup ─────────────────────────────────────────────────────────
@@ -575,17 +632,27 @@ function Stat({
   label, value, hint, accent,
 }: { label: string; value: string; hint?: string; accent?: boolean }) {
   return (
-    <div className="rounded p-3" style={{ background: '#0e0e0f', border: '1px solid #1e1e20' }}>
+    <div
+      className="rounded p-2 sm:p-3 min-w-0"
+      style={{ background: '#0e0e0f', border: '1px solid #1e1e20' }}
+    >
       <div
-        className="text-[10px] uppercase mb-1.5"
-        style={{ letterSpacing: '0.16em', color: '#444' }}
+        className="text-[8px] sm:text-[10px] uppercase mb-1 sm:mb-1.5 truncate"
+        style={{ letterSpacing: '0.1em', color: '#444' }}
       >
         {label}
       </div>
-      <div className="text-lg font-bold" style={{ color: accent ? '#80ff49' : '#e8e6df' }}>
+      <div
+        className="text-sm sm:text-lg font-bold truncate"
+        style={{ color: accent ? '#80ff49' : '#e8e6df' }}
+      >
         {value}
       </div>
-      {hint && <div className="text-[10px] mt-0.5" style={{ color: '#444' }}>{hint}</div>}
+      {hint && (
+        <div className="text-[8px] sm:text-[10px] mt-0.5 truncate" style={{ color: '#444' }}>
+          {hint}
+        </div>
+      )}
     </div>
   );
 }

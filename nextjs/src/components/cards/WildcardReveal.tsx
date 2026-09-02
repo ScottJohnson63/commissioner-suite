@@ -130,7 +130,12 @@ export function WildcardFace({ width }: { width: number }) {
         aspectRatio: '5 / 7',
         // Mounted back-to-back with the card back in the flip, so it has to
         // disappear when turned away — without this both faces show at once.
+        // The -webkit- form is load-bearing on mobile Safari/Chrome: without
+        // it the standard property is silently ignored and the face renders
+        // mirrored-but-visible through the "back" for a frame before the flip
+        // catches up.
         backfaceVisibility: 'hidden',
+        WebkitBackfaceVisibility: 'hidden',
         borderRadius: width * 0.05,
         background: 'linear-gradient(160deg, #241a33 0%, #14101c 55%, #1d1428 100%)',
         border: `1px solid ${WILD_INK}`,
