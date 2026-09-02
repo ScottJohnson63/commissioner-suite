@@ -10,7 +10,11 @@
 // card so it reads as part of the set rather than as a widget.
 //
 // The gap to the next rank is the point of it. "3rd of 8" is a fact; "3rd, 4.2
-// PPG off 2nd" is a reason to go and fill a slot.
+// points off 2nd" is a reason to go and field a better lineup on Sunday.
+//
+// The headline number is **season points** — what every week's lineup has added
+// up to, and what the season is won on. The lineup being built now sits beside
+// it as this week's contribution rather than as the score.
 
 import { TIER_STYLE } from '@/components/cards/tierStyles';
 import { ROSTER_SIZE } from '@/lib/cards/roster';
@@ -51,7 +55,15 @@ export function RankCard({
   const ahead = me && me.rank > 1 ? standings[me.rank - 2] : null;
   const leader = standings[0] ?? null;
 
-  const gapToNext = ahead && me ? Math.round((ahead.rosterPpg - me.rosterPpg) * 10) / 10 : null;
+  // Measured on the ranking figure, which is season points. Before the first
+  // Tuesday everyone is on zero and the table is sorted by lineup instead, so
+  // the gap follows it there rather than reporting a flat 0.0 all week.
+  const preseason = !standings.some((e) => e.seasonPoints > 0);
+  const figure = (entry: LeaderboardEntryDto) =>
+    preseason ? entry.rosterPpg : entry.seasonPoints;
+
+  const gapToNext =
+    ahead && me ? Math.round((figure(ahead) - figure(me)) * 10) / 10 : null;
 
   return (
     <div
@@ -96,10 +108,21 @@ export function RankCard({
             </div>
           </div>
 
-          <Stat label="Lineup" value={stats.rosterPpg.toFixed(1)} unit="PPG" frame={frame} accent />
-          <Stat label="Deck avg" value={stats.deckAvgPpg.toFixed(1)} unit="PPG" frame={frame} />
+          <Stat
+            label="Season"
+            value={stats.seasonPoints.toFixed(1)}
+            unit={stats.weeksPlayed === 1 ? '· 1 wk' : `· ${stats.weeksPlayed} wks`}
+            frame={frame}
+            accent
+          />
+          <Stat label="This week" value={stats.rosterPpg.toFixed(1)} unit="pts" frame={frame} />
           <Stat label="Started" value={`${stats.started}/${ROSTER_SIZE}`} frame={frame} />
           <Stat label="Cards" value={String(stats.cards)} frame={frame} />
+          {/* Only once something has actually been spent. A "0 retired" on a
+              week-1 card is a rule nobody has met yet. */}
+          {stats.retired > 0 && (
+            <Stat label="Retired" value={String(stats.retired)} frame={frame} />
+          )}
         </div>
 
         {/* ── The gap, which is the part that makes it a scoreboard ── */}
@@ -108,17 +131,17 @@ export function RankCard({
           style={{ borderTop: `1px solid ${frame.edge}33`, color: frame.ink, opacity: 0.8 }}
         >
           {stats.rank === null ? (
-            <>Fill your lineup to join the standings — nobody has scored yet.</>
+            <>Fill your lineup and submit it — nobody has scored yet.</>
           ) : gapToNext !== null && ahead ? (
             <>
-              <strong style={{ color: frame.edge }}>{gapToNext.toFixed(1)} PPG</strong> behind{' '}
-              {ahead.name} in {ordinal(ahead.rank)}.
+              <strong style={{ color: frame.edge }}>{gapToNext.toFixed(1)} points</strong>{' '}
+              behind {ahead.name} in {ordinal(ahead.rank)}.
             </>
           ) : leader && standings.length > 1 ? (
             <>
               Top of the league —{' '}
               <strong style={{ color: frame.edge }}>
-                {(leader.rosterPpg - (standings[1]?.rosterPpg ?? 0)).toFixed(1)} PPG
+                {(figure(leader) - figure(standings[1])).toFixed(1)} points
               </strong>{' '}
               clear of {standings[1]?.name}.
             </>

@@ -902,3 +902,92 @@ model PackOpening {
   @@index([userId, gameSeason])
   @@index([openedAt])
 }
+
+/**
+ * A lineup submitted for one week of the weekly game.
+ *
+ * The season is played a week at a time: a member fills RosterSlot at leisure,
+ * submits it before Monday 11:59pm central, and at Tuesday 10am central every
+ * submission is laid out best to worst. This row is the frozen copy — the
+ * working lineup can be edited right up to the deadline, and what got submitted
+ * has to survive that editing to be worth publishing.
+ *
+ * `points` is frozen too, and deliberately. The card pool is rebuilt whenever
+ * the stat table changes and a rebuild moves pointsPerGame, so a score computed
+ * on read would quietly restate weeks that were already published. What a
+ * lineup scored is what it scored on the Monday night it was locked.
+ *
+ * `lockAt` and `revealAt` are stored rather than recomputed for the same
+ * reason: they are the promise the member submitted against. Changing the
+ * deadline mid-season must not retroactively unlock a week that already closed.
+ *
+ * No foreign key to User, matching the rest of the card game — these rows are
+ * scoped by gameSeason and cleared wholesale by a season reset.
+ */
+model LineupSubmission {
+  id String @id @default(cuid())
+
+  userId     String
+  gameSeason Int
+  week       Int
+
+  submittedAt DateTime @default(now())
+  /** Monday 23:59:59.999 central, as computed when the lineup was submitted. */
+  lockAt      DateTime
+  /** Tuesday 10:00 central. Points count towards the season from this instant. */
+  revealAt    DateTime
+
+  /** Combined points per game of the cards below, summed at submission time. */
+  points Float @default(0)
+  /** How many of the nine slots were filled. A short lineup is allowed. */
+  filled Int   @default(0)
+
+  cards LineupCard[]
+
+  // One submission per member per week. Re-submitting rewrites this row rather
+  // than adding a second, so the deadline is the only thing that stops editing.
+  @@unique([userId, gameSeason, week])
+  @@index([gameSeason, week])
+  @@index([userId, gameSeason])
+}
+
+/**
+ * One card inside a submitted lineup — and the record that retires it.
+ *
+ * A card that has played is out of the deck for the rest of the season, and
+ * **this table is what enforces it**: the unique key on (userId, gameSeason,
+ * cardId) means a second submission naming the same card is rejected by the
+ * database rather than by an application check that a race could slip past.
+ * That is the same shape as CardOwnership's exclusivity key, for the same
+ * reason.
+ *
+ * The owner, season and week are denormalized off the parent submission so the
+ * two hot queries — "which of my cards have played?" and "everything played
+ * this week, best to worst" — are one indexed read rather than a join.
+ *
+ * `points` is the card's pointsPerGame at submission time. See the note on
+ * LineupSubmission.points for why it is frozen.
+ */
+model LineupCard {
+  id String @id @default(cuid())
+
+  submissionId String
+  submission   LineupSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  userId     String
+  gameSeason Int
+  week       Int
+
+  /** Slot id — QB, RB1, FLEX1 … See ROSTER_SLOTS. */
+  slot   String
+  /** CardDefinition.id. Deliberately not a relation — see CardDefinition. */
+  cardId String
+  points Float  @default(0)
+
+  // One card to a slot …
+  @@unique([submissionId, slot])
+  // … and one appearance to a card, all season. This is the retirement rule.
+  @@unique([userId, gameSeason, cardId])
+  @@index([userId, gameSeason])
+  @@index([gameSeason, week])
+}

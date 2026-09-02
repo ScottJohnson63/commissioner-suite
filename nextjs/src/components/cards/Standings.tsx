@@ -4,24 +4,38 @@
 //
 // Who is winning the season.
 //
-// Ranked by what a member's starting lineup scores per game, not by how many
-// cards they own. Exclusive ownership means one member holding the 2025
-// McCaffrey denies everyone else, but a pile of cards you cannot start is not a
-// team — so the table ranks the ten you field, and carries deck average
-// alongside as the answer to the other question.
+// Ranked by **points banked** — the sum of every weekly lineup that has been
+// published. That is the game's win condition stated exactly: each week's
+// lineup adds to a running total, and the highest total at the end of the
+// season takes it.
+//
+// The lineup a member is building right now is carried beside it as the first
+// tiebreak rather than as the ranking figure. It is the best available guess at
+// who is about to bank more, and before the season's first Tuesday it is the
+// only thing there is to sort on — which is what the table used to rank on
+// outright. Deck average breaks ties below that.
 //
 // Members who have not opened anything appear on zero rather than being hidden,
 // so a league of eight always shows eight rows.
+//
+// Slots filled and deck average used to have columns here and no longer do.
+// Four numeric columns on a phone is a row nobody reads; both are still on the
+// page — slots on the lineup panel right above this, deck average on the rank
+// card — and neither is what the season is decided by.
 
 import { TIER_STYLE } from '@/components/cards/tierStyles';
 import { TIER_LABEL, TIER_ORDER } from '@/lib/cards/tiers';
-import { ROSTER_SIZE } from '@/lib/cards/roster';
 import type { LeaderboardEntryDto } from '@/types/cards';
 
 export function Standings({ entries }: { entries: LeaderboardEntryDto[] }) {
   if (!entries.length) return null;
 
-  const leader = entries[0]?.rosterPpg ?? 0;
+  const leader = entries[0]?.seasonPoints ?? 0;
+  // Nobody has banked anything yet, so the bars would all be empty and the
+  // column would be a row of zeroes. Fall back to what the table is actually
+  // sorted by in that case — the lineups being built.
+  const preseason = leader === 0;
+  const scale = preseason ? entries[0]?.rosterPpg ?? 0 : leader;
 
   return (
     <div className="rounded overflow-hidden" style={{ border: '1px solid #1e1e20' }}>
@@ -36,7 +50,7 @@ export function Standings({ entries }: { entries: LeaderboardEntryDto[] }) {
           Standings
         </span>
         <span className="text-[10px] ml-auto" style={{ color: '#444' }}>
-          Ranked by lineup PPG
+          {preseason ? 'No weeks played yet — ranked by lineup' : 'Ranked by season points'}
         </span>
       </div>
 
@@ -88,36 +102,42 @@ export function Standings({ entries }: { entries: LeaderboardEntryDto[] }) {
             <div className="flex-1 h-1 rounded overflow-hidden mx-1" style={{ background: '#1e1e20' }}>
               <div
                 style={{
-                  width: `${leader ? Math.round((entry.rosterPpg / leader) * 100) : 0}%`,
+                  width: `${
+                    scale
+                      ? Math.round(
+                          ((preseason ? entry.rosterPpg : entry.seasonPoints) / scale) * 100,
+                        )
+                      : 0
+                  }%`,
                   height: '100%',
                   background: entry.isYou ? '#80ff49' : '#3a3a44',
                 }}
               />
             </div>
 
-            {/* Lineup PPG — what the row is ranked on. */}
+            {/* Season points — what the row is ranked on. */}
             <span
               className="text-xs font-bold tabular-nums shrink-0 text-right"
               style={{ width: 52, color: '#e8e6df' }}
-              title="Lineup points per game"
+              title={`${entry.seasonPoints} points over ${entry.weeksPlayed} week(s)`}
+            >
+              {entry.seasonPoints.toFixed(1)}
+            </span>
+            {/* Weeks played, so a big total from a longer run is legible. */}
+            <span
+              className="text-[10px] tabular-nums shrink-0 text-right"
+              style={{ width: 24, color: '#444' }}
+              title={`${entry.weeksPlayed} week(s) played`}
+            >
+              {entry.weeksPlayed}w
+            </span>
+            {/* This week's lineup — the first tiebreak, and the live guess. */}
+            <span
+              className="text-[10px] tabular-nums shrink-0 text-right"
+              style={{ width: 40, color: '#444' }}
+              title="Points per game of the lineup they are building now"
             >
               {entry.rosterPpg.toFixed(1)}
-            </span>
-            {/* Slots filled, so a big number from a half-empty lineup is legible. */}
-            <span
-              className="text-[10px] tabular-nums shrink-0 text-right"
-              style={{ width: 34, color: entry.started === ROSTER_SIZE ? '#444' : '#7a6a3a' }}
-              title={`${entry.started} of ${ROSTER_SIZE} slots filled`}
-            >
-              {entry.started}/{ROSTER_SIZE}
-            </span>
-            {/* Deck average — the tiebreak, and the other question. */}
-            <span
-              className="text-[10px] tabular-nums shrink-0 text-right"
-              style={{ width: 34, color: '#444' }}
-              title="Average points per game across the whole deck"
-            >
-              {entry.deckAvgPpg.toFixed(1)}
             </span>
           </div>
         ))}

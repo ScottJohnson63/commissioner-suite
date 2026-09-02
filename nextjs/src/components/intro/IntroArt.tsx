@@ -127,12 +127,13 @@ export function TierArt() {
 
 /** The Draft Deck tab bar, with one tab lit. */
 export function DeckTabsArt({ active, showCommissioner }: {
-  active: 'packs' | 'deck' | 'commissioner';
+  active: 'packs' | 'deck' | 'lineup' | 'commissioner';
   showCommissioner: boolean;
 }) {
   const left = [
-    { id: 'packs' as const, label: 'Packs', x: 24, w: 44 },
-    { id: 'deck'  as const, label: 'Deck',  x: 80, w: 38 },
+    { id: 'packs'  as const, label: 'Packs',  x: 24,  w: 44 },
+    { id: 'deck'   as const, label: 'Deck',   x: 80,  w: 38 },
+    { id: 'lineup' as const, label: 'Lineup', x: 130, w: 48 },
   ];
   return (
     <svg viewBox="0 0 320 110" width="100%" height="110" role="img"

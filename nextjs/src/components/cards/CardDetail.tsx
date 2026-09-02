@@ -276,7 +276,15 @@ export function CardDetail({
           >
             Lineup
           </div>
-          {startedIn ? (
+          {card.retiredWeek !== null ? (
+            // Retired. A card plays one week a season, so there is nothing to
+            // offer here — what it did is more use than a row of dead buttons.
+            <p className="text-[11px]" style={{ color: '#8a8a92' }}>
+              Played week {card.retiredWeek} for{' '}
+              <strong style={{ color: '#e8e6df' }}>{card.retiredPoints.toFixed(1)}</strong>{' '}
+              points. Retired for the season.
+            </p>
+          ) : startedIn ? (
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-[11px]" style={{ color: '#80ff49' }}>
                 Starting at {startedIn.label}

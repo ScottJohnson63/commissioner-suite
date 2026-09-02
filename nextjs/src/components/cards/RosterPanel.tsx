@@ -63,14 +63,18 @@ export function RosterPanel({
   /**
    * Eligible cards for the open slot, best first.
    *
-   * Filtered by the same rule the server enforces. A card already starting
-   * elsewhere is still offered — picking it moves it, which is friendlier than
-   * making someone empty the other slot first.
+   * Filtered by the same rules the server enforces: the right position, and not
+   * already retired. A card plays one week a season, so once it has played it
+   * is out of the picker for good — offering it and refusing the click would be
+   * a worse way to tell somebody that.
+   *
+   * A card already starting elsewhere *is* still offered — picking it moves it,
+   * which is friendlier than making someone empty the other slot first.
    */
   const candidates = useMemo(() => {
     if (!openSlot) return [];
     return cards
-      .filter((c) => openSlot.accepts.includes(c.position))
+      .filter((c) => c.retiredWeek === null && openSlot.accepts.includes(c.position))
       .sort((a, b) => b.pointsPerGame - a.pointsPerGame);
   }, [openSlot, cards]);
 
@@ -164,7 +168,8 @@ export function RosterPanel({
 
                 {candidates.length === 0 ? (
                   <p className="text-[11px] py-4 text-center" style={{ color: '#555' }}>
-                    No {openSlot.accepts.join('/')} cards in your deck yet — open some packs.
+                    No {openSlot.accepts.join('/')} cards left to play — every one you
+                    hold has already had its week. Open some packs.
                   </p>
                 ) : (
                   <div

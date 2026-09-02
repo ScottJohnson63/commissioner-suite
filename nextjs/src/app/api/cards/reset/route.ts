@@ -65,6 +65,14 @@ const OWNED_TABLES: Record<string, SeasonScoped> = {
   // Vanity pictures — a member's own image on a card that already had a face.
   // Season-scoped decoration, cleared with the ownership it decorated.
   images:     prisma.cardImage,
+  // The weekly game. Cards first, then the submissions they hang off: the
+  // relation cascades, but SQLite only honours a foreign key when
+  // `PRAGMA foreign_keys` is on and nothing here guarantees the adapter sets
+  // it. An orphaned LineupCard would go on retiring a card for a season that
+  // no longer exists — which is exactly the shape of the bug that put
+  // RosterSlot on this list.
+  lineupCards: prisma.lineupCard,
+  lineups:     prisma.lineupSubmission,
 };
 
 // ⚠️ CardPortrait is deliberately absent, and must stay absent.
