@@ -22,6 +22,7 @@ function card(over: Partial<OwnedCardDto> = {}): OwnedCardDto {
     team: 'BAL', tier: 'GOLD', seasonRank: 7, fantasyPoints: 300, pointsPerGame: 18.8,
     gamesPlayed: 16, jerseyNumber: 31, headshot: null,
     nickname: null, customImage: null, eligibleForReward: true, isContributed: false,
+    retiredWeek: null, retiredPoints: 0,
     ...over,
   };
 }

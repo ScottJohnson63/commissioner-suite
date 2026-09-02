@@ -45,6 +45,8 @@ const OWNED_TABLES = [
   'RosterSlot', 'StarterGrant', 'PackBonus',
   // Vanity pictures — a member's own image over a card that already had a face.
   'CardImage',
+  // The weekly game, children before parents — see the note in the reset route.
+  'LineupCard', 'LineupSubmission',
 ] as const;
 
 // ⚠️ CardPortrait is deliberately absent, and must stay absent.

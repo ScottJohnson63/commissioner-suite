@@ -12,8 +12,9 @@
 // either duplicating a card or silently dealing a short pack.
 
 import { prisma } from '@/lib/prisma';
-import { Prisma, type CardTier } from '@prisma/client';
+import { type CardTier } from '@prisma/client';
 import { RouteCache } from '@/lib/cache';
+import { CARD_FIELDS, isUniqueViolation } from '@/lib/cards/db';
 import { eligiblePlayerWhere } from '@/lib/cards/eligibility';
 import { isUnillustrated } from '@/lib/cards/customize';
 import {
@@ -31,39 +32,11 @@ import {
   FIRST_RATION_WEEK, GUARANTEED_GOLD_PACKS, STARTER_GUARANTEED_GOLD,
   currentAllowance, ensureGrant, ensureStarterGrant, gameSeason, pendingWildcards,
 } from '@/lib/cards/allowance';
+import { retiredCards, seasonScores } from '@/lib/cards/weekly';
 import type {
   AllowanceDto, CardDto, DeckStatsDto, LeaderboardEntryDto, OwnedCardDto,
   PendingWildcardDto,
 } from '@/types/cards';
-
-/** Columns the client needs. Keeps `builtAt` off the wire. */
-const CARD_FIELDS = {
-  id: true, season: true, playerId: true, playerName: true, position: true,
-  team: true, tier: true, seasonRank: true, fantasyPoints: true,
-  pointsPerGame: true, gamesPlayed: true, jerseyNumber: true, headshot: true,
-} as const;
-
-/** Prisma's error code for a unique-constraint violation. */
-const UNIQUE_VIOLATION = 'P2002';
-
-/**
- * Whether an error is "someone already owns that card".
- *
- * Two shapes, because the libSQL driver adapter does not reliably translate a
- * SQLite constraint failure into Prisma's P2002. Under the adapter this arrives
- * as a PrismaClientUnknownRequestError carrying the raw SQLite text, so
- * matching the code alone lets a genuine race escape as a 500 — which is what
- * happened the first time two members opened packs at the same moment.
- *
- * The message match is deliberately narrow: only the uniqueness failure counts,
- * so a foreign-key or NOT NULL error still propagates as the bug it is.
- */
-function isUniqueViolation(error: unknown): boolean {
-  if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    return error.code === UNIQUE_VIOLATION;
-  }
-  return error instanceof Error && /UNIQUE constraint failed/i.test(error.message);
-}
 
 /** How many times a pack will redraw around cards claimed out from under it. */
 const MAX_CLAIM_ROUNDS = 4;
@@ -384,13 +357,19 @@ async function scoresByUser(season: number): Promise<
 }
 
 /**
- * The season standings, ranked by what a member's lineup scores per game.
+ * The season standings, ranked by points banked over the season.
  *
- * The roster rather than the deck, deliberately: owning a second elite kicker
- * is worth nothing when a better one already holds the slot, so the game is
- * about which ten you field rather than how many you hoard. Deck average is
- * carried alongside as the answer to the other question — how good is
- * everything you pulled — and breaks ties.
+ * **The ranking figure is `seasonPoints`** — the sum of every weekly lineup
+ * whose results have been published. That is the game's stated win condition:
+ * each week's lineup adds to a running total and the highest total at the end
+ * of the season wins, so the table has to rank on the same number the season
+ * is decided by.
+ *
+ * The lineup a member is *currently* building ranks nothing on its own; it is
+ * carried as the first tiebreak because it is the best available guess at who
+ * is about to bank more, and deck average breaks ties below that. Before the
+ * first Tuesday of the season every total is zero and the table is ordered by
+ * exactly those two, which is what it always used to rank on.
  *
  * Members who have not opened anything are included on zero rather than hidden,
  * so a league of eight always shows eight rows and nobody wonders whether they
@@ -401,15 +380,16 @@ async function scoresByUser(season: number): Promise<
  * every User row put a house account nobody plays as at the top of the table.
  */
 export async function readLeaderboard(
-  season: number, viewerId?: string,
+  season: number, viewerId?: string, now: Date = new Date(),
 ): Promise<LeaderboardEntryDto[]> {
-  const [users, counts, scores] = await Promise.all([
+  const [users, counts, scores, banked] = await Promise.all([
     prisma.user.findMany({
       where: eligiblePlayerWhere(),
       select: { id: true, name: true, username: true },
     }),
     tierCounts(season),
     scoresByUser(season),
+    seasonScores(season, now),
   ]);
 
   const empty = { HALL_OF_FAME: 0, GOLD: 0, SILVER: 0, BRONZE: 0 } as Record<CardTier, number>;
@@ -418,6 +398,7 @@ export async function readLeaderboard(
     .map((user) => {
       const byTier = counts.get(user.id) ?? empty;
       const score = scores.get(user.id) ?? { rosterPpg: 0, deckAvgPpg: 0, started: 0 };
+      const bankedScore = banked.get(user.id) ?? { points: 0, weeks: 0 };
       return {
         userId: user.id,
         name:   user.name?.trim() || user.username,
@@ -426,11 +407,14 @@ export async function readLeaderboard(
         rosterPpg:  score.rosterPpg,
         deckAvgPpg: score.deckAvgPpg,
         started:    score.started,
+        seasonPoints: bankedScore.points,
+        weeksPlayed:  bankedScore.weeks,
         isYou:      user.id === viewerId,
       };
     })
     .sort(
       (a, b) =>
+        b.seasonPoints - a.seasonPoints ||
         b.rosterPpg - a.rosterPpg ||
         b.deckAvgPpg - a.deckAvgPpg ||
         b.byTier.HALL_OF_FAME - a.byTier.HALL_OF_FAME ||
@@ -447,7 +431,7 @@ export async function readLeaderboard(
  * rendered as a blank — see the no-foreign-key note in the schema.
  */
 export async function readDeck(
-  userId: string, season: number,
+  userId: string, season: number, now: Date = new Date(),
 ): Promise<{
   cards: OwnedCardDto[];
   stats: DeckStatsDto;
@@ -463,13 +447,18 @@ export async function readDeck(
    */
   standings: LeaderboardEntryDto[];
 }> {
-  const [owned, standings, roster] = await Promise.all([
+  const [owned, standings, roster, retired] = await Promise.all([
     prisma.cardOwnership.findMany({
       where:  { userId, gameSeason: season },
       select: { cardId: true, nickname: true },
     }),
-    readLeaderboard(season, userId),
-    readRoster(userId, season),
+    readLeaderboard(season, userId, now),
+    readRoster(userId, season, now),
+    // Which of these cards have already played. A retired card stays in the
+    // deck — it is a record of the week it won you — but it can never start
+    // again, so the flag travels with the card rather than being a separate
+    // list the client would have to intersect.
+    retiredCards(userId, season, now),
   ]);
 
   const definitions = await prisma.cardDefinition.findMany({
@@ -516,6 +505,8 @@ export async function readDeck(
     // not one somebody already contributed.
     eligibleForReward: isUnillustrated(card.headshot) && !portraitAt.has(card.id),
     isContributed: portraitAt.has(card.id) && !overrideAt.has(card.id),
+    retiredWeek:   retired.get(card.id)?.week ?? null,
+    retiredPoints: retired.get(card.id)?.points ?? 0,
   }));
 
   cards.sort(
@@ -546,9 +537,15 @@ export async function readDeck(
       rosterPpg:  rosterPointsPerGame(started),
       deckAvgPpg: deckAveragePointsPerGame(cards),
       started:    started.length,
-      // Null until somebody has actually fielded something — a table of zeroes
-      // has no meaningful first place.
-      rank:    mine && standings.some((e) => e.rosterPpg > 0) ? mine.rank : null,
+      seasonPoints: mine?.seasonPoints ?? 0,
+      weeksPlayed:  mine?.weeksPlayed ?? 0,
+      retired:      retired.size,
+      // Null until somebody has actually banked or fielded something — a table
+      // of zeroes has no meaningful first place.
+      rank:
+        mine && standings.some((e) => e.seasonPoints > 0 || e.rosterPpg > 0)
+          ? mine.rank
+          : null,
       players: standings.length,
     },
   };
@@ -564,12 +561,23 @@ const ROSTER_CARD_FIELDS = CARD_FIELDS;
  *
  * A slot whose card no longer exists — a rebuild removed it — comes back empty
  * rather than broken, matching how the deck read drops orphaned ownership rows.
+ *
+ * A slot holding a card that has already played comes back empty too. Those
+ * rows are deleted lazily by `clearRetiredSlots` on the next collection read,
+ * but the read has to be right before the cleanup runs as well as after it: a
+ * lineup that still shows last week's starters would look full and score
+ * nothing.
  */
-export async function readRoster(userId: string, season: number): Promise<FilledSlot[]> {
-  const slots = await prisma.rosterSlot.findMany({
-    where:  { userId, gameSeason: season },
-    select: { slot: true, cardId: true },
-  });
+export async function readRoster(
+  userId: string, season: number, now: Date = new Date(),
+): Promise<FilledSlot[]> {
+  const [slots, retired] = await Promise.all([
+    prisma.rosterSlot.findMany({
+      where:  { userId, gameSeason: season },
+      select: { slot: true, cardId: true },
+    }),
+    retiredCards(userId, season, now),
+  ]);
   if (!slots.length) return layoutRoster(new Map());
 
   const cards = await prisma.cardDefinition.findMany({
@@ -581,7 +589,7 @@ export async function readRoster(userId: string, season: number): Promise<Filled
   const assignments = new Map<string, RosterScorable>();
   for (const row of slots) {
     const card = byId.get(row.cardId);
-    if (card) assignments.set(row.slot, card);
+    if (card && !retired.has(row.cardId)) assignments.set(row.slot, card);
   }
   return layoutRoster(assignments);
 }
@@ -590,16 +598,23 @@ export async function readRoster(userId: string, season: number): Promise<Filled
 export type RosterFailure =
   | 'UNKNOWN_SLOT'
   | 'NOT_OWNED'
-  | 'WRONG_POSITION';
+  | 'WRONG_POSITION'
+  /** The card has already played a week and is retired for the season. */
+  | 'RETIRED';
 
 /**
  * Puts a card in a slot, or empties the slot when `cardId` is null.
  *
- * Three things are checked, and all three have to be checked here rather than
+ * Four things are checked, and all four have to be checked here rather than
  * trusted from the client: that the slot exists, that the member actually owns
- * the card, and that the card's position is eligible for the slot. The UI
- * filters the picker by the same rule, but a filtered picker is a convenience,
- * not a guard.
+ * the card, that the card's position is eligible for the slot, and that it has
+ * not already played a week. The UI filters the picker by the same rules, but a
+ * filtered picker is a convenience, not a guard.
+ *
+ * The retirement check is a courtesy on top of the index: `LineupCard` is
+ * unique on (user, season, card), so a retired card would be refused at
+ * submission anyway. Refusing it here means the refusal lands on the click that
+ * caused it rather than on Monday night.
  *
  * A card already starting elsewhere is *moved* rather than rejected. The unique
  * key on (user, season, card) would refuse the insert, and "that player is
@@ -607,6 +622,7 @@ export type RosterFailure =
  */
 export async function setRosterSlot(
   userId: string, season: number, slotId: string, cardId: string | null,
+  now: Date = new Date(),
 ): Promise<{ ok: true } | { ok: false; reason: RosterFailure }> {
   if (!ROSTER_SLOT_IDS.includes(slotId)) return { ok: false, reason: 'UNKNOWN_SLOT' };
 
@@ -615,16 +631,18 @@ export async function setRosterSlot(
     return { ok: true };
   }
 
-  const [owned, card] = await Promise.all([
+  const [owned, card, retired] = await Promise.all([
     prisma.cardOwnership.findFirst({
       where:  { userId, gameSeason: season, cardId },
       select: { id: true },
     }),
     prisma.cardDefinition.findUnique({ where: { id: cardId }, select: { position: true } }),
+    retiredCards(userId, season, now),
   ]);
 
   if (!owned || !card) return { ok: false, reason: 'NOT_OWNED' };
   if (!slotAccepts(slotId, card.position)) return { ok: false, reason: 'WRONG_POSITION' };
+  if (retired.has(cardId)) return { ok: false, reason: 'RETIRED' };
 
   // Vacate wherever this card is currently starting, then take the slot.
   // Sequential rather than concurrent: both statements touch the same rows, and

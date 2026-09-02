@@ -56,6 +56,16 @@ export interface OwnedCardDto extends CardDto {
    * than a season-scoped override.
    */
   isContributed: boolean;
+  /**
+   * The week this card played in, or null if it is still available.
+   *
+   * A card plays once a season and is then retired — it stays in the deck as a
+   * record of the week it won you, and can never start again. Non-null is the
+   * retirement flag; the week is what makes the retired shelf readable.
+   */
+  retiredWeek: number | null;
+  /** What it scored in that week, frozen at submission. Zero while available. */
+  retiredPoints: number;
 }
 
 /** This week's pack ration, and the supply it is drawn from. */
@@ -165,6 +175,15 @@ export interface DeckStatsDto {
   /** Where that places them, or null before anyone has fielded anything. */
   rank: number | null;
   players: number;
+  /**
+   * Points banked over the season — the sum of every published week, and what
+   * the standings actually rank on.
+   */
+  seasonPoints: number;
+  /** Weeks whose results have been published for this member. */
+  weeksPlayed: number;
+  /** Cards that have played and can never start again. */
+  retired: number;
 }
 
 /** One row of the season standings. */
@@ -179,6 +198,13 @@ export interface LeaderboardEntryDto {
   deckAvgPpg: number;
   /** Slots they have filled. */
   started: number;
+  /**
+   * Points banked over the season. **This is the ranking figure** — weekly
+   * lineups add up, and the highest total at the end of the season wins.
+   */
+  seasonPoints: number;
+  /** Weeks they have a published score for. */
+  weeksPlayed: number;
   byTier: Record<CardTier, number>;
   /** True for the signed-in member, so the UI can highlight their row. */
   isYou: boolean;
@@ -205,6 +231,8 @@ export interface CollectionResponse {
   standings: LeaderboardEntryDto[];
   /** Sleeper bonus packs earned this week. */
   bonus: BonusStateDto;
+  /** The weekly submission game: this week's deadline and what was submitted. */
+  weekly: WeeklyStateDto;
   seasons: number[];
 }
 
@@ -266,4 +294,100 @@ export interface OpenPackResponse {
    */
   wildcard: PendingWildcardDto | null;
   allowance: AllowanceDto;
+}
+
+// ─── The weekly submission game ──────────────────────────────────────────────
+
+/** Where a week is in its cycle. Mirrors WeekPhase in lib/cards/weeklyGame.ts. */
+export type WeekPhase = 'OPEN' | 'LOCKED' | 'REVEALED';
+
+/** A lineup frozen at submission, as the client sees it. */
+export interface SubmittedLineupDto {
+  week: number;
+  submittedAt: string;
+  /** Combined points per game of the cards below, as of submission. */
+  points: number;
+  /** How many slots were filled. A short lineup is allowed and scores less. */
+  filled: number;
+  /** Slot ids and the cards in them, so the page can flag an edited lineup. */
+  slots: { slot: string; cardId: string; points: number }[];
+}
+
+/**
+ * This week's cycle, from the member's point of view.
+ *
+ * Deadlines come as both an ISO instant and a rendered central-time label. The
+ * instant is what a countdown ticks against in the reader's own clock; the
+ * label is the rule as written, which is central whatever zone they are in.
+ */
+export interface WeeklyStateDto {
+  week: number;
+  phase: WeekPhase;
+  lockAt: string;
+  revealAt: string;
+  /** e.g. "Mon, Sep 8, 11:59 PM CDT". */
+  lockLabel: string;
+  revealLabel: string;
+  /** True once the final week's results are out and the title is settled. */
+  seasonOver: boolean;
+  /** This week's submission, or null if nothing has been sent yet. */
+  submitted: SubmittedLineupDto | null;
+  /** Weeks with published results, oldest first. */
+  revealedWeeks: number[];
+  /** Cards that have played and are out of the deck for good. */
+  retired: number;
+  /** The member's season total from published weeks. */
+  seasonPoints: number;
+  weeksPlayed: number;
+}
+
+/** One card as it appeared in somebody's published lineup. */
+export interface PlayedCardDto extends CardDto {
+  /** What its owner calls it, shown in place of the player's name. */
+  nickname: string | null;
+  /** Its owner's picture, if they gave it one. */
+  customImage: string | null;
+  /** The slot it started in. */
+  slot: string;
+  /** What it scored, frozen at submission. */
+  points: number;
+  ownerId: string;
+  ownerName: string;
+  isYou: boolean;
+}
+
+/** One member's published lineup for a week. */
+export interface WeekEntryDto {
+  userId: string;
+  name: string;
+  isYou: boolean;
+  /** Where the lineup finished this week. 1 is the week's winner. */
+  rank: number;
+  points: number;
+  filled: number;
+  submittedAt: string | null;
+  /** The cards they played, best to worst. */
+  cards: PlayedCardDto[];
+}
+
+/** GET /api/cards/results */
+export interface WeekResultsDto {
+  gameSeason: number;
+  week: number;
+  revealedAt: string;
+  /** Members, best to worst. */
+  entries: WeekEntryDto[];
+  /** Every card anybody played this week, best to worst. */
+  cards: PlayedCardDto[];
+  /** Weeks with published results, oldest first — the week picker's options. */
+  weeks: number[];
+}
+
+/** POST /api/cards/lineup */
+export interface SubmitLineupResponse {
+  week: number;
+  points: number;
+  filled: number;
+  lockAt: string;
+  revealAt: string;
 }

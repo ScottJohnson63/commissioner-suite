@@ -25,6 +25,11 @@ const mockSetRosterSlot = jest.fn<() => Promise<unknown>>();
 const mockClaimBonuses = jest.fn<() => Promise<unknown>>();
 const mockRebuild = jest.fn<() => Promise<unknown>>();
 const mockAvailableSeasons = jest.fn<() => Promise<number[]>>();
+const mockClearRetiredSlots = jest.fn<() => Promise<number>>();
+const mockReadWeeklyState = jest.fn<() => Promise<unknown>>();
+const mockSubmitLineup = jest.fn<() => Promise<unknown>>();
+const mockReadWeekResults = jest.fn<() => Promise<unknown>>();
+const mockDefaultResultsWeek = jest.fn<() => number | null>();
 const mockCounts = {
   ownership: jest.fn<() => Promise<number>>(),
   grant: jest.fn<() => Promise<number>>(),
@@ -34,6 +39,8 @@ const mockCounts = {
   starter: jest.fn<() => Promise<number>>(),
   bonus: jest.fn<() => Promise<number>>(),
   image: jest.fn<() => Promise<number>>(),
+  lineupCard: jest.fn<() => Promise<number>>(),
+  lineup: jest.fn<() => Promise<number>>(),
 };
 /**
  * Deletes forward their arguments.
@@ -51,6 +58,8 @@ const mockDeletes = {
   starter: jest.fn<(a?: DeleteArgs) => Promise<unknown>>(),
   bonus: jest.fn<(a?: DeleteArgs) => Promise<unknown>>(),
   image: jest.fn<(a?: DeleteArgs) => Promise<unknown>>(),
+  lineupCard: jest.fn<(a?: DeleteArgs) => Promise<unknown>>(),
+  lineup: jest.fn<(a?: DeleteArgs) => Promise<unknown>>(),
 };
 
 jest.mock('@/lib/apiAuth', () => ({
@@ -96,7 +105,19 @@ jest.mock('@/lib/prisma', () => ({
     // Vanity pictures. CardPortrait is deliberately not here — it is not
     // season-scoped and the reset must never reach it.
     cardImage:     { count: () => mockCounts.image(),     deleteMany: (a: DeleteArgs) => mockDeletes.image(a) },
+    // The weekly game. Cards and submissions are separate rows on this list for
+    // the same reason they are separate deletes in the route — see the note on
+    // OWNED_TABLES about SQLite's foreign keys.
+    lineupCard:       { count: () => mockCounts.lineupCard(), deleteMany: (a: DeleteArgs) => mockDeletes.lineupCard(a) },
+    lineupSubmission: { count: () => mockCounts.lineup(),     deleteMany: (a: DeleteArgs) => mockDeletes.lineup(a) },
   },
+}));
+jest.mock('@/lib/cards/weekly', () => ({
+  clearRetiredSlots: () => mockClearRetiredSlots(),
+  readWeeklyState: () => mockReadWeeklyState(),
+  submitLineup: () => mockSubmitLineup(),
+  readWeekResults: () => mockReadWeekResults(),
+  defaultResultsWeek: () => mockDefaultResultsWeek(),
 }));
 
 const ALLOWED = { denied: null, userId: 'user-1', role: 'MEMBER' };
@@ -111,6 +132,8 @@ beforeEach(() => {
   mockRequireCommissioner.mockResolvedValue(null);
   mockAvailableSeasons.mockResolvedValue([2023, 2024, 2025]);
   mockClaimBonuses.mockResolvedValue({ awarded: [], kinds: [] });
+  mockClearRetiredSlots.mockResolvedValue(0);
+  mockReadWeeklyState.mockResolvedValue({ week: 3, phase: 'OPEN', submitted: null });
 });
 
 describe('GET /api/cards/collection', () => {
@@ -505,6 +528,8 @@ describe('POST /api/cards/reset', () => {
     mockCounts.starter.mockResolvedValue(1);
     mockCounts.bonus.mockResolvedValue(4);
     mockCounts.image.mockResolvedValue(7);
+    mockCounts.lineupCard.mockResolvedValue(27);
+    mockCounts.lineup.mockResolvedValue(3);
     Object.values(mockDeletes).forEach((d) => d.mockResolvedValue({ count: 1 }));
 
     const { POST } = await import('@/app/api/cards/reset/route');
@@ -515,6 +540,7 @@ describe('POST /api/cards/reset', () => {
     expect(payload).toMatchObject({
       season: 2026, ownerships: 55, grants: 3, openings: 11, wildcards: 2,
       rosters: 9, starters: 1, bonuses: 4, images: 7,
+      lineupCards: 27, lineups: 3,
     });
     // Every table, not a subset, and each scoped to the one season. The bug
     // this covers was a hand-written list that had drifted from the set of

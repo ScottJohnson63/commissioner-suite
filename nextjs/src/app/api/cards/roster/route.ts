@@ -55,6 +55,10 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
           return err('You do not own that card', 403);
         case 'WRONG_POSITION':
           return err('That player cannot start in that slot', 400);
+        case 'RETIRED':
+          // 409 rather than 403: the card is theirs, it has just been spent. A
+          // card plays one week a season and is retired after it.
+          return err('That card has already played — it is retired for the season', 409);
       }
     }
 

@@ -8,6 +8,12 @@
 // reflected in the pack count the same response reports, or a member would win
 // a pack and not see it until they refreshed.
 //
+// And it is where last week's starters are swept out of the lineup. Cards
+// retire the moment their week locks, so on Tuesday morning a member's slots
+// are still pointing at nine cards that can never start again. There is no
+// scheduled job to clear them — the pack grant and the starter grant are both
+// created the first time a member looks, and this follows the same pattern.
+//
 // Signed-in members only. The collection is per-user by definition, so there is
 // no public view to fall back to.
 
@@ -19,6 +25,7 @@ import { HIGH_SCORE_THRESHOLD, claimBonuses } from '@/lib/cards/bonus';
 import { resolveWeek } from '@/lib/sleeper/week';
 import { gameSeason } from '@/lib/cards/allowance';
 import { readAllowance, readDeck } from '@/lib/cards/service';
+import { clearRetiredSlots, readWeeklyState } from '@/lib/cards/weekly';
 import { availableSeasons } from '@/lib/cards/pool';
 import { toRosterDto } from '@/lib/cards/rosterDto';
 import type { CollectionResponse } from '@/types/cards';
@@ -53,15 +60,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // played, so packs appear on Tuesday rather than trailing a week behind.
   const week = await resolveWeek(req.nextUrl.searchParams.get('week'), 'current');
 
+  const now = new Date();
+
   try {
     // Sequential rather than in the Promise.all below: claiming a bonus
     // increments the same grant row readAllowance is about to read, and a
     // member who just won should see the pack on this response, not the next.
     const bonus = await claimBonusesFor(guard.userId, season, week);
 
-    const [allowance, deck, seasons] = await Promise.all([
+    // Also sequential, and for the same reason: this deletes roster rows that
+    // readDeck is about to read, and a lineup still showing last week's
+    // starters would look full and score nothing.
+    await clearRetiredSlots(guard.userId, season, now);
+
+    const [allowance, deck, weekly, seasons] = await Promise.all([
       readAllowance(guard.userId, season, week),
-      readDeck(guard.userId, season),
+      readDeck(guard.userId, season, now),
+      readWeeklyState(guard.userId, season, now),
       availableSeasons(),
     ]);
 
@@ -74,6 +89,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // standings this request has already computed.
       standings: deck.standings,
       bonus,
+      weekly,
       seasons,
     };
     return ok(body);
