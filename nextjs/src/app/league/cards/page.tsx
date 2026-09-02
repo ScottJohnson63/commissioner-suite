@@ -446,6 +446,7 @@ export default function CardsPage() {
             onAssign={assignSlot}
             busySlot={busySlot}
             rewardsRemaining={rewardsRemaining}
+            onSaved={() => setSelectedId(null)}
           />
         </CardsDialog>
       )}

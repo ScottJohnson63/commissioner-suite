@@ -105,4 +105,9 @@ body {
   .ut-pop { animation-duration: 0.01ms !important; }
   .ut-card-flip { transition-duration: 0.01ms !important; }
   .ut-slide-down { animation-duration: 0.01ms !important; }
+  /* The visible face is swapped on a delay timed to the flip's rotation (see
+     FLIP_SWAP_TRANSITION in PackOpener.tsx) — with the rotation cut to
+     0.01ms above, that delay has to go too, or the old face keeps showing
+     on a card that has already snapped to its new angle. */
+  .ut-flip-face { transition-delay: 0s !important; }
 }

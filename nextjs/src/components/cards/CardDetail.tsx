@@ -67,7 +67,7 @@ async function downscale(file: File): Promise<Blob> {
 }
 
 export function CardDetail({
-  card, roster, onSave, onAssign, busySlot, rewardsRemaining,
+  card, roster, onSave, onAssign, busySlot, rewardsRemaining, onSaved,
 }: {
   card: OwnedCardDto | null;
   roster: RosterSlotDto[];
@@ -76,6 +76,13 @@ export function CardDetail({
   busySlot: string | null;
   /** Cards that can still earn a pack, for the hint under the save button. */
   rewardsRemaining: number;
+  /**
+   * Called once the Save button's write has landed. The caller in a dialog —
+   * currently the only one — uses this to close it: a member who tapped Save
+   * is done with the card, and the confirmation is worth a beat but not a
+   * second tap to dismiss.
+   */
+  onSaved?: () => void;
 }) {
   // Initialised from the card rather than reset by an effect: the caller keys
   // this component on the selected id, so picking a different card remounts it
@@ -133,6 +140,9 @@ export function CardDetail({
             ? 'Saved. Upload a picture for this card to earn a pack.'
             : 'Saved.',
       );
+      // Only on a successful write — a failed save leaves the dialog open on
+      // the error, since that is the one moment the member still needs it.
+      onSaved?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save that');
     } finally {
