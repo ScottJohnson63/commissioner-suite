@@ -162,9 +162,9 @@ export default function LeagueDashboardPage() {
               )}
             </>
           ) : (
-            // Links to the app's own login page, which has the OAuth buttons,
-            // the commissioner modal and the demo entry. NextAuth's built-in
-            // signIn() page has none of that.
+            // Links to the app's own login page, which has the OAuth buttons
+            // and the commissioner modal. NextAuth's built-in signIn() page
+            // has neither.
             <Link
               href="/login"
               className="text-xs px-3 py-1.5 rounded font-medium transition-opacity hover:opacity-80"

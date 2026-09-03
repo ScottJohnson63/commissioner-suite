@@ -18,7 +18,7 @@
 //   @/lib/sleeper/playerCache  — getPlayerMapSafe
 //   @/lib/prisma               — nflWeeklyStat (findMany, groupBy)
 //   @/lib/weather              — getWeather
-//   @/lib/odds                 — getNflOdds, getLiveOdds
+//   @/lib/odds                 — getNflOdds
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { NextRequest } from 'next/server';
@@ -74,7 +74,6 @@ jest.mock('@/lib/sleeper/scoringSettings', () => ({
 
 jest.mock('@/lib/odds', () => ({
   getNflOdds:  jest.fn(),
-  getLiveOdds: jest.fn(),
 }));
 
 import { GET, clearBaselineCache } from '@/app/api/sleeper/matchup-report/route';

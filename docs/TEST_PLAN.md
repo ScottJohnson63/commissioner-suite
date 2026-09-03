@@ -517,7 +517,6 @@ This route calls out to weather/odds/AI. Mock all three.
 
 | Test case | Description |
 |---|---|
-| DEMO_MODE with demo matchup | Returns report with demo data |
 | Real matchup — success | 200 with report |
 | Missing required fields | 400 |
 | AI provider fails | 500 or falls back |
@@ -526,7 +525,6 @@ This route calls out to weather/odds/AI. Mock all three.
 
 | Test case | Description |
 |---|---|
-| DEMO_MODE | Returns mock waiver data |
 | Real request — success | 200 with suggestions |
 | Missing fields | 400 |
 
@@ -534,7 +532,6 @@ This route calls out to weather/odds/AI. Mock all three.
 
 | Test case | Description |
 |---|---|
-| DEMO_MODE | Returns mock trade data |
 | Real request — success | 200 with suggestions |
 | Missing fields | 400 |
 
@@ -666,7 +663,7 @@ tests/e2e/
 
 ### 11b. League Dashboard — `tests/e2e/dashboard.spec.ts`
 
-Requires a seeded test DB or demo mode.
+Requires a seeded test DB.
 
 | Flow | Description |
 |---|---|
@@ -694,7 +691,6 @@ Requires a seeded test DB or demo mode.
 | Page loads at `/league/ai` | Chat interface visible |
 | Sending a message | Loading spinner shown, then response streamed |
 | Rate limit message shown | After `HOURLY_LIMIT` requests, friendly error displayed |
-| Demo mode query | If DEMO_MODE enabled, gets a response without real AI key |
 
 ---
 

@@ -42,7 +42,6 @@ import Google from 'next-auth/providers/google';
 import Credentials from 'next-auth/providers/credentials';
 import { prisma } from '@/lib/prisma';
 import { validateSleeperMembership, resolveSleeperUser, authorizeCredentials } from '@/lib/authHelpers';
-import { IS_DEMO_LOGIN, authorizeDemo } from '@/lib/demoAuth';
 
 // Re-export the pure helpers so callers who previously imported from @/auth
 // (e.g. the connect-sleeper API route) continue to work without changes.
@@ -109,18 +108,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       },
       authorize: authorizeCredentials,
     }),
-    // Only exists while DEMO_MODE=true. See src/lib/demoAuth.ts for what that
-    // hands out — it is a real session on a real account, with no password.
-    ...(IS_DEMO_LOGIN
-      ? [
-          Credentials({
-            id: 'demo',
-            name: 'Demo',
-            credentials: {},
-            authorize: authorizeDemo,
-          }),
-        ]
-      : []),
   ],
 
   session: { strategy: 'jwt' },
@@ -135,11 +122,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     // ─────────────────────────────────────────────────────────────────────────
     async jwt({ token, user, account, trigger, session: sessionData }) {
 
-      // Both password login and the DEMO_MODE bypass are Credentials providers:
-      // they resolve a DB user themselves and have no linked Account row, so
-      // neither may take the OAuth path below.
-      const isLocalProvider =
-        account?.provider === 'credentials' || account?.provider === 'demo';
+      // Password login is a Credentials provider: it resolves a DB user itself
+      // and has no linked Account row, so it may not take the OAuth path below.
+      const isLocalProvider = account?.provider === 'credentials';
 
       // ── A. OAuth sign-in ────────────────────────────────────────────────────
       if (account && !isLocalProvider) {
@@ -185,7 +170,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         return token;
       }
 
-      // ── B. Credentials / demo sign-in ───────────────────────────────────────
+      // ── B. Credentials sign-in ──────────────────────────────────────────────
       if (isLocalProvider && user?.id) {
         const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
         if (!dbUser) return token;

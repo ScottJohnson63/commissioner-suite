@@ -16,7 +16,6 @@ export interface WaiverSuggestionsResponse {
   statsSeason?:   number;
   /** True when statsSeason is not the season being played (pre-kickoff, sync lag). */
   statsFallback?: boolean;
-  demo?:         boolean;
 }
 
 export interface TradePlayer {
@@ -44,5 +43,4 @@ export interface TradeSuggestionsResponse {
   statsSeason?:   number;
   /** True when statsSeason is not the season being played (pre-kickoff, sync lag). */
   statsFallback?: boolean;
-  demo?:           boolean;
 }

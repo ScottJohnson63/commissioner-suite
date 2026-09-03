@@ -98,5 +98,4 @@ export interface MatchupReportResponse {
   statsSeason?:   number;
   /** True when statsSeason is not the season being played (pre-kickoff, sync lag). */
   statsFallback?: boolean;
-  demo?:           boolean;
 }

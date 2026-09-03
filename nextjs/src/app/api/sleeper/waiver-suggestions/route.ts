@@ -4,12 +4,6 @@
 // available (un-rostered) players to address those gaps.
 //
 // GET /api/sleeper/waiver-suggestions?leagueId=&userId=&season=&week=
-//
-// DEMO_MODE=true: bypasses Sleeper API, uses mock rosters from
-//   src/mock_data/matchup.json  (team1 = "my roster", team2 = opponent)
-//   src/mock_data/waiver.json   (availablePlayers = waiver pool)
-// Stats are still queried from the DB using real GSIS IDs; mockAvgPts in
-// waiver.json provides a fallback when the DB has no data for a player.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -24,13 +18,9 @@ import type { SleeperRoster, SleeperTrendingRaw } from '@/lib/sleeper/types';
 import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import type { WaiverSuggestion, WaiverSuggestionsResponse } from '@/types/suggestions';
 import { ok, err } from '@/lib/api';
-import MOCK_MATCHUP from '@/mock_data/matchup.json';
-import MOCK_WAIVER  from '@/mock_data/waiver.json';
 
 export type { WaiverSuggestion, WaiverSuggestionsResponse };
 
-const IS_DEMO  = process.env.DEMO_MODE === 'true';
-const DEMO_TTL = ROUTE_CACHE_TTL.DEMO;
 const LIVE_TTL = ROUTE_CACHE_TTL.LIVE;
 
 // ─── In-process cache ─────────────────────────────────────────────────────────
@@ -56,99 +46,43 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (!leagueId) return err('leagueId is required', 400);
   if (!userId)   return err('userId is required',   400);
 
-  const cacheKey = IS_DEMO ? `demo-waiver-${leagueId}` : `${leagueId}-${userId}`;
-  const TTL      = IS_DEMO ? DEMO_TTL : LIVE_TTL;
-  const hit = cache.get(cacheKey, TTL);
+  const cacheKey = `${leagueId}-${userId}`;
+  const hit = cache.get(cacheKey, LIVE_TTL);
   if (hit) return ok(hit);
 
   try {
-    // ── Data-gathering phase (demo vs. live) ───────────────────────────────────
+    // ── Data-gathering phase ───────────────────────────────────────────────────
 
     type PlayerInfo  = { name: string; position: string; team: string | null; gsisId: string | null };
     type RosterEntry = { roster_id: number; owner_id: string | null; players: string[] | null };
 
-    let myPlayerIds:   string[];
-    let rosteredSet:   Set<string>;
-    let availableIds:  string[];
-    let trendingCount: Map<string, number>;
-    let playerMap:     Map<string, PlayerInfo>;
-    let mockAvgMap:    Map<string, number>;   // fallback pts when DB has no data
-    let rosterList:    RosterEntry[];
-    let season:        number;
-    let week:          number;
+    const season = await resolveSeason(searchParams.get('season'));
+    const week   = await resolveWeek(searchParams.get('week'), 'completed');
 
-    if (IS_DEMO) {
-      // ── Demo branch ────────────────────────────────────────────────────────────
-      // waiver.json uses Sleeper numeric IDs (e.g. "3321") as player IDs — the
-      // same format live mode uses. This ensures SLEEPER_THUMB(id) resolves to
-      // a valid CDN URL. A separate gsisId field (when present) is used for DB
-      // headshot / stats lookups via the nflverse-populated NflWeeklyStat table.
-      season        = await resolveSeason(searchParams.get('season'));
-      week          = Math.floor(Math.random() * 17) + 1;
-      trendingCount = new Map();
-      mockAvgMap    = new Map();
+    const [rosters, trendingRaw, livePlayerMap] = await Promise.all([
+      sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
+      sleeperGet<SleeperTrendingRaw[]>('/players/nfl/trending/add?lookback_hours=168&limit=50', SLEEPER_TTL.TRENDING),
+      getPlayerMapSafe(),
+    ]);
 
-      const team1 = MOCK_MATCHUP.team1.players;
-      const team2 = MOCK_MATCHUP.team2.players;
-      const pool  = MOCK_WAIVER.availablePlayers;
+    const rosterList: RosterEntry[]      = rosters;
+    const playerMap: Map<string, PlayerInfo> = livePlayerMap;
+    const trendingCount = new Map(trendingRaw.map((t) => [t.player_id, t.count]));
 
-      myPlayerIds  = team1.map((p) => p.id);
-      const t2Ids  = team2.map((p) => p.id);
-      availableIds = pool.map((p) => p.id);
-      rosteredSet  = new Set([...myPlayerIds, ...t2Ids]);
-
-      // Build local player map.
-      // Roster players (matchup.json) still carry GSIS IDs — those are only used
-      // for pts-average calculation, not headshots, so the mismatch is harmless.
-      playerMap = new Map<string, PlayerInfo>();
-      for (const p of [...team1, ...team2]) {
-        playerMap.set(p.id, { name: p.name, position: p.position, team: p.team, gsisId: p.id });
-      }
-      // Waiver pool uses Sleeper numeric IDs; gsisId (if present) enables DB headshot lookup.
-      for (const p of pool) {
-        const gsisId = (p as { gsisId?: string | null }).gsisId ?? null;
-        playerMap.set(p.id, { name: p.name, position: p.position, team: p.team, gsisId });
-        mockAvgMap.set(p.id, p.mockAvgPts);
-      }
-
-      // Two-team "league" for positional-median comparison
-      rosterList = [
-        { roster_id: 1, owner_id: userId,          players: myPlayerIds },
-        { roster_id: 2, owner_id: 'demo-opponent', players: t2Ids       },
-      ];
-
-    } else {
-      // ── Live branch: real Sleeper data ─────────────────────────────────────────
-      season     = await resolveSeason(searchParams.get('season'));
-      mockAvgMap = new Map();
-
-      week = await resolveWeek(searchParams.get('week'), 'completed');
-
-      const [rosters, trendingRaw, livePlayerMap] = await Promise.all([
-        sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
-        sleeperGet<SleeperTrendingRaw[]>('/players/nfl/trending/add?lookback_hours=168&limit=50', SLEEPER_TTL.TRENDING),
-        getPlayerMapSafe(),
-      ]);
-
-      rosterList    = rosters;
-      playerMap     = livePlayerMap;
-      trendingCount = new Map(trendingRaw.map((t) => [t.player_id, t.count]));
-
-      const myRoster = rosters.find((r) => r.owner_id === userId);
-      if (!myRoster) {
-        return err('Roster not found for this user', 404);
-      }
-
-      rosteredSet = new Set<string>();
-      for (const r of rosters) {
-        for (const pid of r.players ?? []) rosteredSet.add(pid);
-      }
-
-      myPlayerIds  = myRoster.players ?? [];
-      availableIds = trendingRaw
-        .filter((t) => !rosteredSet.has(t.player_id))
-        .map((t) => t.player_id);
+    const myRoster = rosters.find((r) => r.owner_id === userId);
+    if (!myRoster) {
+      return err('Roster not found for this user', 404);
     }
+
+    const rosteredSet = new Set<string>();
+    for (const r of rosters) {
+      for (const pid of r.players ?? []) rosteredSet.add(pid);
+    }
+
+    const myPlayerIds  = myRoster.players ?? [];
+    const availableIds = trendingRaw
+      .filter((t) => !rosteredSet.has(t.player_id))
+      .map((t) => t.player_id);
 
     // ── Fetch stats from DB (last 3 weeks) ─────────────────────────────────────
     //
@@ -178,8 +112,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // IDs. Querying with the wrong ones returns no rows and reads as "nobody
     // scored", so the translation has to happen before either query. See
     // src/lib/sleeper/gsisXref.ts for why the Sleeper gsis_id field alone is not
-    // enough live. Demo needs no special case: every mock player carries its own
-    // gsisId, so this resolves from the map without a query.
+    // enough.
     const xref = await buildGsisXref(allRelevantIds, playerMap, stats.season);
 
     const availableGsisIds = availableIds
@@ -218,7 +151,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         : Promise.resolve([]),
     ]);
 
-    // Per-player avg; demo falls back to mockAvgPts when DB has no rows.
     // Map headshots back from GSIS IDs → Sleeper IDs so the component can use them.
     const playerPoints   = new Map<string, number[]>();
     const playerHeadshot = new Map<string, string>(); // sleeperPlayerId → NFL CDN URL
@@ -239,7 +171,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     function avg(pid: string): number {
       const pts = playerPoints.get(pid);
-      if (!pts || pts.length === 0) return mockAvgMap.get(pid) ?? 0;
+      if (!pts || pts.length === 0) return 0;
       return pts.reduce((a, b) => a + b, 0) / pts.length;
     }
 
@@ -327,8 +259,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return rest as WaiverSuggestion;
     });
 
-    // Fallback for live mode when there's no DB data: sort by trending volume
-    if (!IS_DEMO && top8.every((s) => s.recentAvg === 0)) {
+    // Fallback when there's no DB data: sort by trending volume
+    if (top8.every((s) => s.recentAvg === 0)) {
       top8.sort((a, b) => (b.trendingCount ?? 0) - (a.trendingCount ?? 0));
     }
 
@@ -337,7 +269,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       suggestions: top8,
       statsSeason:   stats.season,
       statsFallback: stats.fallback,
-      ...(IS_DEMO && { demo: true }),
     };
     cache.set(cacheKey, result);
     return ok(result);
