@@ -25,6 +25,7 @@ import { buildGsisXref } from '@/lib/sleeper/gsisXref';
 import { getScoringSettings } from '@/lib/sleeper/scoringSettings';
 import { scoreRow, STAT_LINE_SELECT } from '@/lib/scoring';
 import { buildBaselines, project } from '@/lib/projection';
+import { loadWindowRows, clearWindowRowsCache } from '@/lib/formWindow';
 import {
   fixturesByTeam, unitStrengths, venueForecasts, buildPlayerContext,
 } from '@/lib/matchupContext';
@@ -33,7 +34,6 @@ import { sleeperGet } from '@/lib/sleeper/client';
 import type { SleeperRoster, SleeperUser, SleeperMatchupRaw } from '@/lib/sleeper/types';
 import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import type { PlayerProjection, TeamProjection, WeatherInfo, VegasLine, MatchupReportResponse } from '@/types/projections';
-import type { StatLine } from '@/types/scoring';
 import { getNflOdds } from '@/lib/odds';
 import { ok, err } from '@/lib/api';
 
@@ -46,59 +46,13 @@ const matchupCache = new RouteCache<MatchupReportResponse>();
 const MATCHUP_TTL = ROUTE_CACHE_TTL.LIVE;
 
 /**
- * The window's whole population, as both readings of it need it.
+ * Test seam — the form window outlives a single request by design.
  *
- * `StatLine` is what scoring needs; the three join columns are what the
- * defense-strength reading needs.
+ * The rows themselves moved to src/lib/formWindow.ts once the waiver panel
+ * started reading the same ones; this keeps the name the tests reach for.
  */
-type WindowRow = StatLine & {
-  playerId:     string;
-  team:         string | null;
-  opponentTeam: string | null;
-  week:         number;
-};
-
-/** Positional baselines are the same rows for every request in a window. */
-const baselineCache = new RouteCache<WindowRow[]>();
-const BASELINE_TTL = 5 * 60_000;
-
-/** Test seam — the baseline outlives a single request by design. */
 export function clearBaselineCache(): void {
-  baselineCache.clearAll();
-}
-
-/**
- * Every scored-position row in the form window, for the positional baselines.
- *
- * Deliberately not restricted to the two rosters in the matchup: thirty players
- * is too thin to say what a tight end typically scores, and the whole window is
- * only a couple of thousand rows.
- */
-async function baselineRows(
-  season: number,
-  sinceWk: number,
-  completedWk: number,
-): Promise<WindowRow[]> {
-  const key = `${season}-${sinceWk}-${completedWk}`;
-  const hit = baselineCache.get(key, BASELINE_TTL);
-  if (hit) return hit;
-
-  const rows = await prisma.nflWeeklyStat.findMany({
-    where: {
-      season,
-      seasonType: 'REG',
-      week:       { gte: sinceWk, lte: completedWk },
-      position:   { in: ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'] },
-    },
-    // team, opponentTeam and week are for the defense-strength reading; the
-    // rest is what scoring a row needs.
-    select: {
-      playerId: true, team: true, opponentTeam: true, week: true,
-      ...STAT_LINE_SELECT,
-    },
-  });
-  baselineCache.set(key, rows);
-  return rows;
+  clearWindowRowsCache();
 }
 
 /**
@@ -227,7 +181,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // the two rosters, which would be a sample of about thirty.
     // One population, two readings: what each position typically scores, and
     // what each defense concedes to it.
-    const windowRows = await baselineRows(stats.season, sinceWk, completedWk);
+    const windowRows = await loadWindowRows(stats.season, sinceWk, completedWk);
     const baselines  = buildBaselines(windowRows, scoring);
 
     // ── Context for the reader, not for the arithmetic ───────────────────────

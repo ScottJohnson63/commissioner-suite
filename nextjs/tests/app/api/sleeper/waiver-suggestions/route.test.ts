@@ -15,7 +15,10 @@
 // Mocks:
 //   @/lib/sleeper/client       — sleeperGet  (rosters + NFL state + trending)
 //   @/lib/sleeper/playerCache  — getPlayerMapSafe
-//   @/lib/prisma               — nflWeeklyStat.findMany
+//   @/lib/prisma               — nflWeeklyStat.findMany, nflGame.findMany
+//   @/lib/sleeper/lineup       — getStarterSlots
+//   @/lib/weather              — getVenueWeather
+//   @/lib/odds                 — getNflOdds
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { NextRequest } from 'next/server';
@@ -45,7 +48,32 @@ jest.mock('@/lib/prisma', () => ({
       groupBy:   jest.fn(),
       aggregate: jest.fn(),
     },
+    // Fixtures for the context card each suggestion now carries. Empty by
+    // default: the context is read-only and must never change a number beside
+    // it, so the cases below are unaffected by it.
+    nflGame: {
+      findMany: jest.fn(),
+    },
   },
+}));
+
+// Mocked as a module for the same reason scoringSettings is: it reads the
+// `/league/{id}` payload through sleeperGet, and a third call would shift the
+// queued response sequence the fixtures depend on.
+// A standard Sleeper lineup — one QB, two RB, two WR, one TE, one K.
+jest.mock('@/lib/sleeper/lineup', () => ({
+  getStarterSlots: jest.fn(async () => ({ QB: 1, RB: 2, WR: 2, TE: 1, K: 1 })),
+}));
+
+jest.mock('@/lib/weather', () => ({
+  getWeather:      jest.fn(),
+  // What the context layer calls. Never reached while nflGame is empty, since
+  // there is no venue to forecast for.
+  getVenueWeather: jest.fn(),
+}));
+
+jest.mock('@/lib/odds', () => ({
+  getNflOdds: jest.fn(),
 }));
 
 import { GET } from '@/app/api/sleeper/waiver-suggestions/route';
@@ -54,12 +82,14 @@ import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { prisma } from '@/lib/prisma';
 import { clearStatsSeasonCache } from '@/lib/statsSeason';
 import { clearGsisXrefCache } from '@/lib/sleeper/gsisXref';
+import { clearWindowRowsCache } from '@/lib/formWindow';
 
 const mockSleeperGet   = sleeperGet   as jest.MockedFunction<typeof sleeperGet>;
 const mockGetPlayerMap = getPlayerMapSafe as jest.MockedFunction<typeof getPlayerMapSafe>;
 const mockFindMany     = prisma.nflWeeklyStat.findMany as jest.MockedFunction<typeof prisma.nflWeeklyStat.findMany>;
 const mockAggregate    = prisma.nflWeeklyStat.aggregate as jest.MockedFunction<typeof prisma.nflWeeklyStat.aggregate>;
 const mockGroupBy      = prisma.nflWeeklyStat.groupBy as jest.MockedFunction<typeof prisma.nflWeeklyStat.groupBy>;
+const mockGames        = prisma.nflGame.findMany as jest.MockedFunction<typeof prisma.nflGame.findMany>;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -95,8 +125,8 @@ function freshIds() {
   return { leagueId: `league-wv-${seq}`, userId: 'uid-1' };
 }
 
-function makeReq(leagueId: string, userId: string): NextRequest {
-  const params = new URLSearchParams({ leagueId, userId, season: '2025', week: '5' });
+function makeReq(leagueId: string, userId: string, week = '5'): NextRequest {
+  const params = new URLSearchParams({ leagueId, userId, season: '2025', week });
   return new NextRequest(`http://localhost/api/sleeper/waiver-suggestions?${params}`);
 }
 
@@ -122,6 +152,9 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
     mockFindMany.mockReset();
     mockGroupBy.mockReset();
     mockAggregate.mockReset();
+    mockGames.mockReset();
+    // No fixtures unless a test supplies them — see the prisma mock above.
+    mockGames.mockResolvedValue([] as never);
     // Safe defaults — getPlayerMapSafe is called with .catch() in the route.
     // Without a Promise-returning default, the .catch() call crashes the worker.
     mockGetPlayerMap.mockResolvedValue(new Map() as never);
@@ -131,9 +164,10 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
     mockGroupBy.mockResolvedValue([] as never);
     // The requested season has rows through week 5, so no season fallback.
     mockAggregate.mockResolvedValue({ _max: { week: 5 } } as never);
-    // Both helpers memoise per season across calls; each test starts clean.
+    // All three memoise across calls; each test starts clean.
     clearStatsSeasonCache();
     clearGsisXrefCache();
+    clearWindowRowsCache();
   });
 
   // WHY: leagueId is required to fetch rosters — without it no Sleeper call can
@@ -305,8 +339,237 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
     const statsCall = mockFindMany.mock.calls.find(
       (c) => (c[0] as { where?: { week?: unknown } })?.where?.week !== undefined,
     );
-    expect((statsCall?.[0] as { where: { week: { lte: number; gt: number } } }).where.week)
-      .toEqual({ lte: 3, gt: 0 });
+    expect((statsCall?.[0] as { where: { week: { gte: number; lte: number } } }).where.week)
+      .toEqual({ gte: 1, lte: 3 });
+  });
+
+  // WHY (regression): the window used to end on the *live* week number even when
+  //      the stats came from an earlier season, so "last 3 wks" in week 3 of 2025
+  //      read weeks 1-2 of 2024 — the opening of the wrong year rather than the
+  //      close of it. A fallback season is complete, so its last three weeks are
+  //      its most recent form and the window has to anchor on its final week.
+  it('anchors the window on the END of a fallback season, not the live week', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+    // 2025 asked for; only 2024 has rows, through week 18.
+    mockAggregate.mockImplementation((async (args: { where: { season: number } }) => ({
+      _max: { week: args.where.season === 2024 ? 18 : null },
+    })) as never);
+    clearStatsSeasonCache();
+
+    await GET(makeReq(leagueId, userId)); // ?week=5 — a 2025 week number
+
+    const statsCall = mockFindMany.mock.calls.find(
+      (c) => (c[0] as { where?: { week?: unknown } })?.where?.week !== undefined,
+    );
+    const where = (statsCall?.[0] as { where: { season: number; week: { gte: number; lte: number } } }).where;
+
+    expect(where.season).toBe(2024);
+    // The close of 2024, not weeks 3-5 of it.
+    expect(where.week).toEqual({ gte: 16, lte: 18 });
+  });
+
+  // WHY: the panel names the weeks it averaged. It used to say "last 3 wks" over
+  //      a query that could cover any three, so the label is now built from the
+  //      same numbers the query used.
+  it('reports the exact window the averages cover', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+    mockAggregate.mockResolvedValue({ _max: { week: 4 } } as never);
+    clearStatsSeasonCache();
+
+    const res  = await GET(makeReq(leagueId, userId)); // ?week=5, synced through 4
+    const json = await res.json() as {
+      window: { season: number; startWeek: number; endWeek: number; fallback: boolean };
+    };
+
+    expect(json.window).toEqual({ season: 2025, startWeek: 2, endWeek: 4, fallback: false });
+  });
+
+  // WHY: the window is not always three weeks wide. Early in a season, or
+  //      wherever the sync has only reached week 1, there are fewer to average
+  //      and a fixed "last 3 wks" caption would claim an average over weeks that
+  //      have not been played.
+  it('counts the weeks it actually has rather than claiming three', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+    // 2025 is deep enough not to fall back, but only two weeks have finished.
+    mockAggregate.mockResolvedValue({ _max: { week: 6 } } as never);
+    clearStatsSeasonCache();
+
+    const res  = await GET(makeReq(leagueId, userId, '2')); // week 2 is the last completed
+    const json = await res.json() as {
+      window: { startWeek: number; endWeek: number };
+      suggestions: { reason: string }[];
+    };
+
+    expect(json.window).toMatchObject({ startWeek: 1, endWeek: 2 });
+    expect(json.suggestions[0]?.reason).toContain('last 2 wks');
+    expect(json.suggestions[0]?.reason).not.toContain('last 3 wks');
+  });
+
+  // ── The projection band and the context card ────────────────────────────────
+
+  // WHY: the average alone says nothing about how firm it is. Each suggestion
+  //      carries the same floor/ceiling band the matchup report shows, and the
+  //      game count behind the average, so a one-game average is legible as one.
+  it('carries a projection band and a game count alongside the average', async () => {
+    const { leagueId, userId } = freshIds();
+    mockSleeperGet
+      .mockResolvedValueOnce(rosters as never)
+      .mockResolvedValueOnce(trendingRaw as never);
+    mockGetPlayerMap.mockResolvedValueOnce(playerMapData as never);
+    // Two games, 18 and 12. No population rows, so there is no positional
+    // baseline to shrink toward and the band is the player's own spread:
+    // mean 15, sigma 3, band 15 +/- 1.28 x 3.
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; playerId?: { in: string[] } };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (!args?.where?.playerId) return [];   // the window population
+      return [
+        { playerId: '00-gsis-te-1', position: 'TE', fantasyPoints: 18, receptions: 0 },
+        { playerId: '00-gsis-te-1', position: 'TE', fantasyPoints: 12, receptions: 0 },
+      ];
+    }) as never);
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as {
+      suggestions: { playerId: string; recentAvg: number; games: number;
+                     floor: number; ceiling: number; projected: number }[];
+    };
+
+    const kraft = json.suggestions.find((x) => x.playerId === 'te-available');
+    expect(kraft?.recentAvg).toBe(15);
+    expect(kraft?.games).toBe(2);
+    expect(kraft?.projected).toBe(15);
+    expect(kraft?.floor).toBeCloseTo(11.2, 1);
+    expect(kraft?.ceiling).toBeCloseTo(18.8, 1);
+  });
+
+  // WHY: the info card the matchup report shows is the same card here, built by
+  //      the same module. With no fixture synced it must still be a well-formed
+  //      context the tooltip can render, not a missing field.
+  it('carries a matchup-context card on every suggestion', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as {
+      suggestions: { context: { opponent: string | null; weatherNote: string | null } }[];
+    };
+
+    expect(json.suggestions.length).toBeGreaterThan(0);
+    for (const s of json.suggestions) {
+      expect(s.context).toBeDefined();
+      // No NflGame rows in this fixture, so the card says so rather than
+      // inventing a fixture.
+      expect(s.context.opponent).toBeNull();
+      expect(s.context.weatherNote).toContain('No fixture found');
+    }
+  });
+
+  // ── Positional weakness ─────────────────────────────────────────────────────
+
+  // WHY: the test compared each roster's single best player at a position, which
+  //      is the wrong question wherever the league starts more than one. A team
+  //      with an elite RB1 and nothing behind him read as strong at running back
+  //      while starting a replacement-level RB2 every week.
+  it('measures a position over as many players as the league starts there', async () => {
+    const { leagueId } = freshIds();
+    // Mine: one good RB and one who scores nothing. Theirs: two good RBs.
+    // On best-player-only both rosters read 20 and nothing is weak; over the
+    // two RB slots this league starts, mine averages 10 against a par of 15.
+    const rbRosters = [
+      { roster_id: 1, owner_id: 'uid-1', players: ['rb-1', 'rb-2'] },
+      { roster_id: 2, owner_id: 'uid-2', players: ['rb-3', 'rb-4'] },
+    ];
+    const rbPlayers = new Map([
+      ['rb-1', { name: 'RB One',   position: 'RB', team: 'PHI', gsisId: '00-rb-1' }],
+      ['rb-2', { name: 'RB Two',   position: 'RB', team: 'TEN', gsisId: '00-rb-2' }],
+      ['rb-3', { name: 'RB Three', position: 'RB', team: 'DAL', gsisId: '00-rb-3' }],
+      ['rb-4', { name: 'RB Four',  position: 'RB', team: 'SF',  gsisId: '00-rb-4' }],
+      ['te-available', { name: 'Tucker Kraft', position: 'TE', team: 'GB', gsisId: '00-gsis-te-1' }],
+    ]);
+    mockSleeperGet
+      .mockResolvedValueOnce(rbRosters as never)
+      .mockResolvedValueOnce(trendingRaw as never);
+    mockGetPlayerMap.mockResolvedValueOnce(rbPlayers as never);
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; playerId?: { in: string[] } };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (!args?.where?.playerId) return [];
+      return [
+        { playerId: '00-rb-1', position: 'RB', fantasyPoints: 20, receptions: 0 },
+        // rb-2 has no rows at all — the hole this is meant to see.
+        { playerId: '00-rb-3', position: 'RB', fantasyPoints: 20, receptions: 0 },
+        { playerId: '00-rb-4', position: 'RB', fantasyPoints: 20, receptions: 0 },
+      ];
+    }) as never);
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as { weakPositions: string[] };
+
+    expect(json.weakPositions).toContain('RB');
+  });
+
+  // WHY: a roster carrying nobody at a position used to be left out of that
+  //      position's median entirely — the teams with the hole, which is the
+  //      thing being measured, were the ones excluded from the measurement. An
+  //      unfilled slot is worth zero and now counts as zero.
+  it('counts a roster with no player at a position toward that position\'s median', async () => {
+    const { leagueId } = freshIds();
+    // Three teams carry a TE, one carries none. Mine is the weakest of the
+    // three at 8 against two 10s — below par while the empty roster is ignored,
+    // at or above it once that roster counts for what it is worth.
+    const teRosters = [
+      { roster_id: 1, owner_id: 'uid-1', players: ['te-mine'] },
+      { roster_id: 2, owner_id: 'uid-2', players: ['te-a'] },
+      { roster_id: 3, owner_id: 'uid-3', players: ['te-b'] },
+      { roster_id: 4, owner_id: 'uid-4', players: [] },
+    ];
+    const tePlayers = new Map([
+      ['te-mine', { name: 'TE Mine', position: 'TE', team: 'GB',  gsisId: '00-te-mine' }],
+      ['te-a',    { name: 'TE A',    position: 'TE', team: 'KC',  gsisId: '00-te-a'    }],
+      ['te-b',    { name: 'TE B',    position: 'TE', team: 'BAL', gsisId: '00-te-b'    }],
+      ['te-available', { name: 'Tucker Kraft', position: 'TE', team: 'GB', gsisId: '00-gsis-te-1' }],
+    ]);
+    mockSleeperGet
+      .mockResolvedValueOnce(teRosters as never)
+      .mockResolvedValueOnce(trendingRaw as never);
+    mockGetPlayerMap.mockResolvedValueOnce(tePlayers as never);
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; playerId?: { in: string[] } };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (!args?.where?.playerId) return [];
+      return [
+        { playerId: '00-te-mine', position: 'TE', fantasyPoints: 8,  receptions: 0 },
+        { playerId: '00-te-a',    position: 'TE', fantasyPoints: 10, receptions: 0 },
+        { playerId: '00-te-b',    position: 'TE', fantasyPoints: 10, receptions: 0 },
+      ];
+    }) as never);
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as { weakPositions: string[] };
+
+    // Par across all four rosters is 9 (the median of 0, 8, 10, 10); 8 is within
+    // 15% of it. Dropping the empty roster would put par at 10 and read this as
+    // a weakness that is not one.
+    expect(json.weakPositions).not.toContain('TE');
+  });
+
+  // WHY: the lineup the weakness was measured over is part of the answer. The UI
+  //      says "your top two RBs", which is only true if it knows there are two.
+  it('reports the starter slots the weakness test used', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { starterSlots: Record<string, number> };
+
+    expect(json.starterSlots).toEqual({ QB: 1, RB: 2, WR: 2, TE: 1, K: 1 });
   });
 
   // WHY: Each suggestion must carry the fields the UI needs:
