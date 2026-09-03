@@ -5,7 +5,7 @@
 // called at most once per 24 h — we enforce that limit here.
 
 import { prisma } from '@/lib/prisma';
-import { SLEEPER_BASE, SLEEPER_TTL } from '@/lib/sleeper/client';
+import { SLEEPER_BASE, SLEEPER_TTL, SLEEPER_USER_AGENT } from '@/lib/sleeper/client';
 
 const CACHE_KEY = 'nfl_players';
 const ONE_DAY_MS = SLEEPER_TTL.PLAYERS * 1000;
@@ -96,7 +96,7 @@ async function loadPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
   // ── 3. Sleeper API ───────────────────────────────────────────────────────────
   const res = await fetch(SLEEPER_PLAYERS_URL, {
     next: { revalidate: SLEEPER_TTL.PLAYERS },
-    headers: { 'User-Agent': 'CommissionerSuite/1.0 (fantasy-league-manager)' },
+    headers: { 'User-Agent': SLEEPER_USER_AGENT },
   });
   if (!res.ok) throw new Error(`Sleeper players API ${res.status}`);
   const raw = await res.text();

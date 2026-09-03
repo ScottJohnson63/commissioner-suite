@@ -4,7 +4,7 @@
 // Mocks global.fetch so no real network calls are made.
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import { sleeperGet, clearInFlight, SLEEPER_BASE, SLEEPER_TTL } from '@/lib/sleeper/client';
+import { sleeperGet, clearInFlight, SLEEPER_BASE, SLEEPER_TTL, SLEEPER_USER_AGENT } from '@/lib/sleeper/client';
 
 describe('SLEEPER_BASE', () => {
   // WHY: Any change to the base URL would silently break every Sleeper API call.
@@ -250,5 +250,88 @@ describe('sleeperGet() request coalescing', () => {
     mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     await expect(sleeperGet('/league/123')).resolves.toEqual({ ok: true });
     expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── Sleeper's own rules ──────────────────────────────────────────────────────
+//
+// From https://docs.sleeper.com. These are somebody else's limits, so they are
+// pinned here rather than left to a comment: a future change that quietly breaks
+// one should fail a test, not get us IP-blocked.
+
+describe("Sleeper's documented rules", () => {
+  let mockFetch: jest.MockedFunction<typeof fetch>;
+
+  beforeEach(() => {
+    mockFetch = jest.spyOn(global, 'fetch') as jest.MockedFunction<typeof fetch>;
+    mockFetch.mockImplementation(async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    clearInFlight();
+  });
+
+  afterEach(() => { mockFetch.mockRestore(); });
+
+  // WHY: "No API Token is necessary, as you cannot modify contents via this
+  //      API." Sending credentials to an API that takes none is a way to leak
+  //      them, and it would also split the response cache per caller.
+  it('sends no credentials', async () => {
+    await sleeperGet('/state/nfl', SLEEPER_TTL.NFL_STATE);
+
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    for (const name of Object.keys(headers)) {
+      expect(name.toLowerCase()).not.toBe('authorization');
+      expect(name.toLowerCase()).not.toBe('cookie');
+    }
+  });
+
+  // WHY: the API is read-only. Anything other than a GET is a mistake by
+  //      definition, and `force-cache` semantics differ for other methods.
+  it('only ever issues GETs', async () => {
+    await sleeperGet('/state/nfl', SLEEPER_TTL.NFL_STATE);
+
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(init.method ?? 'GET').toBe('GET');
+  });
+
+  // WHY: not a requirement, but it is what names us in Sleeper's logs if they
+  //      ever need to tell us we are being a nuisance before blocking the IP.
+  it('identifies the app on every call', async () => {
+    await sleeperGet('/league/123');
+
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>)['User-Agent'])
+      .toBe(SLEEPER_USER_AGENT);
+  });
+
+  // WHY: every call must carry a TTL. Caching is opt-in from Next 15 — a fetch
+  //      with no `revalidate` is not cached at all, so an omitted TTL would send
+  //      that path to Sleeper on every single request.
+  it('always passes a revalidate TTL to fetch', async () => {
+    await sleeperGet('/league/123');           // the default
+    await sleeperGet('/state/nfl', SLEEPER_TTL.NFL_STATE);
+
+    for (const call of mockFetch.mock.calls) {
+      const init = call[1] as { next?: { revalidate?: number } };
+      expect(typeof init.next?.revalidate).toBe('number');
+    }
+  });
+
+  // WHY: "You do not need to call this endpoint more than once per day" — a
+  //      ~5MB payload with a rule of its own. The TTL is the outermost of the
+  //      three layers holding to it; the other two are in playerCache.ts.
+  it('caches the player index for a full day', () => {
+    expect(SLEEPER_TTL.PLAYERS).toBe(86_400);
+  });
+
+  // WHY: FRESH is the only value that may be 0. Any other TTL landing on 0 would
+  //      silently opt that path out of the Data Cache — the difference between
+  //      two calls a minute and one per request, with nothing to show for it.
+  it('gives every TTL but FRESH a non-zero lifetime', () => {
+    for (const [name, value] of Object.entries(SLEEPER_TTL)) {
+      expect(typeof value).toBe('number');
+      // FRESH is 0 on purpose; nothing else may be, or it would be uncached.
+      if (name !== 'FRESH') expect(value).toBeGreaterThan(0);
+    }
   });
 });

@@ -77,7 +77,7 @@ jest.mock('@/lib/odds', () => ({
 }));
 
 import { GET } from '@/app/api/sleeper/waiver-suggestions/route';
-import { sleeperGet } from '@/lib/sleeper/client';
+import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
 import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { prisma } from '@/lib/prisma';
 import { clearStatsSeasonCache } from '@/lib/statsSeason';
@@ -789,6 +789,28 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
       expect(typeof s.position).toBe('string');
       expect(typeof s.reason).toBe('string');
     }
+  });
+
+  // WHY: Sleeper documents the trending lookback as a range topping out at 168
+  //      hours. A larger number is not a wider window, it is an undefined
+  //      request — and the call has to carry the trending TTL, not the default
+  //      league one, since Sleeper recomputes these about hourly.
+  it('asks for trending adds within the documented lookback range', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+
+    await GET(makeReq(leagueId, userId));
+
+    const call = mockSleeperGet.mock.calls.find(
+      (c) => typeof c[0] === 'string' && c[0].includes('/trending/'),
+    );
+    expect(call).toBeDefined();
+
+    const url = new URL(`https://api.sleeper.app/v1${call![0]}`);
+    const lookback = Number(url.searchParams.get('lookback_hours'));
+    expect(lookback).toBeGreaterThan(0);
+    expect(lookback).toBeLessThanOrEqual(168);
+    expect(call![1]).toBe(SLEEPER_TTL.TRENDING);
   });
 
   // WHY (Rate-limit invariant): A second request with the same leagueId+userId

@@ -6,9 +6,21 @@
 // redefining `fetch` wrappers per-route. This centralises the base URL and
 // ensures every request uses consistent caching headers.
 //
-// Sleeper rate-limit guidance (from their docs):
-//   • General endpoints — stay under 1000 requests/minute; no per-endpoint cap.
-//   • /players/nfl      — call at most once per 24 hours; the payload is large.
+// ── Sleeper's rules, from https://docs.sleeper.com ───────────────────────────
+//
+// Quoted rather than paraphrased: these are someone else's rules, and a reader
+// should be able to check this file against them without leaving it.
+//
+//   • "Be mindful of the frequency of calls. A general rule is to stay under
+//      1000 API calls per minute, otherwise, you risk being IP-blocked."
+//   • On /players/nfl: "You do not need to call this endpoint more than once
+//      per day" — it is roughly 5MB, and the docs ask that it be used sparingly.
+//   • "No API Token is necessary, as you cannot modify contents via this API."
+//     So nothing here sends credentials, and every call is a GET.
+//
+// The 1000/minute figure is the whole account's budget, not per endpoint — the
+// player index carries its own, stricter rule on top of it. Every path this app
+// calls is one the docs list; see SLEEPER_TTL for what each is allowed to cost.
 //
 // ── What actually reaches Sleeper ────────────────────────────────────────────
 //
@@ -46,6 +58,9 @@
 /** Base URL for the Sleeper fantasy-sports API (v1). */
 export const SLEEPER_BASE = 'https://api.sleeper.app/v1';
 
+/** Identifies this app in Sleeper's logs. Sent on every call. */
+export const SLEEPER_USER_AGENT = 'CommissionerSuite/1.0 (fantasy-league-manager)';
+
 /**
  * Cache lifetimes, in seconds, keyed by how fast the underlying data moves.
  * Every Sleeper call should pick one of these rather than an inline number, so
@@ -70,9 +85,21 @@ export const SLEEPER_TTL = {
    * pages, and still collapses a burst of requests into a single Sleeper call.
    */
   LEAGUE: 30,
-  /** Trending adds/drops. Sleeper recomputes these on the order of an hour. */
+  /**
+   * Trending adds/drops. Sleeper recomputes these on the order of an hour.
+   *
+   * The one call using this asks for `lookback_hours=168`, which is the top of
+   * the documented range — a week of adds, which is the point of it here.
+   */
   TRENDING: 600,
-  /** The full player index. Sleeper asks for at most one call per 24 hours. */
+  /**
+   * The full player index.
+   *
+   * The one endpoint with a rule of its own: at most one call per day, for a
+   * ~5MB payload. Three layers hold to that — an in-process map, a DB row shared
+   * by every instance, and this TTL — so a cold process reads the database
+   * rather than Sleeper. See src/lib/sleeper/playerCache.ts.
+   */
   PLAYERS: 86_400,
   /**
    * A Sleeper user's own profile — username, display name, avatar.
@@ -152,7 +179,14 @@ export async function sleeperGet<T>(
 
 /** The fetch itself. Separated so the coalescing above reads as one decision. */
 async function fetchText(path: string, revalidate: number): Promise<string> {
-  const res = await fetch(`${SLEEPER_BASE}${path}`, { next: { revalidate } });
+  const res = await fetch(`${SLEEPER_BASE}${path}`, {
+    next: { revalidate },
+    // Not required — the API takes no credentials — but it names us in Sleeper's
+    // logs, which is what they would need to tell us we were being a nuisance
+    // before resorting to the IP block the docs mention. The player-index call
+    // has sent one for a while; this is every other call catching up.
+    headers: { 'User-Agent': SLEEPER_USER_AGENT },
+  });
   if (!res.ok) throw new Error(`Sleeper ${res.status}: ${path}`);
   return res.text();
 }
