@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import Image from 'next/image';
-import type { StatWindow, WaiverSuggestionsResponse } from '@/types/suggestions';
+import type { PositionNeed, StatWindow, WaiverSuggestionsResponse } from '@/types/suggestions';
 import { SLEEPER_THUMB, PANEL_BG, PanelActionBtn, PanelSkeleton, NoLeague, StatsSeasonNote } from './shared';
 import { ContextTooltip } from './ContextTooltip';
 
@@ -74,16 +74,87 @@ function spanLabel(w: StatWindow): string {
   return weeks === 1 ? 'last wk' : `last ${weeks} wks`;
 }
 
+/** Positions listed as needs, worst first, whether or not any is past the bar. */
+const NEEDS_SHOWN = 3;
+
+/** Rows per page. Ten fits without scrolling and pages a hundred in ten steps. */
+const PAGE_SIZE = 10;
+
+/**
+ * One position's standing, as a line a manager can argue with.
+ *
+ * The panel used to show a bare orange "QB" chip and nothing else, so a flag
+ * that was wrong looked exactly like a flag that was right. Every number behind
+ * the judgement is on the row now: what this roster's starters average, what the
+ * league's do, where that ranks, and how many games any of it rests on.
+ */
+function NeedRow({ need }: { need: PositionNeed }) {
+  const accent = need.unmeasured ? '#6b6b6b' : need.weak ? '#ff6d49' : '#888';
+  return (
+    <div className="flex items-baseline justify-between gap-2 text-[10px] tabular-nums">
+      <span className="flex items-baseline gap-1.5 min-w-0">
+        <span className="px-1.5 py-0.5 rounded font-medium shrink-0"
+          style={{
+            background: need.weak ? 'rgba(255,109,73,0.12)' : '#1a1a1c',
+            color: accent,
+          }}>
+          {need.position}
+        </span>
+        <span style={{ color: '#555' }}>
+          {need.rank} of {need.of}
+        </span>
+      </span>
+      {need.unmeasured ? (
+        // Not a claim about the roster. Saying "0.0 pts" here without saying why
+        // is what sends someone to drop a starter over a sync gap.
+        <span style={{ color: '#6b6b6b' }}
+          title={`No games in the window for the ${need.slots > 1 ? `${need.slots} ${need.position}s` : need.position} this roster would start — nothing was measured, so this is not counted as a weakness.`}>
+          no games in window
+        </span>
+      ) : (
+        <span style={{ color: '#555' }}
+          title={`Your top ${need.slots} ${need.position}${need.slots > 1 ? 's' : ''} averaged ${need.mine} pts/game over ${need.games} game${need.games === 1 ? '' : 's'}; the league median is ${need.median}.`}>
+          <span style={{ color: accent }}>{need.mine.toFixed(1)}</span>
+          <span style={{ color: '#333' }}> vs </span>
+          {need.median.toFixed(1)} med
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function WaiverSuggestionsPanel({
   leagueId, userId,
 }: { leagueId: string | null; userId: string | null }) {
   const [data, setData]       = useState<WaiverSuggestionsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState<string | null>(null);
+  const [posFilter, setPosFilter] = useState<string | null>(null);
+  const [page, setPage]           = useState(0);
+
+  // The list the rows are drawn from: every suggestion, or one position's.
+  const shown = useMemo(
+    () => (data?.suggestions ?? []).filter((s) => !posFilter || s.position === posFilter),
+    [data, posFilter],
+  );
+  const pageCount = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  // Clamped rather than reset: a filter that shortens the list should not throw
+  // away the reader's place when the page they were on still exists.
+  const safePage  = Math.min(page, pageCount - 1);
+  const rows      = shown.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+
+  // Positions actually present in the pool, in the order the server mixed them —
+  // which is worst-need first, so the first chip is the biggest hole.
+  const positions = useMemo(() => {
+    const seen: string[] = [];
+    for (const s of data?.suggestions ?? []) if (!seen.includes(s.position)) seen.push(s.position);
+    return seen;
+  }, [data]);
 
   async function run() {
     if (!leagueId || !userId) return;
     setLoading(true); setError(null);
+    setPosFilter(null); setPage(0);
     try {
       const res = await fetch(
         // No season param: the server resolves it from NFL_SEASON (see resolveSeason).
@@ -115,19 +186,21 @@ export function WaiverSuggestionsPanel({
       {data && !loading && (
         <>
           <StatsSeasonNote season={data.statsSeason} fallback={data.statsFallback} />
-          {data.weakPositions.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap">
+          {/* ── Where this roster is thinnest ─────────────────────────────
+              A ladder, not a flag. Every roster has a weakest position whether
+              or not it is bad enough to act on, and showing only the ones past a
+              threshold meant most weeks showed nothing and some weeks showed one
+              chip with no way to tell whether to believe it. */}
+          {(data.positionNeeds?.length ?? 0) > 0 && (
+            <div className="flex flex-col gap-1">
               <span className="text-[10px] uppercase tracking-wider" style={{ color: '#555' }}>
-                Weak spots:
+                Thinnest spots
+                {data.weakPositions.length === 0 && (
+                  <span style={{ color: '#333' }}> · none past the weakness bar</span>
+                )}
               </span>
-              {data.weakPositions.map((pos) => (
-                <span key={pos} className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-                  style={{ background: 'rgba(255,109,73,0.12)', color: '#ff6d49' }}
-                  // What "weak" measured, in the terms the league actually plays
-                  // in: the slots it starts, over the weeks named below.
-                  title={`Your top ${data.starterSlots?.[pos] ?? 1} ${pos}${(data.starterSlots?.[pos] ?? 1) > 1 ? 's' : ''} averaged more than 15% below the league median over ${windowLabel(data.window)}`}>
-                  {pos}
-                </span>
+              {data.positionNeeds.slice(0, NEEDS_SHOWN).map((need) => (
+                <NeedRow key={need.position} need={need} />
               ))}
             </div>
           )}
@@ -139,9 +212,24 @@ export function WaiverSuggestionsPanel({
           {data.suggestions.length > 0 && (
             <div className="flex items-end justify-between gap-2 pb-1"
               style={{ borderBottom: '1px solid #1e1e20' }}>
-              <span className="text-[10px] uppercase tracking-wider" style={{ color: '#555' }}>
-                Player
-              </span>
+              {/* Filter chips, in worst-need order. "All" is the mixed list the
+                  server interleaves; a position chip drills into one. */}
+              <div className="flex items-center gap-1 flex-wrap min-w-0">
+                {[null, ...positions].map((pos) => (
+                  <button
+                    key={pos ?? 'all'}
+                    type="button"
+                    onClick={() => { setPosFilter(pos); setPage(0); }}
+                    className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
+                    style={{
+                      background: posFilter === pos ? 'rgba(128,255,73,0.12)' : '#1a1a1c',
+                      color:      posFilter === pos ? '#80ff49' : '#666',
+                    }}
+                  >
+                    {pos ?? 'All'}
+                  </button>
+                ))}
+              </div>
               <div className="flex flex-col items-end shrink-0">
                 <span className="text-[10px] uppercase tracking-wider" style={{ color: '#80ff49' }}>
                   Avg · {spanLabel(data.window)}
@@ -154,11 +242,11 @@ export function WaiverSuggestionsPanel({
           )}
 
           <div className="flex flex-col">
-            {data.suggestions.length === 0 ? (
+            {rows.length === 0 ? (
               <p className="text-xs text-center py-3" style={{ color: '#444' }}>
                 No suggestions available — check back after more games
               </p>
-            ) : data.suggestions.map((s) => (
+            ) : rows.map((s) => (
               <div key={s.playerId}
                 className="flex items-center gap-3 py-2.5 border-b last:border-b-0"
                 style={{ borderColor: '#1a1a1c' }}>
@@ -194,6 +282,20 @@ export function WaiverSuggestionsPanel({
                         {s.games}g
                       </span>
                     )}
+                    {/* Sleeper's add count, back on the row and in the ranking.
+                        Several thousand managers adding someone this week is
+                        real news about a job the stat window has not caught. */}
+                    {s.trendingCount !== null && s.trendingCount > 0 && (
+                      <span
+                        className="text-[9px] px-1 rounded shrink-0"
+                        style={{ background: 'rgba(128,255,73,0.10)', color: '#5f9e42' }}
+                        title={`${s.trendingCount.toLocaleString()} managers added this player across Sleeper in the last week`}
+                      >
+                        ▲{s.trendingCount >= 1000
+                          ? `${Math.round(s.trendingCount / 100) / 10}k`
+                          : s.trendingCount}
+                      </span>
+                    )}
                   </div>
                   <p className="text-[10px] truncate mt-0.5" style={{ color: '#555' }}>{s.reason}</p>
                 </div>
@@ -218,11 +320,40 @@ export function WaiverSuggestionsPanel({
                 Sleeper's trending feed returned; saying what was actually
                 searched is the difference between a shortlist and a top-of-the-
                 popularity-list. */}
-            <p className="text-[10px]" style={{ color: '#444' }}>
-              {data.scanned > 0 && (
-                <>Top {data.suggestions.length} of {data.scanned.toLocaleString()} free agents</>
+            <div className="flex items-center gap-2 min-w-0">
+              {pageCount > 1 && (
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setPage(Math.max(0, safePage - 1))}
+                    disabled={safePage === 0}
+                    className="text-[10px] px-1.5 py-0.5 rounded disabled:opacity-30 transition-opacity"
+                    style={{ background: '#1a1a1c', color: '#888' }}
+                    aria-label="Previous page"
+                  >
+                    ‹
+                  </button>
+                  <span className="text-[10px] tabular-nums" style={{ color: '#555' }}>
+                    {safePage * PAGE_SIZE + 1}–{safePage * PAGE_SIZE + rows.length} of {shown.length}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPage(Math.min(pageCount - 1, safePage + 1))}
+                    disabled={safePage >= pageCount - 1}
+                    className="text-[10px] px-1.5 py-0.5 rounded disabled:opacity-30 transition-opacity"
+                    style={{ background: '#1a1a1c', color: '#888' }}
+                    aria-label="Next page"
+                  >
+                    ›
+                  </button>
+                </div>
               )}
-            </p>
+              {data.scanned > 0 && (
+                <span className="text-[10px] truncate" style={{ color: '#333' }}>
+                  from {data.scanned.toLocaleString()} free agents
+                </span>
+              )}
+            </div>
             {data.suggestions.some((s) => s.trendingCount !== null) && (
               <p className="text-[10px] text-right" style={{ color: '#333' }}>
                 Add counts via{' '}
