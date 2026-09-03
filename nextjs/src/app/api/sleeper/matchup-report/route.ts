@@ -14,13 +14,6 @@
 //   • Fixtures            (local NflGame, synced from nflverse)
 //
 // GET /api/sleeper/matchup-report?leagueId=&userId=&season=&week=
-//
-// ── DEMO_MODE ─────────────────────────────────────────────────────────────────
-// Set DEMO_MODE=true in .env to bypass the Sleeper matchup endpoint entirely.
-// The route loads two dummy rosters from src/mock_data/matchup.json, picks a
-// random regular-season week from NFL_SEASON, calls the real weather API for
-// outdoor stadiums, and fetches live odds from whatever sport is currently
-// in-season (NBA, MLB, NHL … — not limited to NFL).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -41,32 +34,16 @@ import type { SleeperRoster, SleeperUser, SleeperMatchupRaw } from '@/lib/sleepe
 import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import type { PlayerProjection, TeamProjection, WeatherInfo, VegasLine, MatchupReportResponse } from '@/types/projections';
 import type { StatLine } from '@/types/scoring';
-import { getLiveOdds, getNflOdds } from '@/lib/odds';
+import { getNflOdds } from '@/lib/odds';
 import { ok, err } from '@/lib/api';
-import MOCK_MATCHUP from '@/mock_data/matchup.json';
 
 export type { PlayerProjection, TeamProjection, WeatherInfo, VegasLine, MatchupReportResponse };
-
-/**
- * true when DEMO_MODE=true is set in the environment.
- * In demo mode, mock rosters are used instead of live Sleeper data so the
- * feature can be demonstrated without a real Sleeper league.
- */
-const IS_DEMO = process.env.DEMO_MODE === 'true';
-
-// ─── Mock data types (used only when IS_DEMO) ─────────────────────────────────
-
-interface MockPlayer { id: string; sleeperId?: string; name: string; position: string; team: string }
-/** `starters` mirrors the live Sleeper payload: the IDs in the lineup this week. */
-interface MockRoster { name: string; rosterId: number; starters: string[]; players: MockPlayer[] }
-const mockData = MOCK_MATCHUP as unknown as { team1: MockRoster; team2: MockRoster };
 
 // ─── Caches ───────────────────────────────────────────────────────────────────
 
 const matchupCache = new RouteCache<MatchupReportResponse>();
 
 const MATCHUP_TTL = ROUTE_CACHE_TTL.LIVE;
-const DEMO_TTL    = ROUTE_CACHE_TTL.DEMO;
 
 /**
  * The window's whole population, as both readings of it need it.
@@ -145,98 +122,57 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (!userId)   return err('userId is required',   400);
 
   // ── Check response cache ───────────────────────────────────────────────────
-  // Demo uses a short TTL so repeated clicks cycle through different random weeks.
-  const cacheKey = IS_DEMO
-    ? `demo-${leagueId}`
-    : `${leagueId}-${userId}-${searchParams.get('week') ?? 'cur'}`;
-  const cacheTTL  = IS_DEMO ? DEMO_TTL : MATCHUP_TTL;
-  const cached = matchupCache.get(cacheKey, cacheTTL);
+  const cacheKey = `${leagueId}-${userId}-${searchParams.get('week') ?? 'cur'}`;
+  const cached = matchupCache.get(cacheKey, MATCHUP_TTL);
   if (cached) return ok(cached);
 
   try {
-    // ── Variables set differently between demo and live ──────────────────────
-    let myPlayerIds:  string[];
-    let oppPlayerIds: string[];
-    let myStarterIds:  string[];
-    let oppStarterIds: string[];
-    let myName:       string;
-    let oppName:      string;
-    let myRosterId:   number;
-    let oppRosterId:  number;
-    let effectiveSeason: number;
-    let effectiveWeek:   number;
-    let localPlayerMap:  Map<string, SleeperPlayerInfo>;
-    // GSIS ID → Sleeper numeric ID (populated in demo mode for CDN image resolution)
-    const gsisToSleeperIdMap = new Map<string, string>();
+    // ── Resolve the matchup from Sleeper ─────────────────────────────────────
+    const effectiveSeason = await resolveSeason(searchParams.get('season'));
+    const effectiveWeek   = await resolveWeek(searchParams.get('week'), 'current');
 
-    if (IS_DEMO) {
-      // ── DEMO: load mock rosters, pick random regular-season week ─────────
-      effectiveSeason = await resolveSeason(searchParams.get('season'));
-      effectiveWeek   = Math.floor(Math.random() * 17) + 1; // weeks 1-17
+    const [rosters, users, matchupsRaw, playerMapFull] = await Promise.all([
+      sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
+      sleeperGet<SleeperUser[]>(`/league/${leagueId}/users`),
+      sleeperGet<SleeperMatchupRaw[]>(`/league/${leagueId}/matchups/${effectiveWeek}`),
+      getPlayerMapSafe(),
+    ]);
+    const localPlayerMap: Map<string, SleeperPlayerInfo> = playerMapFull;
 
-      myPlayerIds   = mockData.team1.players.map((p) => p.id);
-      oppPlayerIds  = mockData.team2.players.map((p) => p.id);
-      myStarterIds  = mockData.team1.starters;
-      oppStarterIds = mockData.team2.starters;
-      myName       = mockData.team1.name;
-      oppName      = mockData.team2.name;
-      myRosterId   = mockData.team1.rosterId;
-      oppRosterId  = mockData.team2.rosterId;
+    // "Unknown" rather than the shared "Team N" default: an empty opponent
+    // slot in a report reads better unnamed than numbered.
+    const usersById = buildUserMap(users);
+    const teamNameOf = (ownerId: string | null) =>
+      ownerId ? resolveTeamName(usersById.get(ownerId), ownerId, 'Unknown') : 'Unknown';
 
-      // Build a local player map from the mock roster so we don't hit Sleeper
-      localPlayerMap = new Map<string, SleeperPlayerInfo>();
-      for (const p of [...mockData.team1.players, ...mockData.team2.players]) {
-        localPlayerMap.set(p.id, { name: p.name, position: p.position, team: p.team, gsisId: p.id });
-        if (p.sleeperId) gsisToSleeperIdMap.set(p.id, p.sleeperId);
-      }
-    } else {
-      // ── LIVE: resolve from Sleeper API ────────────────────────────────────
-      effectiveSeason = await resolveSeason(searchParams.get('season'));
-      effectiveWeek = await resolveWeek(searchParams.get('week'), 'current');
+    const myRoster = rosters.find((r) => r.owner_id === userId);
+    if (!myRoster) return err('Roster not found for this user', 404);
 
-      const [rosters, users, matchupsRaw, playerMapFull] = await Promise.all([
-        sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
-        sleeperGet<SleeperUser[]>(`/league/${leagueId}/users`),
-        sleeperGet<SleeperMatchupRaw[]>(`/league/${leagueId}/matchups/${effectiveWeek}`),
-        getPlayerMapSafe(),
-      ]);
-      localPlayerMap = playerMapFull;
-
-      // "Unknown" rather than the shared "Team N" default: an empty opponent
-      // slot in a report reads better unnamed than numbered.
-      const usersById = buildUserMap(users);
-      const teamNameOf = (ownerId: string | null) =>
-        ownerId ? resolveTeamName(usersById.get(ownerId), ownerId, 'Unknown') : 'Unknown';
-
-      const myRoster = rosters.find((r) => r.owner_id === userId);
-      if (!myRoster) return err('Roster not found for this user', 404);
-
-      const myMatchup = matchupsRaw.find((m) => m.roster_id === myRoster.roster_id);
-      if (!myMatchup?.matchup_id) {
-        return err('No matchup found for this week', 404);
-      }
-
-      const oppMatchup = matchupsRaw.find(
-        (m) => m.matchup_id === myMatchup.matchup_id && m.roster_id !== myRoster.roster_id,
-      );
-      if (!oppMatchup) return err('Opponent not found', 404);
-
-      const oppRoster = rosters.find((r) => r.roster_id === oppMatchup.roster_id);
-
-      myPlayerIds  = myRoster.players ?? [];
-      oppPlayerIds = oppRoster?.players ?? [];
-
-      // Sleeper pads unfilled lineup slots with "0", which is not a player ID.
-      // An empty result is a real state — a league that has not set a lineup
-      // yet, which before kickoff is most of them — and `starterIdsOf` leaves it
-      // empty so the caller can decide what to do about it.
-      myStarterIds  = starterIdsOf(myMatchup.starters);
-      oppStarterIds = starterIdsOf(oppMatchup.starters);
-      myName       = teamNameOf(myRoster.owner_id);
-      oppName      = teamNameOf(oppRoster?.owner_id ?? null);
-      myRosterId   = myRoster.roster_id;
-      oppRosterId  = oppRoster?.roster_id ?? 0;
+    const myMatchup = matchupsRaw.find((m) => m.roster_id === myRoster.roster_id);
+    if (!myMatchup?.matchup_id) {
+      return err('No matchup found for this week', 404);
     }
+
+    const oppMatchup = matchupsRaw.find(
+      (m) => m.matchup_id === myMatchup.matchup_id && m.roster_id !== myRoster.roster_id,
+    );
+    if (!oppMatchup) return err('Opponent not found', 404);
+
+    const oppRoster = rosters.find((r) => r.roster_id === oppMatchup.roster_id);
+
+    const myPlayerIds  = myRoster.players ?? [];
+    const oppPlayerIds = oppRoster?.players ?? [];
+
+    // Sleeper pads unfilled lineup slots with "0", which is not a player ID.
+    // An empty result is a real state — a league that has not set a lineup
+    // yet, which before kickoff is most of them — and `starterIdsOf` leaves it
+    // empty so the caller can decide what to do about it.
+    const myStarterIds  = starterIdsOf(myMatchup.starters);
+    const oppStarterIds = starterIdsOf(oppMatchup.starters);
+    const myName        = teamNameOf(myRoster.owner_id);
+    const oppName       = teamNameOf(oppRoster?.owner_id ?? null);
+    const myRosterId    = myRoster.roster_id;
+    const oppRosterId   = oppRoster?.roster_id ?? 0;
 
     // ── Build player stats (shared) ──────────────────────────────────────────
     const allIds = [...new Set([...myPlayerIds, ...oppPlayerIds])];
@@ -253,9 +189,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const completedWk = stats.fallback ? lastWk : Math.min(lastWk, Math.max(1, effectiveWeek - 1));
     const sinceWk     = Math.max(1, completedWk - 5);
 
-    // NflWeeklyStat is keyed on GSIS IDs; live rosters are Sleeper IDs. Demo
-    // needs no special case — every mock player carries its own gsisId, so this
-    // resolves from the map without a query.
+    // NflWeeklyStat is keyed on GSIS IDs; rosters are Sleeper IDs.
     const xref = await buildGsisXref(allIds, localPlayerMap, stats.season);
 
     // This league's rules, not nflverse's. The stored `fantasyPointsPpr` column
@@ -309,9 +243,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const apiKey   = process.env.ODDS_API_KEY;
     let vegasLines: VegasLine[] | null = null;
     if (apiKey) {
-      vegasLines = IS_DEMO
-        ? await getLiveOdds(apiKey).catch(() => null)       // any currently-active sport
-        : await getNflOdds(effectiveWeek).catch(() => null); // NFL only
+      vegasLines = await getNflOdds(effectiveWeek).catch(() => null);
     }
 
     // Betting lines indexed by fixture, so a player's own game can be found.
@@ -378,11 +310,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const projected = parseFloat(mean.toFixed(1));
       const sigma     = parseFloat(sd.toFixed(2));
 
-      // In demo mode pid is a GSIS ID; remap to Sleeper numeric ID for CDN images.
-      // In live mode pid is already the Sleeper ID, so the map is empty and we use pid.
-      const sleeperPlayerId = gsisToSleeperIdMap.get(pid) ?? pid;
       return {
-        playerId: pid, sleeperPlayerId, name, position: pos, team,
+        // pid is already the Sleeper ID, which is what the CDN headshots key on.
+        playerId: pid, sleeperPlayerId: pid, name, position: pos, team,
         floor, ceiling, projected, sigma, games,
         starter: isStarter,
         context: buildPlayerContext(team, pos, fixtures, strengths, forecasts, linesByGame),
@@ -490,11 +420,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     if (wxImpact) {
       narrative += `Weather may be a factor: ${[...roughWeather.values()].map((w) => w.note).join('; ')}.`;
     }
-    if (IS_DEMO) {
-      // Name the season the numbers came from, not the one being played — they
-      // differ whenever the stat table has no rows for the live season yet.
-      narrative += ` [Demo — ${stats.season} stats, W${effectiveWeek} · live ${vegasLines?.[0]?.sport ?? 'no'} odds]`;
-    }
 
     const result: MatchupReportResponse = {
       week:    effectiveWeek,
@@ -506,7 +431,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       myPlayers:       myProjections,
       opponentPlayers: oppProjections,
       narrative: narrative.trim(),
-      ...(IS_DEMO && { demo: true }),
     };
 
     matchupCache.set(cacheKey, result);

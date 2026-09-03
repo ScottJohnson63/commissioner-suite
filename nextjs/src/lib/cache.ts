@@ -30,11 +30,6 @@ export const ROUTE_CACHE_TTL = {
    * enough that re-renders and multiple panels on one page share a single build.
    */
   LIVE: 60_000,
-  /**
-   * Demo mode, which picks a random week per cache key. Kept short so repeated
-   * clicks cycle through different weeks instead of pinning one.
-   */
-  DEMO: 60_000,
 } as const;
 
 /**

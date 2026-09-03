@@ -4,11 +4,6 @@
 // positional surplus and deficit, then surfaces balanced proposals.
 //
 // GET /api/sleeper/trade-suggestions?leagueId=&userId=&season=
-//
-// DEMO_MODE=true: bypasses Sleeper API, uses both rosters from
-//   src/mock_data/matchup.json as a two-team "league". Season totals are
-//   queried from the DB using real GSIS IDs; DEMO_SEASON_PTS provides
-//   realistic fallbacks when the DB has no data for a player.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -24,42 +19,10 @@ import type { SleeperRoster, SleeperUser } from '@/lib/sleeper/types';
 import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import type { TradePlayer, TradeProposal, TradeSuggestionsResponse } from '@/types/suggestions';
 import { ok, err } from '@/lib/api';
-import MOCK_MATCHUP from '@/mock_data/matchup.json';
 
 export type { TradePlayer, TradeProposal, TradeSuggestionsResponse };
 
-const IS_DEMO  = process.env.DEMO_MODE === 'true';
-const DEMO_TTL = ROUTE_CACHE_TTL.DEMO;
 const LIVE_TTL = ROUTE_CACHE_TTL.LIVE;
-
-// ─── Fallback season totals for demo (used when DB returns 0 for a player) ───
-
-const DEMO_SEASON_PTS: Record<string, number> = {
-  // Alpha Squad (team1)
-  '00-0034796': 385.2, // Lamar Jackson
-  '00-0034844': 295.8, // Saquon Barkley
-  '00-0039139': 261.4, // Jahmyr Gibbs
-  '00-0039040': 238.6, // De'Von Achane
-  '00-0036900': 278.3, // Ja'Marr Chase
-  '00-0036963': 252.1, // Amon-Ra St. Brown
-  '00-0039893': 198.7, // Brian Thomas Jr.
-  '00-0039337': 187.4, // Malik Nabers
-  '00-0030506': 221.8, // Travis Kelce
-  '00-0033288': 208.9, // George Kittle
-  '00-0029597': 135.2, // Justin Tucker
-  // Beta Force (team2)
-  '00-0034857': 402.6, // Josh Allen
-  '00-0032764': 278.1, // Derrick Henry
-  '00-0038542': 243.5, // Bijan Robinson
-  '00-0035700': 201.8, // Josh Jacobs
-  '00-0036322': 269.4, // Justin Jefferson
-  '00-0036358': 258.7, // CeeDee Lamb
-  '00-0033906': 187.3, // Alvin Kamara
-  '00-0037248': 164.2, // James Cook
-  '00-0039338': 198.4, // Brock Bowers
-  '00-0034753': 183.6, // Mark Andrews
-  '00-0031136': 128.9, // Chris Boswell
-};
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
 
@@ -109,22 +72,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (!leagueId) return err('leagueId is required', 400);
   if (!userId)   return err('userId is required',   400);
 
-  const cacheKey = IS_DEMO ? `demo-trade-${leagueId}` : `${leagueId}-${userId}`;
-  const TTL      = IS_DEMO ? DEMO_TTL : LIVE_TTL;
-  const hit = cache.get(cacheKey, TTL);
+  const cacheKey = `${leagueId}-${userId}`;
+  const hit = cache.get(cacheKey, LIVE_TTL);
   if (hit) return ok(hit);
 
   try {
-    // ── Data-gathering phase (demo vs. live) ───────────────────────────────────
+    // ── Data-gathering phase ───────────────────────────────────────────────────
 
     type PlayerInfo = { name: string; position: string; team: string | null; gsisId: string | null };
-
-    let rosters:      SleeperRoster[];
-    let teamNameMap:  Map<string, string>;
-    let playerMap:    Map<string, PlayerInfo>;
-    let seasonPtsMap: Map<string, number>;
-    // GSIS ID → Sleeper numeric ID for CDN image resolution (populated in demo mode)
-    const gsisToSleeperIdMap = new Map<string, string>();
 
     const season = await resolveSeason(searchParams.get('season'));
 
@@ -162,84 +117,33 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return totals;
     }
 
-    if (IS_DEMO) {
-      // ── Demo branch ───────────────────────────────────────────────────────────
+    const [liveRosters, users, livePlayerMap] = await Promise.all([
+      sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
+      sleeperGet<SleeperUser[]>(`/league/${leagueId}/users`),
+      getPlayerMapSafe(),
+    ]);
 
-      const team1 = MOCK_MATCHUP.team1;
-      const team2 = MOCK_MATCHUP.team2;
+    const rosters: SleeperRoster[]            = liveRosters;
+    const playerMap: Map<string, PlayerInfo>  = livePlayerMap;
 
-      teamNameMap = new Map([
-        [userId,            team1.name],
-        ['demo-opponent',   team2.name],
-      ]);
+    const teamNameMap = new Map<string, string>();
+    for (const u of users) {
+      teamNameMap.set(u.user_id, resolveTeamName(u, u.user_id));
+    }
 
-      rosters = [
-        {
-          roster_id: team1.rosterId,
-          owner_id:  userId,
-          players:   team1.players.map((p) => p.id),
-          settings:  { wins: 5, losses: 4, fpts: 0, fpts_decimal: 0 },
-        },
-        {
-          roster_id: team2.rosterId,
-          owner_id:  'demo-opponent',
-          players:   team2.players.map((p) => p.id),
-          settings:  { wins: 6, losses: 3, fpts: 0, fpts_decimal: 0 },
-        },
-      ];
-
-      // Build player map + GSIS → Sleeper ID reverse map from mock data
-      playerMap = new Map<string, PlayerInfo>();
-      for (const p of [...team1.players, ...team2.players]) {
-        playerMap.set(p.id, { name: p.name, position: p.position, team: p.team, gsisId: null });
-        const sid = (p as { sleeperId?: string }).sleeperId;
-        if (sid) gsisToSleeperIdMap.set(p.id, sid);
-      }
-
-      // Season totals: query DB with GSIS IDs, fall back to mock values
-      const allIds = [...team1.players, ...team2.players].map((p) => p.id);
-      seasonPtsMap = new Map<string, number>();
-
-      for (const [pid, pts] of await seasonTotals(allIds)) {
-        if (pts > 0) seasonPtsMap.set(pid, pts);
-      }
-      // Fill gaps with curated mock fallbacks
-      for (const [pid, pts] of Object.entries(DEMO_SEASON_PTS)) {
-        if (!seasonPtsMap.has(pid) || (seasonPtsMap.get(pid) ?? 0) === 0) {
-          seasonPtsMap.set(pid, pts);
-        }
-      }
-
-    } else {
-      // ── Live branch ────────────────────────────────────────────────────────────
-      const [liveRosters, users, livePlayerMap] = await Promise.all([
-        sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),
-        sleeperGet<SleeperUser[]>(`/league/${leagueId}/users`),
-        getPlayerMapSafe(),
-      ]);
-
-      rosters   = liveRosters;
-      playerMap = livePlayerMap;
-
-      teamNameMap = new Map<string, string>();
-      for (const u of users) {
-        teamNameMap.set(u.user_id, resolveTeamName(u, u.user_id));
-      }
-
-      // ── Season totals from the DB ──────────────────────────────────────────
-      // Rosters speak Sleeper IDs and NflWeeklyStat is keyed on GSIS IDs, so the
-      // totals have to be looked up through the cross-reference and mapped back.
-      // Querying with the Sleeper IDs directly returns nothing, which reads as
-      // every player having scored zero — and a trade between two rosters of
-      // zeroes scores as perfectly fair.
-      const allPlayerIds = [...new Set(liveRosters.flatMap((r) => r.players ?? []))];
-      seasonPtsMap = new Map<string, number>();
-      if (allPlayerIds.length > 0) {
-        const xref = await buildGsisXref(allPlayerIds, livePlayerMap, statsSeason);
-        for (const [statId, pts] of await seasonTotals(xref.gsisIds)) {
-          const sleeperId = xref.toSleeper.get(statId);
-          if (sleeperId) seasonPtsMap.set(sleeperId, pts);
-        }
+    // ── Season totals from the DB ──────────────────────────────────────────
+    // Rosters speak Sleeper IDs and NflWeeklyStat is keyed on GSIS IDs, so the
+    // totals have to be looked up through the cross-reference and mapped back.
+    // Querying with the Sleeper IDs directly returns nothing, which reads as
+    // every player having scored zero — and a trade between two rosters of
+    // zeroes scores as perfectly fair.
+    const allPlayerIds = [...new Set(liveRosters.flatMap((r) => r.players ?? []))];
+    const seasonPtsMap = new Map<string, number>();
+    if (allPlayerIds.length > 0) {
+      const xref = await buildGsisXref(allPlayerIds, livePlayerMap, statsSeason);
+      for (const [statId, pts] of await seasonTotals(xref.gsisIds)) {
+        const sleeperId = xref.toSleeper.get(statId);
+        if (sleeperId) seasonPtsMap.set(sleeperId, pts);
       }
     }
 
@@ -305,10 +209,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const { pid, pts } = candidates[0];
       const info = playerMap.get(pid);
       if (!info) return null;
-      // In demo mode pid is a GSIS ID; map to Sleeper numeric ID for CDN images.
-      // In live mode pid is already the Sleeper ID so the map is empty and pid is used.
-      const sleeperPlayerId = gsisToSleeperIdMap.get(pid) ?? pid;
-      return { playerId: pid, sleeperPlayerId, name: info.name, position: pos, seasonPts: pts };
+      // pid is already the Sleeper ID, which is what the CDN headshots key on.
+      return { playerId: pid, sleeperPlayerId: pid, name: info.name, position: pos, seasonPts: pts };
     }
 
     for (const otherRoster of rosters) {
@@ -365,7 +267,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       proposals: deduped,
       statsSeason,
       statsFallback,
-      ...(IS_DEMO && { demo: true }),
     };
     cache.set(cacheKey, result);
     return ok(result);

@@ -51,7 +51,6 @@ I want to add some useful functions for the league. First, a waiver wire suggest
 [x] Waiver wire suggestion 
 [x] Trade analyzer
 [x] Weekly matchup report 
-[x] Added demo mode for testing
 [ ] Refine 
 
 -- Part 6: Commissioner Controls -- 

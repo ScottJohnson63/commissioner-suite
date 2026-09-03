@@ -3,12 +3,6 @@
 import { useState } from 'react';
 import { signIn } from 'next-auth/react';
 
-// Server-only DEMO_MODE is not readable in the browser, so the login page keys
-// off the NEXT_PUBLIC mirror that LeagueTab already uses for its demo banner.
-// The button is cosmetic either way: the `demo` provider does not exist unless
-// the server has DEMO_MODE=true.
-const IS_DEMO = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
-
 export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -20,22 +14,6 @@ export default function LoginPage() {
     setLoading(provider);
     setError(null);
     await signIn(provider, { callbackUrl: '/auth/redirect' });
-  }
-
-  async function handleDemo() {
-    setLoading('demo');
-    setError(null);
-
-    const result = await signIn('demo', { redirect: false });
-
-    if (result?.error) {
-      // Almost always means the demo account named by DEMO_LOGIN_USERNAME is
-      // missing from the database.
-      setError('Demo sign-in is unavailable.');
-      setLoading(null);
-    } else {
-      window.location.href = '/auth/redirect';
-    }
   }
 
   async function handleCredentials(e: React.FormEvent) {
@@ -114,21 +92,10 @@ export default function LoginPage() {
             {loading === 'google' ? 'Redirecting…' : 'Continue with Google'}
           </button>
 
-          {/* Only rendered while DEMO_MODE=true — see src/lib/demoAuth.ts. */}
-          {IS_DEMO && (
-            <button
-              onClick={handleDemo}
-              disabled={loading !== null}
-              className="w-full px-4 py-2.5 rounded text-sm font-medium border border-dashed transition-colors disabled:opacity-50"
-              style={{ background: 'transparent', color: 'rgba(250,204,21,0.9)', borderColor: 'rgba(250,204,21,0.4)' }}
-            >
-              {loading === 'demo' ? 'Signing in…' : 'Enter demo — no password'}
-            </button>
-          )}
         </div>
 
         {/* The modal owns its own error banner; this covers failures raised
-            while the modal is closed, which today means demo sign-in. */}
+            while the modal is closed. */}
         {error && !showModal && (
           <div
             className="mb-4 px-3 py-2 rounded text-xs border"
