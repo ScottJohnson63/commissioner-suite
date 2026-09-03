@@ -4,7 +4,7 @@
 // Mocks global.fetch so no real network calls are made.
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import { sleeperGet, SLEEPER_BASE, SLEEPER_TTL } from '@/lib/sleeper/client';
+import { sleeperGet, clearInFlight, SLEEPER_BASE, SLEEPER_TTL, SLEEPER_USER_AGENT } from '@/lib/sleeper/client';
 
 describe('SLEEPER_BASE', () => {
   // WHY: Any change to the base URL would silently break every Sleeper API call.
@@ -20,6 +20,8 @@ describe('sleeperGet()', () => {
   beforeEach(() => {
     // Spy on global.fetch so we can control its return value per test.
     mockFetch = jest.spyOn(global, 'fetch') as jest.MockedFunction<typeof fetch>;
+    // Coalescing is process-wide by design; each test starts with none pending.
+    clearInFlight();
   });
 
   afterEach(() => {
@@ -105,5 +107,231 @@ describe('sleeperGet()', () => {
   //      so the bound is asserted explicitly, with the reason attached.
   it('keeps the league window short enough to read as live', () => {
     expect(SLEEPER_TTL.LEAGUE).toBeLessThanOrEqual(60);
+  });
+});
+
+// ── Coalescing identical in-flight requests ──────────────────────────────────
+//
+// Next's Data Cache deduplicates within one route-handler invocation, but not
+// across concurrent ones: ten parallel requests reading one lapsed URL schedule
+// ten background revalidations of it. Measured against `next start` on 16.3.3 —
+// the origin counter went from 1 to 11. A dashboard is several panels asking
+// about the same league at the same moment, so this is the ordinary case.
+
+describe('sleeperGet() request coalescing', () => {
+  let mockFetch: jest.MockedFunction<typeof fetch>;
+
+  beforeEach(() => {
+    mockFetch = jest.spyOn(global, 'fetch') as jest.MockedFunction<typeof fetch>;
+    clearInFlight();
+  });
+
+  afterEach(() => { mockFetch.mockRestore(); });
+
+  /** A fetch that does not settle until the test says so. */
+  function deferredFetch(body: unknown) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    mockFetch.mockImplementation(async () => {
+      await gate;
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    return { release };
+  }
+
+  // WHY: the whole point. Ten panels asking for one league at one moment must
+  //      reach Sleeper once.
+  it('makes one request when ten callers ask for the same path at once', async () => {
+    const { release } = deferredFetch({ name: 'Test League' });
+
+    const all = Promise.all(
+      Array.from({ length: 10 }, () => sleeperGet<{ name: string }>('/league/123')),
+    );
+    release();
+    const results = await all;
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    for (const r of results) expect(r).toEqual({ name: 'Test League' });
+  });
+
+  // WHY: sharing one parsed object between callers would let a route that sorts
+  //      or splices what it got back corrupt what another route is reading. Each
+  //      caller parses the shared response text into its own value.
+  it('gives each caller its own object, not a shared reference', async () => {
+    const { release } = deferredFetch([{ roster_id: 1 }, { roster_id: 2 }]);
+
+    const both = Promise.all([
+      sleeperGet<{ roster_id: number }[]>('/league/123/rosters'),
+      sleeperGet<{ roster_id: number }[]>('/league/123/rosters'),
+    ]);
+    release();
+    const [a, b] = await both;
+
+    expect(a).toEqual(b);
+    expect(a).not.toBe(b);
+    a.length = 0;              // one caller mutating its copy...
+    expect(b).toHaveLength(2); // ...must not empty the other's
+  });
+
+  // WHY: this is a stampede guard, not a second cache. Holding results past the
+  //      request would silently override the TTL the caller asked for, and the
+  //      Data Cache is what decides how long an answer lives.
+  it('does not serve a settled request to a later caller', async () => {
+    // A fresh Response per call: a body can only be read once, so reusing one
+    // instance would fail on the second read for reasons unrelated to caching.
+    mockFetch.mockImplementation(async () =>
+      new Response(JSON.stringify({ n: 1 }), { status: 200 }));
+
+    await sleeperGet('/state/nfl', SLEEPER_TTL.NFL_STATE);
+    await sleeperGet('/state/nfl', SLEEPER_TTL.NFL_STATE);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  // WHY: two callers wanting different freshness are not asking the same
+  //      question, and the Data Cache stores them as separate entries.
+  it('does not join callers asking with different TTLs', async () => {
+    const { release } = deferredFetch({ ok: true });
+
+    const both = Promise.all([
+      sleeperGet('/league/123', SLEEPER_TTL.LEAGUE),
+      sleeperGet('/league/123', SLEEPER_TTL.TRENDING),
+    ]);
+    release();
+    await both;
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  // WHY: FRESH exists so a sync or a refresh button gets an answer fetched after
+  //      the user asked. Joining it to a request already in flight would hand
+  //      back one fetched before.
+  it('never joins a FRESH request to one already running', async () => {
+    const { release } = deferredFetch({ ok: true });
+
+    const both = Promise.all([
+      sleeperGet('/league/123', SLEEPER_TTL.FRESH),
+      sleeperGet('/league/123', SLEEPER_TTL.FRESH),
+    ]);
+    release();
+    await both;
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  // WHY: a shared failure must reach every caller as a failure — and as one
+  //      failed call rather than ten retries.
+  it('fails every joined caller once, without a second request', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    mockFetch.mockImplementation(async () => {
+      await gate;
+      return new Response('nope', { status: 500 });
+    });
+
+    const all = Promise.allSettled([
+      sleeperGet('/league/123'),
+      sleeperGet('/league/123'),
+      sleeperGet('/league/123'),
+    ]);
+    release();
+    const settled = await all;
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    for (const s of settled) expect(s.status).toBe('rejected');
+  });
+
+  // WHY: a failure must not poison the slot. The next caller has to be able to
+  //      try again.
+  it('lets a later caller retry after a failure', async () => {
+    mockFetch.mockResolvedValueOnce(new Response('nope', { status: 500 }));
+    await expect(sleeperGet('/league/123')).rejects.toThrow();
+
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await expect(sleeperGet('/league/123')).resolves.toEqual({ ok: true });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── Sleeper's own rules ──────────────────────────────────────────────────────
+//
+// From https://docs.sleeper.com. These are somebody else's limits, so they are
+// pinned here rather than left to a comment: a future change that quietly breaks
+// one should fail a test, not get us IP-blocked.
+
+describe("Sleeper's documented rules", () => {
+  let mockFetch: jest.MockedFunction<typeof fetch>;
+
+  beforeEach(() => {
+    mockFetch = jest.spyOn(global, 'fetch') as jest.MockedFunction<typeof fetch>;
+    mockFetch.mockImplementation(async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    clearInFlight();
+  });
+
+  afterEach(() => { mockFetch.mockRestore(); });
+
+  // WHY: "No API Token is necessary, as you cannot modify contents via this
+  //      API." Sending credentials to an API that takes none is a way to leak
+  //      them, and it would also split the response cache per caller.
+  it('sends no credentials', async () => {
+    await sleeperGet('/state/nfl', SLEEPER_TTL.NFL_STATE);
+
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    for (const name of Object.keys(headers)) {
+      expect(name.toLowerCase()).not.toBe('authorization');
+      expect(name.toLowerCase()).not.toBe('cookie');
+    }
+  });
+
+  // WHY: the API is read-only. Anything other than a GET is a mistake by
+  //      definition, and `force-cache` semantics differ for other methods.
+  it('only ever issues GETs', async () => {
+    await sleeperGet('/state/nfl', SLEEPER_TTL.NFL_STATE);
+
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(init.method ?? 'GET').toBe('GET');
+  });
+
+  // WHY: not a requirement, but it is what names us in Sleeper's logs if they
+  //      ever need to tell us we are being a nuisance before blocking the IP.
+  it('identifies the app on every call', async () => {
+    await sleeperGet('/league/123');
+
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>)['User-Agent'])
+      .toBe(SLEEPER_USER_AGENT);
+  });
+
+  // WHY: every call must carry a TTL. Caching is opt-in from Next 15 — a fetch
+  //      with no `revalidate` is not cached at all, so an omitted TTL would send
+  //      that path to Sleeper on every single request.
+  it('always passes a revalidate TTL to fetch', async () => {
+    await sleeperGet('/league/123');           // the default
+    await sleeperGet('/state/nfl', SLEEPER_TTL.NFL_STATE);
+
+    for (const call of mockFetch.mock.calls) {
+      const init = call[1] as { next?: { revalidate?: number } };
+      expect(typeof init.next?.revalidate).toBe('number');
+    }
+  });
+
+  // WHY: "You do not need to call this endpoint more than once per day" — a
+  //      ~5MB payload with a rule of its own. The TTL is the outermost of the
+  //      three layers holding to it; the other two are in playerCache.ts.
+  it('caches the player index for a full day', () => {
+    expect(SLEEPER_TTL.PLAYERS).toBe(86_400);
+  });
+
+  // WHY: FRESH is the only value that may be 0. Any other TTL landing on 0 would
+  //      silently opt that path out of the Data Cache — the difference between
+  //      two calls a minute and one per request, with nothing to show for it.
+  it('gives every TTL but FRESH a non-zero lifetime', () => {
+    for (const [name, value] of Object.entries(SLEEPER_TTL)) {
+      expect(typeof value).toBe('number');
+      // FRESH is 0 on purpose; nothing else may be, or it would be uncached.
+      if (name !== 'FRESH') expect(value).toBeGreaterThan(0);
+    }
   });
 });
