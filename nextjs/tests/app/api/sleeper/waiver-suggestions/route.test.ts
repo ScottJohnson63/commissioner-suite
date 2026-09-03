@@ -461,22 +461,57 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
   // WHY: sorted purely by score the list is honest and useless to page through.
   //      Receivers outnumber every other position and score in the same range,
   //      so the first two screens are receivers and the reader never reaches the
-  //      one tight end worth having.
-  it('mixes positions rather than leading with the deepest one', async () => {
+  //      one tight end worth having. Ordering round-robin from the biggest hole
+  //      puts every position on the first page.
+  it('puts a mix of positions on the first page', async () => {
     const { leagueId } = freshIds();
     setupPool();
 
     const res  = await GET(makeReq(leagueId, 'uid-1'));
     const json = await res.json() as { suggestions: { position: string }[] };
 
-    // The first page the panel renders.
     const firstPage = json.suggestions.slice(0, 10).map((s) => s.position);
     expect(new Set(firstPage).size).toBeGreaterThanOrEqual(4);
+  });
 
-    // And no single position swamps the list, however deep the pool is in it.
+  // WHY: how many rows a position gets is a question about the pool, not about
+  //      the reader. An even split spends the same twenty rows on kickers nobody
+  //      would claim as on receivers, which is where the real choices are — and
+  //      cuts the receivers off at twenty to do it. The split follows depth.
+  it('gives more rows to the positions with more players available', async () => {
+    const { leagueId } = freshIds();
+    setupPool(); // the fixture pool is receiver-heavy, kicker-thin
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as { suggestions: { position: string }[] };
+
     const counts = new Map<string, number>();
     for (const s of json.suggestions) counts.set(s.position, (counts.get(s.position) ?? 0) + 1);
-    for (const n of counts.values()) expect(n).toBeLessThanOrEqual(30);
+
+    // The fixture repeats a fifteen-slot pattern: 6 WR, 5 RB, 2 TE, 1 QB, 1 K.
+    expect(counts.get('WR')!).toBeGreaterThan(counts.get('RB')!);
+    expect(counts.get('RB')!).toBeGreaterThan(counts.get('TE')!);
+    expect(counts.get('TE')!).toBeGreaterThan(counts.get('K')!);
+  });
+
+  // WHY: a thin position is still the one you might need this week, and its
+  //      filter chip has to lead somewhere. Depth decides the split; it does not
+  //      get to erase a position from the list.
+  it('keeps a thin position reachable rather than crowding it out', async () => {
+    const { leagueId } = freshIds();
+    setupPool();
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as { suggestions: { position: string }[] };
+
+    const counts = new Map<string, number>();
+    for (const s of json.suggestions) counts.set(s.position, (counts.get(s.position) ?? 0) + 1);
+
+    // Kickers are one slot in fifteen — a bare proportional split would give
+    // them about six, and any rounding against a cap could give them none.
+    expect(counts.get('K') ?? 0).toBeGreaterThanOrEqual(5);
+    // And the deepest position still does not take most of the list.
+    expect(counts.get('WR')!).toBeLessThanOrEqual(40);
   });
 
   // WHY: the trending feed is back in the ranking rather than sitting on the row

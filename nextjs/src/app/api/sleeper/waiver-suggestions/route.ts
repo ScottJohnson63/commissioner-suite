@@ -90,8 +90,94 @@ const BAND_Z = 1.28;
  */
 const MAX_SUGGESTIONS = 100;
 
-/** Most from any one position, so the deepest one cannot crowd out the rest. */
-const MAX_PER_POSITION = 30;
+/**
+ * Bounds on how many of the returned rows any one position may take.
+ *
+ * The hundred rows are split in proportion to how deep the free-agent pool
+ * actually is at each position, which is not even: there are far more startable
+ * receivers available than kickers, and a list that pretends otherwise spends
+ * twenty rows on kickers nobody would claim while cutting the receivers off at
+ * twenty.
+ *
+ * The floor keeps every position reachable — a thin position is still the one
+ * you might need this week, and its filter chip has to lead somewhere. The
+ * ceiling stops the deepest position from taking most of the list on its own.
+ */
+const MIN_PER_POSITION = 5;
+const MAX_PER_POSITION = 40;
+
+/**
+ * Splits `total` rows across positions in proportion to how many candidates each
+ * one has, subject to the floor and ceiling above.
+ *
+ * Handed out one row at a time to whichever position sits furthest below its
+ * proportional share, rather than by rounding each share and correcting
+ * afterwards: rounding has to be reconciled against the floor, the ceiling and
+ * the number of players a position actually has, and each of those can move the
+ * total. Going one at a time, every row is placed somewhere legal by
+ * construction. At a hundred rows over five positions this is five hundred
+ * comparisons.
+ */
+function allocateByDepth(depth: Map<string, number>, total: number): Map<string, number> {
+  const positions = [...depth.entries()].filter(([, n]) => n > 0);
+  const alloc = new Map<string, number>();
+  if (positions.length === 0) return alloc;
+
+  const poolTotal = positions.reduce((sum, [, n]) => sum + n, 0);
+
+  // Everyone starts at the floor, or at everything they have when that is less.
+  for (const [pos, n] of positions) alloc.set(pos, Math.min(MIN_PER_POSITION, n, total));
+
+  const placedNow = () => [...alloc.values()].reduce((a, b) => a + b, 0);
+
+  // More floor than there are rows: a league with a great many started
+  // positions. Trim from whoever is furthest above their share.
+  while (placedNow() > total) {
+    let worst: string | null = null;
+    let worstExcess = -Infinity;
+    for (const [pos, n] of positions) {
+      const have = alloc.get(pos)!;
+      if (have === 0) continue;
+      const excess = have - (n / poolTotal) * total;
+      if (excess > worstExcess) { worst = pos; worstExcess = excess; }
+    }
+    if (worst === null) break;
+    alloc.set(worst, alloc.get(worst)! - 1);
+  }
+
+  while (placedNow() < total) {
+    let best: string | null = null;
+    let bestDeficit = -Infinity;
+    for (const [pos, n] of positions) {
+      const have = alloc.get(pos)!;
+      // Capped, or the position simply has no more players to give.
+      if (have >= Math.min(n, MAX_PER_POSITION)) continue;
+      const deficit = (n / poolTotal) * total - have;
+      if (deficit > bestDeficit) { best = pos; bestDeficit = deficit; }
+    }
+    if (best === null) break; // every position capped or exhausted
+    alloc.set(best, alloc.get(best)! + 1);
+  }
+
+  // The ceiling exists to stop one position taking the list from the others. If
+  // there are no others left with players to give — a pool that is almost all
+  // receivers — then holding to it just returns a short list, so it lifts. The
+  // rows still go to whoever is furthest below their share.
+  while (placedNow() < total) {
+    let best: string | null = null;
+    let bestDeficit = -Infinity;
+    for (const [pos, n] of positions) {
+      const have = alloc.get(pos)!;
+      if (have >= n) continue; // genuinely out of players
+      const deficit = (n / poolTotal) * total - have;
+      if (deficit > bestDeficit) { best = pos; bestDeficit = deficit; }
+    }
+    if (best === null) break; // the pool itself is smaller than `total`
+    alloc.set(best, alloc.get(best)! + 1);
+  }
+
+  return alloc;
+}
 
 /**
  * Points per game a suggestion can gain from filling the worst position on the
@@ -557,24 +643,42 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     suggestions.sort((a, b) =>
       (b._score - a._score) || ((b.trendingCount ?? 0) - (a.trendingCount ?? 0)));
 
-    // ── A mix, rather than a hundred of whichever position is deepest ────────
+    // ── How many of each position, and in what order ─────────────────────────
     //
-    // Sorted purely by score the list is honest and close to useless to page
-    // through: receivers outnumber every other position in the pool and score
-    // in the same range, so the first two screens are receivers and the reader
-    // never reaches the one tight end worth having. Taking the best remaining
-    // player at each position in turn puts every position on the first page,
-    // and starting each round at the position this roster most needs means the
-    // first row is a player for the biggest hole.
+    // Two separate decisions, and conflating them is what makes a list of a
+    // hundred free agents unusable.
+    //
+    // How many is a question about the pool. Sorted purely by score the list is
+    // honest and useless to page through: receivers outnumber every other
+    // position and score in the same range, so the first two screens are
+    // receivers and the reader never reaches the one tight end worth having.
+    // Splitting the rows evenly fixes that and creates the opposite problem —
+    // twenty kickers nobody would claim, and the receivers cut off at twenty
+    // when that is the position with real choices in it. So the split follows
+    // the depth of the pool, floored so every position stays reachable and
+    // capped so the deepest cannot take the list. See allocateByDepth.
+    //
+    // In what order is a question about this roster. Taking the best remaining
+    // player at each position in turn puts every position on the first page, and
+    // starting each round at the position this roster most needs makes the first
+    // row a player for the biggest hole. Positions with fewer rows drop out of
+    // later rounds on their own, so the early pages read as a mix and the deeper
+    // ones lean towards wherever the choices actually are.
     //
     // Order within a position is untouched — still best first, by the score
     // above — so the ranking is intact; this decides interleaving, not merit.
-    const byPosition = new Map<string, ScoredSuggestion[]>();
+    const ranked = new Map<string, ScoredSuggestion[]>();
     for (const sug of suggestions) {
-      const list = byPosition.get(sug.position) ?? [];
-      if (list.length < MAX_PER_POSITION) list.push(sug);
-      byPosition.set(sug.position, list);
+      ranked.set(sug.position, [...(ranked.get(sug.position) ?? []), sug]);
     }
+
+    const allocation = allocateByDepth(
+      new Map([...ranked].map(([pos, list]) => [pos, list.length])),
+      MAX_SUGGESTIONS,
+    );
+    const byPosition = new Map(
+      [...ranked].map(([pos, list]) => [pos, list.slice(0, allocation.get(pos) ?? 0)]),
+    );
 
     // Rounds start at the position with the biggest hole. `positionNeeds` is
     // already worst-first; anything the league does not start trails it.
