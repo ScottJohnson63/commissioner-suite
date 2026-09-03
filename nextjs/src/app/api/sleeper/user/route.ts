@@ -5,7 +5,7 @@
 // user API is public.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { sleeperGet } from '@/lib/sleeper/client';
+import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
 import type { SleeperUser, SleeperLeagueRaw } from '@/lib/sleeper/types';
 import { ok, err } from '@/lib/api';
 
@@ -32,7 +32,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     try {
         // Step 1 — resolve to user object.
         // Prefer userId (stable) over username (can change) per Sleeper docs.
-        const user = await sleeperGet<SleeperUser>(userId ? `/user/${userId}` : `/user/${username}`);
+        // A longer TTL than the league data below: nobody renames themselves and
+        // then checks this app to see whether it took, and every signed-in user
+        // re-reads this on each dashboard load. See SLEEPER_TTL.USER.
+        const user = await sleeperGet<SleeperUser>(
+            userId ? `/user/${userId}` : `/user/${username}`,
+            SLEEPER_TTL.USER,
+        );
 
         if (!user?.user_id) {
             return err('Sleeper user not found', 404);

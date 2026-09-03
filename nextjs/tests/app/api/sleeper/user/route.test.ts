@@ -15,7 +15,7 @@ jest.mock('@/lib/sleeper/client', () => ({
 }));
 
 import { GET } from '@/app/api/sleeper/user/route';
-import { sleeperGet } from '@/lib/sleeper/client';
+import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
 
 const mockSleeperGet = sleeperGet as jest.MockedFunction<typeof sleeperGet>;
 
@@ -85,8 +85,11 @@ describe('GET /api/sleeper/user', () => {
     const res = await GET(makeGet('?username=testuser'));
     expect(res.status).toBe(200);
 
+    // The TTL is part of the call: the identity lookup is cached longer than the
+    // league data beside it — see SLEEPER_TTL.USER.
     expect(mockSleeperGet).toHaveBeenCalledWith(
       expect.stringContaining('/user/testuser'),
+      SLEEPER_TTL.USER,
     );
   });
 

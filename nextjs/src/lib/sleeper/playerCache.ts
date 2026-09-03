@@ -24,12 +24,17 @@ let memCache: Map<string, SleeperPlayerInfo> | null = null;
 let memCacheTs = 0;
 
 /**
- * Returns a Map<player_id, SleeperPlayerInfo>.
- * Resolution order:
- *   1. In-memory (fastest — same process, <24 h old)
- *   2. SleeperCache DB row (survives server restarts, <24 h old)
- *   3. Sleeper API (at most once per 24 h)
+ * The one in-flight refresh, when there is one.
+ *
+ * Every panel on the dashboard asks for this map, and on a cold process none of
+ * them has a cache to hit — so without this they each start their own download
+ * of the largest payload Sleeper serves, of the one endpoint Sleeper explicitly
+ * asks callers to hit at most once a day. The in-memory cache above only helps
+ * once the first download has *finished*; concurrent callers arrive before that.
+ * They wait on the first request instead.
  */
+let inFlight: Promise<Map<string, SleeperPlayerInfo>> | null = null;
+
 /**
  * `getPlayerMap()` that never rejects.
  *
@@ -41,13 +46,36 @@ export async function getPlayerMapSafe(): Promise<Map<string, SleeperPlayerInfo>
   return getPlayerMap().catch(() => new Map<string, SleeperPlayerInfo>());
 }
 
+/**
+ * Returns a Map<player_id, SleeperPlayerInfo>.
+ *
+ * Resolution order:
+ *   1. In-memory (fastest — same process, <24 h old)
+ *   2. A load already in flight (concurrent callers wait rather than duplicate)
+ *   3. SleeperCache DB row (survives server restarts, <24 h old)
+ *   4. Sleeper API (at most once per 24 h)
+ */
 export async function getPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
-  const now = Date.now();
-
   // ── 1. In-memory ────────────────────────────────────────────────────────────
-  if (memCache && now - memCacheTs < ONE_DAY_MS) {
+  if (memCache && Date.now() - memCacheTs < ONE_DAY_MS) {
     return memCache;
   }
+
+  // ── 1b. A refresh already running ───────────────────────────────────────────
+  // Join it rather than starting a second one. See `inFlight` above.
+  if (inFlight) return inFlight;
+
+  inFlight = loadPlayerMap();
+  try {
+    return await inFlight;
+  } finally {
+    inFlight = null;
+  }
+}
+
+/** The actual DB-then-API load. Only ever one of these runs at a time. */
+async function loadPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
+  const now = Date.now();
 
   // ── 2. DB cache ──────────────────────────────────────────────────────────────
   try {

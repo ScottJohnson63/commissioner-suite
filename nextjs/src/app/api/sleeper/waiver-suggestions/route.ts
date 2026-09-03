@@ -15,7 +15,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
-import { resolveSeason, resolveWeek } from '@/lib/sleeper/week';
+import { resolveSeason, resolveWeeks } from '@/lib/sleeper/week';
 import { resolveStatsSeason } from '@/lib/statsSeason';
 import { buildGsisXref } from '@/lib/sleeper/gsisXref';
 import { getScoringSettings } from '@/lib/sleeper/scoringSettings';
@@ -115,11 +115,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     type RosterEntry = { roster_id: number; owner_id: string | null; players: string[] | null };
 
     const season = await resolveSeason(searchParams.get('season'));
-    // Two readings of the same NFL state, from one cached call. Form is drawn
-    // from the week that has finished; the context cards describe the week about
-    // to be played, which is the one a waiver claim is actually for.
-    const completedWeek = await resolveWeek(searchParams.get('week'), 'completed');
-    const upcomingWeek  = await resolveWeek(searchParams.get('week'), 'current');
+    // Two readings of one NFL state document, from one call. Form is drawn from
+    // the week that has finished; the context cards describe the week about to be
+    // played, which is the one a waiver claim is actually for.
+    const { completed: completedWeek, current: upcomingWeek } =
+      await resolveWeeks(searchParams.get('week'));
 
     const [rosters, trendingRaw, livePlayerMap] = await Promise.all([
       sleeperGet<SleeperRoster[]>(`/league/${leagueId}/rosters`),

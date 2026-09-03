@@ -74,9 +74,42 @@ export async function resolveWeek(
 
   try {
     const state = await sleeperGet<SleeperNflState>('/state/nfl', SLEEPER_TTL.NFL_STATE);
-    return mode === 'completed' ? Math.max(1, state.week - 1) : Math.max(1, state.week);
+    return weekOf(state, mode);
   } catch {
     // Sleeper down or rate-limited. Week 1 keeps the page renderable.
     return 1;
   }
+}
+
+/**
+ * Both readings of the week, from one look at the NFL state.
+ *
+ * For a route that needs the completed week *and* the current one — the waiver
+ * panel draws form from the week that finished and describes the fixtures of the
+ * week about to be played. Calling `resolveWeek` twice asks the same question
+ * twice: the two answers always come from a single `/state/nfl` document, and
+ * splitting them across two calls only creates two chances to read it.
+ *
+ * @param requested  Raw `?week=` value. When supplied it is taken at face value
+ *                   for both, which is what an explicit week means.
+ */
+export async function resolveWeeks(
+  requested: string | number | null | undefined,
+): Promise<{ completed: number; current: number }> {
+  const explicit = requested == null || requested === '' ? null : Number(requested);
+  if (explicit !== null && Number.isFinite(explicit) && explicit > 0) {
+    return { completed: explicit, current: explicit };
+  }
+
+  try {
+    const state = await sleeperGet<SleeperNflState>('/state/nfl', SLEEPER_TTL.NFL_STATE);
+    return { completed: weekOf(state, 'completed'), current: weekOf(state, 'current') };
+  } catch {
+    return { completed: 1, current: 1 };
+  }
+}
+
+/** One reading of a fetched state. Shared so the two entry points cannot drift. */
+function weekOf(state: SleeperNflState, mode: WeekMode): number {
+  return mode === 'completed' ? Math.max(1, state.week - 1) : Math.max(1, state.week);
 }
