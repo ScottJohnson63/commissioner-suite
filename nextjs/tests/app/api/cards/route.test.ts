@@ -173,6 +173,38 @@ describe('GET /api/cards/collection', () => {
     expect(body.weekly).toMatchObject({ week: 3, phase: 'OPEN' });
   });
 
+  // WHY: the lineup is read from CardDefinition, which knows nothing about who
+  //      owns a card, so a nickname and an uploaded portrait have to be joined
+  //      on from the deck in the same response. Without it the starting lineup
+  //      was the one screen that showed a member the pool's name and the pool's
+  //      face for a card they had renamed and photographed themselves.
+  it('carries the owner\'s nickname and portrait onto the lineup', async () => {
+    mockReadAllowance.mockResolvedValue({ remaining: 0, week: 3 });
+    mockReadDeck.mockResolvedValue({
+      cards: [{
+        id: 'c1', playerName: 'Jamal Lewis',
+        nickname: 'The Bus', customImage: '/api/cards/image?cardId=c1&v=7',
+      }],
+      stats: { cards: 1, rosterPpg: 18.8, deckAvgPpg: 18.8, started: 1 },
+      roster: [{
+        slot: { id: 'RB1', label: 'RB', accepts: ['RB'] },
+        // What readRoster returns: the pool's record, with no ownership on it.
+        card: { id: 'c1', playerName: 'Jamal Lewis', position: 'RB', pointsPerGame: 18.8 },
+      }],
+      standings: [],
+    });
+
+    const { GET } = await import('@/app/api/cards/collection/route');
+    const body = await (await GET(req('collection'))).json();
+
+    expect(body.roster[0].card).toMatchObject({
+      id: 'c1',
+      playerName: 'Jamal Lewis',
+      nickname: 'The Bus',
+      customImage: '/api/cards/image?cardId=c1&v=7',
+    });
+  });
+
   // WHY: on Tuesday morning a member's slots still point at nine cards that can
   //      never start again. The sweep has to run *before* the deck is read, or
   //      the page shows a lineup that looks full and scores nothing — the same
@@ -332,6 +364,29 @@ describe('PUT /api/cards/roster', () => {
     expect(res.status).toBe(200);
     expect(body.roster).toHaveLength(1);
     expect(body.stats).toBeDefined();
+  });
+
+  // WHY: the swap response is what the page renders next, so it has to carry
+  //      the customization the collection read did. Dropping it here would put
+  //      the pool's name back on a renamed card the moment it was moved.
+  it('returns the swapped-in card as its owner customized it', async () => {
+    mockSetRosterSlot.mockResolvedValue({ ok: true });
+    mockReadDeck.mockResolvedValue({
+      cards: [{ id: 'card-1', nickname: 'The Bus', customImage: '/api/cards/image?cardId=card-1&v=7' }],
+      stats: { cards: 1, rosterPpg: 18.8, deckAvgPpg: 18.8, started: 1 },
+      roster: [{
+        slot: { id: 'RB1', label: 'RB', accepts: ['RB'] },
+        card: { id: 'card-1', playerName: 'Jamal Lewis', position: 'RB', pointsPerGame: 18.8 },
+      }],
+      standings: [],
+    });
+
+    const { PUT } = await import('@/app/api/cards/roster/route');
+    const body = await (await PUT(put({ slot: 'RB1', cardId: 'card-1' }))).json();
+
+    expect(body.roster[0].card).toMatchObject({
+      nickname: 'The Bus', customImage: '/api/cards/image?cardId=card-1&v=7',
+    });
   });
 
   // WHY: null is a real instruction — bench this player — so it must be

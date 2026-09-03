@@ -477,6 +477,44 @@ member owns the card, that the position is eligible, and that the card has not
 already played. The picker filters by the same rules, but a filtered picker is a
 convenience, not a guard.
 
+### Rows, not tiles
+
+The lineup is drawn as a **list of rows**, one slot each, and the card in a slot
+is a 46px chip on the left of its row. Everything you read while setting a
+lineup — the slot, the player, their team, their tier, their PPG — is set in
+ordinary type beside that chip.
+
+This is a deliberate reversal. The slots were tiles that rendered the card at
+the tile's own width, which on a phone meant one slot per screen and about five
+thousand pixels of scrolling between the first slot and the last. A lineup is
+not looked at, it is compared: the question it answers is which of your starters
+is the weakest, and an answer that needs ten screens and a good memory is not an
+answer. Rows put the whole lineup in a screen and a half, and two columns on a
+wide screen halve it again.
+
+Nothing legible was lost, because the card was never carrying the words.
+`PlayerCard` scales its own type off its `width` prop, so at any size below
+about 100px its name band is texture rather than text — the row's own type is
+strictly more readable than what the big tile was showing. The chip is a
+separate tap target from the row: it opens the card full size in the deck's own
+card dialog, so the art is one tap away rather than permanently in the way.
+
+A lineup card carries its owner's **nickname and portrait** on the wire —
+`LineupCardDto`, the same two fields `PlayedCardDto` carries into the reveal.
+They are joined on in `toRosterDtos` from the deck that ships in the same
+response, because `readRoster` reads `CardDefinition` and a nickname lives on
+the ownership. Without that join the starting lineup was the one screen in the
+game that showed a member the pool's name and the pool's face for a card they
+had renamed and photographed themselves — and the swap response drops it too,
+which put the pool's name back the moment a card was moved.
+
+The picker is a **sheet over the page**, not a block that opens under the row.
+Inline, the options appeared below whatever the row cost in height and below
+however far down the list you had scrolled, so choosing a card began with a
+scroll to find the cards. Over the page they start at the top of the screen from
+every slot, with the slot named in the dialog's own header, which does not
+scroll.
+
 ## The weekly game
 
 The season is played in weeks, and a week has three phases.

@@ -317,11 +317,17 @@ export function CardDetail({
                   }}
                 >
                   {/* Naming what is there makes the swap explicit rather than
-                      something the member discovers after the fact. */}
+                      something the member discovers after the fact. And naming
+                      it the way its owner does: a member who renamed a card
+                      knows it by that name, so "replaces Bus" and not
+                      "replaces Lewis". A surname is the fallback because a
+                      real name has a spare half to drop; a nickname does
+                      not. */}
                   {slot.label}
                   {slot.card && (
                     <span style={{ color: '#555' }}>
-                      {' '}· replaces {slot.card.playerName.split(' ').slice(-1)[0]}
+                      {' '}· replaces{' '}
+                      {slot.card.nickname || slot.card.playerName.split(' ').slice(-1)[0]}
                     </span>
                   )}
                 </button>

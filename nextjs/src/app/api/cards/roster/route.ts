@@ -16,7 +16,7 @@ import { ok, err } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { gameSeason } from '@/lib/cards/allowance';
 import { readDeck, setRosterSlot } from '@/lib/cards/service';
-import { toRosterDto } from '@/lib/cards/rosterDto';
+import { toRosterDtos } from '@/lib/cards/rosterDto';
 import type { RosterUpdateResponse } from '@/types/cards';
 
 export async function PUT(req: NextRequest): Promise<NextResponse> {
@@ -66,7 +66,7 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
     // has to guess what a swap did to its ranking.
     const deck = await readDeck(guard.userId, season);
     const payload: RosterUpdateResponse = {
-      roster: deck.roster.map(toRosterDto),
+      roster: toRosterDtos(deck.roster, deck.cards),
       stats:  deck.stats,
     };
     return ok(payload);
