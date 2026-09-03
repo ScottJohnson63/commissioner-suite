@@ -20,7 +20,7 @@ import { resolveStatsSeason } from '@/lib/statsSeason';
 import { buildGsisXref } from '@/lib/sleeper/gsisXref';
 import { getScoringSettings } from '@/lib/sleeper/scoringSettings';
 import { getStarterSlots } from '@/lib/sleeper/lineup';
-import { scoreRow, STAT_LINE_SELECT } from '@/lib/scoring';
+import { scoreRow } from '@/lib/scoring';
 import { buildBaselines, project } from '@/lib/projection';
 import { loadWindowRows } from '@/lib/formWindow';
 import {
@@ -141,16 +141,53 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       for (const pid of r.players ?? []) rosteredSet.add(pid);
     }
 
-    const myPlayerIds  = myRoster.players ?? [];
-    const availableIds = trendingRaw
+    const myPlayerIds = myRoster.players ?? [];
+
+    // ── The free-agent pool ───────────────────────────────────────────────────
+    //
+    // Every un-rostered player at a scored position who is on an NFL team.
+    //
+    // This used to be Sleeper's trending-adds feed and nothing else, which is a
+    // list of the fifty players most *clicked on* league-wide in the last week —
+    // a popularity ranking from other people's leagues, not an answer about this
+    // one. A quietly productive back on a bad team never trends, so the panel
+    // could not see him however well he was playing; a hyped name already
+    // rostered here trended anyway and was filtered out again. Fifty entries
+    // also meant most positions had two or three candidates, or none.
+    //
+    // `team` is the filter that matters: Sleeper leaves it null for a player on
+    // nobody's roster, and a player with no NFL team cannot score whatever his
+    // record says.
+    const freeAgentIds: string[] = [];
+    for (const [pid, info] of playerMap) {
+      if (rosteredSet.has(pid)) continue;
+      if (!isSkillPos(info.position)) continue;
+      if (!info.team) continue;
+      freeAgentIds.push(pid);
+    }
+
+    // The trending feed is kept, but demoted from the pool to a signal on it —
+    // and as the one on-ramp for a player the stat table cannot speak for yet.
+    // A back promoted on Wednesday has no games and no NFL team on file until
+    // Sleeper catches up, so the filters above drop him while several thousand
+    // managers are adding him. Union, not replacement.
+    const trendingAvailable = trendingRaw
       .filter((t) => !rosteredSet.has(t.player_id))
       .map((t) => t.player_id);
+
+    const availableIds = [...new Set([...freeAgentIds, ...trendingAvailable])]
+      .filter((pid) => playerMap.has(pid));
 
     // ── Fetch stats from DB (the three-week window) ────────────────────────────
     //
     // Every rostered player counts, not just mine: the positional-weakness test
     // below compares my starters against the league median, which is zero for
     // everyone if the other nine rosters are never looked up.
+    //
+    // Rostered players lead the list deliberately. `buildGsisXref` resolves a
+    // contested GSIS ID to whichever Sleeper player claimed it first, and a
+    // roster player's stats decide a weak spot where a free agent's decide a
+    // row's ordering.
     const allRelevantIds = [...new Set([
       ...rosterList.flatMap((r) => r.players ?? []),
       ...myPlayerIds,
@@ -202,60 +239,31 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // enough.
     const xref = await buildGsisXref(allRelevantIds, playerMap, stats.season);
 
-    const availableGsisIds = availableIds
-      .map((pid) => xref.toGsis.get(pid))
-      .filter((g): g is string => g != null);
+    // ── One read, not one per pool ────────────────────────────────────────────
+    //
+    // The window's whole population: every scored row between the two weeks, for
+    // every player in the league. Shared with the matchup report, which reads the
+    // same rows — see src/lib/formWindow.ts.
+    //
+    // This replaced a second query that filtered `playerId: { in: … }` down to
+    // the players on this page. That worked while the pool was fifty trending
+    // names; against a real free-agent pool it is a couple of thousand IDs in one
+    // IN clause, which is both slower than reading the window outright and past
+    // what SQLite will bind in a single statement. The rows were already being
+    // loaded for the positional baselines, so the filter was buying nothing.
+    const windowRows = await loadWindowRows(stats.season, startWeek, endWeek);
 
-    // ── Three parallel reads ──────────────────────────────────────────────────
-    // 1. The window's rows for the players on this page — the average.
-    // 2. Season-wide headshot lookup for the waiver pool — the nflverse-sourced
-    //    headshot URLs the component prefers over Sleeper's CDN.
-    // 3. The window's whole population — positional baselines for the projection
-    //    band, and what each defense concedes for the context card. Shared with
-    //    the matchup report, which reads the same rows. See src/lib/formWindow.ts.
-    const [statsRows, headshotRows, windowRows] = await Promise.all([
-      xref.gsisIds.length > 0
-        ? prisma.nflWeeklyStat.findMany({
-            where: {
-              season:     stats.season,
-              // Regular season only: postseason weeks cover a shrinking subset
-              // of players, so including them scores a non-playoff player's
-              // absence as a zero game.
-              seasonType: 'REG',
-              week:       { gte: startWeek, lte: endWeek },
-              playerId:   { in: xref.gsisIds },
-            },
-            select: { playerId: true, ...STAT_LINE_SELECT },
-          })
-        : Promise.resolve([]),
-      availableGsisIds.length > 0
-        ? prisma.nflWeeklyStat.findMany({
-            where: {
-              season:   stats.season,
-              playerId: { in: availableGsisIds },
-              headshot:  { not: null },
-            },
-            select:   { playerId: true, headshot: true },
-            distinct: ['playerId'],
-          })
-        : Promise.resolve([]),
-      loadWindowRows(stats.season, startWeek, endWeek),
-    ]);
+    const playerPoints = new Map<string, number[]>();
 
-    // Map headshots back from GSIS IDs → Sleeper IDs so the component can use them.
-    const playerPoints   = new Map<string, number[]>();
-    const playerHeadshot = new Map<string, string>(); // sleeperPlayerId → NFL CDN URL
-
-    // Both queries came back keyed on GSIS IDs; everything downstream — rosters,
-    // the waiver pool, the rendered rows — speaks Sleeper IDs, so map back here.
-    for (const row of headshotRows) {
-      const sleeperId = xref.toSleeper.get(row.playerId);
-      if (sleeperId && row.headshot) playerHeadshot.set(sleeperId, row.headshot);
-    }
+    // The window is keyed on GSIS IDs; everything downstream — rosters, the free
+    // agent pool, the rendered rows — speaks Sleeper IDs, so map back here. A row
+    // for a player in neither the league nor the pool resolves to nothing and is
+    // skipped, which is what makes reading the whole window cheap enough to do.
+    //
     // One row per player per week: NflWeeklyStat is unique on
     // (season, week, playerId), so a player contributes each week at most once
     // and the count below is a game count.
-    for (const row of statsRows) {
+    for (const row of windowRows) {
       const sleeperId = xref.toSleeper.get(row.playerId);
       if (!sleeperId) continue;
       const arr = playerPoints.get(sleeperId) ?? [];
@@ -377,37 +385,89 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       const recentAvg  = avg(pid);
       const games      = gamesPlayed(pid);
-      const band       = bandOf(pid, pos);
-      const isWeak     = weakPositions.includes(pos);
-      const needBonus  = isWeak ? 15 : 0;
-      const score      = recentAvg * 0.7 + needBonus * 0.3;
       const trendCount = trendingCount.get(pid) ?? null;
+
+      // A pool this size is mostly players who have not taken a snap. Without
+      // this they would all still be ranked — on the positional prior, which is
+      // what `project` returns when it has nothing else, so a third-string tight
+      // end would come back projected at what a tight end typically scores.
+      // A player earns a place by having played, or by the trending feed saying
+      // something the window cannot yet.
+      if (games === 0 && trendCount === null) continue;
+
+      const band      = bandOf(pid, pos);
+      const isWeak    = weakPositions.includes(pos);
+      const needBonus = isWeak ? 15 : 0;
+
+      // Ranked on the projected mean rather than the raw average.
+      //
+      // A pool this size is what makes the difference matter. On the raw average
+      // a player who went for 22 in his only appearance outranks one averaging 18
+      // across three weeks, and over a whole free-agent pool there are enough
+      // single-game outliers to fill the panel with them. The projection shrinks
+      // a thin sample toward what the position does — those two become 14.0 and
+      // 14.8 — so a sustained record outranks a moderate one-off.
+      //
+      // It compresses rather than overrules: a genuinely huge single game still
+      // ranks high, because two pseudo-games of prior should not erase a 28-point
+      // afternoon. That is a judgement the reader makes, which is why the game
+      // count and the band travel with the row. See src/lib/projection.ts.
+      //
+      // A player with no record at all scores below everyone who has one, and is
+      // ordered against his own kind by how many managers are adding him.
+      const score = games > 0 ? band.projected * 0.7 + needBonus * 0.3 : -1;
 
       const reason = isWeak
         ? `Addresses ${pos} weakness — ${recentAvg.toFixed(1)} pts avg ${windowLabel}`
-        : `Strong recent form — ${recentAvg.toFixed(1)} pts avg ${windowLabel}${trendCount ? ` · ${trendCount.toLocaleString()} adds` : ''}`;
+        : games > 0
+          ? `Strong recent form — ${recentAvg.toFixed(1)} pts avg ${windowLabel}${trendCount ? ` · ${trendCount.toLocaleString()} adds` : ''}`
+          : `No games in ${windowLabel}${trendCount ? ` · ${trendCount.toLocaleString()} adds` : ''}`;
 
       suggestions.push({
         playerId: pid, name: info.name, position: pos, team: info.team,
-        headshot: playerHeadshot.get(pid) ?? null,
+        headshot: null, // filled in for the shortlist only — see below
         recentAvg, games, ...band,
         reason, trendingCount: trendCount, _score: score,
       });
     }
 
-    suggestions.sort((a, b) => b._score - a._score);
+    // Trending volume breaks ties, which is the whole ordering for the players
+    // with no record: they all score -1 above.
+    suggestions.sort((a, b) =>
+      (b._score - a._score) || ((b.trendingCount ?? 0) - (a.trendingCount ?? 0)));
     const shortlist = suggestions.slice(0, TOP_N);
 
-    // Fallback when there's no DB data: sort by trending volume.
-    if (shortlist.every((s) => s.recentAvg === 0)) {
-      shortlist.sort((a, b) => (b.trendingCount ?? 0) - (a.trendingCount ?? 0));
+    // ── Headshots, for the eight that survived ────────────────────────────────
+    // The nflverse-sourced URLs the component prefers over Sleeper's CDN. Looked
+    // up after the ranking, not before: the pool is now the whole free-agent
+    // list, and eight IDs is a lookup where two thousand is a table scan.
+    const shortlistGsisIds = shortlist
+      .map((sug) => xref.toGsis.get(sug.playerId))
+      .filter((g): g is string => g != null);
+
+    const headshotRows = shortlistGsisIds.length > 0
+      ? await prisma.nflWeeklyStat.findMany({
+          where: {
+            season:   stats.season,
+            playerId: { in: shortlistGsisIds },
+            headshot: { not: null },
+          },
+          select:   { playerId: true, headshot: true },
+          distinct: ['playerId'],
+        })
+      : [];
+
+    const playerHeadshot = new Map<string, string>(); // sleeperPlayerId → NFL CDN URL
+    for (const row of headshotRows) {
+      const sleeperId = xref.toSleeper.get(row.playerId);
+      if (sleeperId && row.headshot) playerHeadshot.set(sleeperId, row.headshot);
     }
 
     // ── Context for the reader, not for the arithmetic ───────────────────────
     // The same fixture, opposing unit, forecast and betting line the matchup
     // report shows, from the same modules. None of it changes a number above it.
-    // Built for the shortlist only: it is what the panel renders, and the
-    // trending feed is fifty players deep.
+    // Built for the shortlist only: it is what the panel renders, where the pool
+    // behind it is the whole free-agent list.
     //
     // Fixtures come from the live season and the week about to be played — the
     // week a claim is for — even when the form window above reads an earlier
@@ -436,6 +496,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       void _ignored;
       return {
         ...rest,
+        headshot: playerHeadshot.get(s.playerId) ?? null,
         context: buildPlayerContext(s.team, s.position, fixtures, strengths, forecasts, linesByGame),
       };
     });
@@ -443,6 +504,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const result: WaiverSuggestionsResponse = {
       weakPositions,
       starterSlots,
+      scanned: suggestions.length,
       suggestions: top,
       window: statWindow,
       week: upcomingWeek,

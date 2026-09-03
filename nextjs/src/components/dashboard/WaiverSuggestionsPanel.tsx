@@ -213,21 +213,32 @@ export function WaiverSuggestionsPanel({
               </div>
             ))}
           </div>
-          {data.suggestions.some((s) => s.trendingCount !== null) && (
-            <p className="text-[10px] text-right" style={{ color: '#333' }}>
-              Add counts via{' '}
-              <a
-                href="https://sleeper.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: '#444' }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = '#80ff49')}
-                onMouseLeave={(e) => (e.currentTarget.style.color = '#444')}
-              >
-                Sleeper
-              </a>
+          <div className="flex items-baseline justify-between gap-2">
+            {/* Eight rows out of how many. The panel used to rank the fifty names
+                Sleeper's trending feed returned; saying what was actually
+                searched is the difference between a shortlist and a top-of-the-
+                popularity-list. */}
+            <p className="text-[10px]" style={{ color: '#444' }}>
+              {data.scanned > 0 && (
+                <>Top {data.suggestions.length} of {data.scanned.toLocaleString()} free agents</>
+              )}
             </p>
-          )}
+            {data.suggestions.some((s) => s.trendingCount !== null) && (
+              <p className="text-[10px] text-right" style={{ color: '#333' }}>
+                Add counts via{' '}
+                <a
+                  href="https://sleeper.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#444' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#80ff49')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#444')}
+                >
+                  Sleeper
+                </a>
+              </p>
+            )}
+          </div>
         </>
       )}
     </div>

@@ -68,6 +68,16 @@ export interface WaiverSuggestionsResponse {
    * roster's top two, not its best one. See src/lib/sleeper/lineup.ts.
    */
   starterSlots:  Record<string, number>;
+  /**
+   * Free agents actually considered — every un-rostered player at a scored
+   * position with a game in the window, plus the trending names the window
+   * cannot speak for yet.
+   *
+   * Reported because the panel shows eight of them and the number behind those
+   * eight is the difference between a ranked shortlist and the top of somebody
+   * else's popularity list.
+   */
+  scanned:       number;
   suggestions:   WaiverSuggestion[];
   /** The weeks every average and band on this response covers. */
   window:        StatWindow;

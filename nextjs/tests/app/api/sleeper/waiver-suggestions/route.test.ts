@@ -236,27 +236,38 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
   //      and the trending feed are Sleeper IDs; NflWeeklyStat is keyed on GSIS
   //      IDs. Querying with the former returns no rows, and no rows reads as
   //      "every player averaged zero" — which is exactly what the panel showed.
-  it('queries the stat table with GSIS IDs, never Sleeper IDs', async () => {
+  it('matches stat rows by GSIS ID, never by Sleeper ID', async () => {
     const { leagueId, userId } = freshIds();
-    setupHappyPath();
+    mockSleeperGet
+      .mockResolvedValueOnce(rosters as never)
+      .mockResolvedValueOnce(trendingRaw as never);
+    mockGetPlayerMap.mockResolvedValueOnce(playerMapData as never);
+    // Two rows for the same player: one under his GSIS ID, one under his Sleeper
+    // ID. Only the first is his. A route that matched on Sleeper IDs would score
+    // him 100, and one that matched on both would average the two to 60.
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; week?: unknown };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (args?.where?.week === undefined) return [];
+      return [
+        { playerId: '00-gsis-te-1',  position: 'TE', fantasyPoints: 20,  receptions: 0 },
+        { playerId: 'te-available',  position: 'TE', fantasyPoints: 100, receptions: 0 },
+      ];
+    }) as never);
 
-    await GET(makeReq(leagueId, userId));
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { suggestions: { playerId: string; recentAvg: number; games: number }[] };
 
-    const statsCall = mockFindMany.mock.calls.find(
-      (c) => (c[0] as { where?: { week?: unknown } })?.where?.week !== undefined,
-    );
-    const queried = (statsCall?.[0] as { where: { playerId: { in: string[] } } })
-      .where.playerId.in;
-
-    expect(queried).toEqual(expect.arrayContaining(['00-gsis-qb-1', '00-gsis-te-1']));
-    expect(queried).not.toContain('qb-1');
-    expect(queried).not.toContain('te-available');
+    const kraft = json.suggestions.find((x) => x.playerId === 'te-available');
+    expect(kraft?.recentAvg).toBe(20);
+    expect(kraft?.games).toBe(1);
   });
 
   // WHY: the positional-weakness test compares my best starter against the league
   //      median. Looking up only my players leaves every other roster at zero, so
   //      the median is zero and no position is ever weak.
-  it('looks up every rostered player, not just the requesting user\'s', async () => {
+  it('reads the whole window, so no roster and no free agent is left out', async () => {
     const { leagueId, userId } = freshIds();
     setupHappyPath();
 
@@ -265,11 +276,14 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
     const statsCall = mockFindMany.mock.calls.find(
       (c) => (c[0] as { where?: { week?: unknown } })?.where?.week !== undefined,
     );
-    const queried = (statsCall?.[0] as { where: { playerId: { in: string[] } } })
-      .where.playerId.in;
+    const where = (statsCall?.[0] as { where: { playerId?: unknown; seasonType: string } }).where;
 
-    // rb-1 belongs to the *other* roster and must still be looked up.
-    expect(queried).toContain('00-gsis-rb-1');
+    // No player filter at all. The old query narrowed to the players on the page,
+    // which is a couple of thousand IDs once the pool is every free agent — more
+    // than SQLite will bind, and slower than reading the window it was carved
+    // out of.
+    expect(where.playerId).toBeUndefined();
+    expect(where.seasonType).toBe('REG');
   });
 
   // WHY: rows come back keyed on GSIS IDs, and the suggestion rows the UI renders
@@ -291,6 +305,189 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
 
     const kraft = json.suggestions.find((x) => x.playerId === 'te-available');
     expect(kraft?.recentAvg).toBe(15);
+  });
+
+  // ── The free-agent scan ─────────────────────────────────────────────────────
+
+  // A pool that is not the trending feed: one un-rostered WR who is producing
+  // and whom nobody is adding, one who is producing but has no NFL team, and one
+  // who has an NFL team and no record.
+  const scanPlayers = new Map([
+    ['qb-1',         { name: 'Patrick Mahomes', position: 'QB', team: 'KC',  gsisId: '00-gsis-qb-1' }],
+    ['qb-2',         { name: 'Josh Allen',      position: 'QB', team: 'BUF', gsisId: '00-gsis-qb-2' }],
+    ['rb-1',         { name: 'Saquon Barkley',  position: 'RB', team: 'PHI', gsisId: '00-gsis-rb-1' }],
+    ['rb-2',         { name: 'Derrick Henry',   position: 'RB', team: 'TEN', gsisId: null           }],
+    ['te-available', { name: 'Tucker Kraft',    position: 'TE', team: 'GB',  gsisId: '00-gsis-te-1' }],
+    // Producing, un-rostered, and absent from the trending feed entirely.
+    ['wr-quiet',     { name: 'Quiet Riser',     position: 'WR', team: 'CAR', gsisId: '00-gsis-wr-q' }],
+    // Producing on paper but on nobody's NFL roster — cannot play, cannot help.
+    ['wr-teamless',  { name: 'Free Agent Guy',  position: 'WR', team: null,  gsisId: '00-gsis-wr-t' }],
+    // On an NFL team, never played in the window, and nobody is adding him.
+    ['wr-idle',      { name: 'Third String',    position: 'WR', team: 'NYJ', gsisId: '00-gsis-wr-i' }],
+  ]);
+
+  function setupScan(): void {
+    mockSleeperGet
+      .mockResolvedValueOnce(rosters as never)
+      .mockResolvedValueOnce(trendingRaw as never);
+    mockGetPlayerMap.mockResolvedValueOnce(scanPlayers as never);
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; week?: unknown };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (args?.where?.week === undefined) return [];
+      return [
+        { playerId: '00-gsis-wr-q', position: 'WR', fantasyPoints: 22, receptions: 0 },
+        { playerId: '00-gsis-wr-q', position: 'WR', fantasyPoints: 20, receptions: 0 },
+        { playerId: '00-gsis-wr-t', position: 'WR', fantasyPoints: 30, receptions: 0 },
+        { playerId: '00-gsis-wr-t', position: 'WR', fantasyPoints: 30, receptions: 0 },
+      ];
+    }) as never);
+  }
+
+  // WHY: this is the point of the scan. The trending feed is a ranking of the
+  //      players most clicked on across every Sleeper league — a popularity list
+  //      from other people's leagues. A back producing quietly on a bad team
+  //      never appears in it, so the panel could not see him however well he was
+  //      playing, whatever the gap on the roster asking.
+  it('surfaces a producing free agent nobody is adding', async () => {
+    const { leagueId, userId } = freshIds();
+    setupScan();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as {
+      suggestions: { playerId: string; recentAvg: number; trendingCount: number | null }[];
+    };
+
+    const quiet = json.suggestions.find((x) => x.playerId === 'wr-quiet');
+    expect(quiet).toBeDefined();
+    expect(quiet?.recentAvg).toBe(21);
+    // Not in the trending feed at all — he is here on his record alone.
+    expect(quiet?.trendingCount).toBeNull();
+  });
+
+  // WHY: Sleeper leaves `team` null for a player on no NFL roster. He cannot
+  //      score whatever the window says about the games he did play, so
+  //      suggesting him is worse than suggesting nobody.
+  it('excludes a player with no NFL team, however well he scored', async () => {
+    const { leagueId, userId } = freshIds();
+    setupScan();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { suggestions: { playerId: string }[] };
+
+    // He outscores everyone in the window and must still not be suggested.
+    expect(json.suggestions.map((x) => x.playerId)).not.toContain('wr-teamless');
+  });
+
+  // WHY: most of a free-agent pool has never taken a snap. `project` returns the
+  //      positional prior when it has nothing else, so ranking them anyway would
+  //      put a third-string receiver at what a receiver typically scores — a
+  //      thousand players recommended on the strength of their position.
+  it('excludes a player with no games and no one adding him', async () => {
+    const { leagueId, userId } = freshIds();
+    setupScan();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { suggestions: { playerId: string }[] };
+
+    expect(json.suggestions.map((x) => x.playerId)).not.toContain('wr-idle');
+  });
+
+  // WHY: the trending feed stays as the one on-ramp for a player the window
+  //      cannot speak for — a back promoted on Wednesday has no games and
+  //      several thousand adds. He belongs on the list, below everyone with a
+  //      record rather than ranked on a prior he did not earn.
+  it('keeps a trending player with no record, ranked below anyone who has one', async () => {
+    const { leagueId, userId } = freshIds();
+    setupScan();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as {
+      suggestions: { playerId: string; games: number; reason: string }[];
+    };
+
+    const ids = json.suggestions.map((x) => x.playerId);
+    // te-available has no rows in the window and 5,200 adds.
+    expect(ids).toContain('te-available');
+    expect(ids.indexOf('wr-quiet')).toBeLessThan(ids.indexOf('te-available'));
+    expect(json.suggestions.find((x) => x.playerId === 'te-available')?.reason)
+      .toContain('No games');
+  });
+
+  // WHY: the panel shows eight rows and says what was searched to get them. The
+  //      count has to be the pool actually ranked, not the page.
+  it('reports how many free agents were ranked', async () => {
+    const { leagueId, userId } = freshIds();
+    setupScan();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { scanned: number; suggestions: unknown[] };
+
+    // wr-quiet (a record) and te-available (adds, no record). wr-teamless has no
+    // NFL team and wr-idle has neither a record nor adds.
+    expect(json.scanned).toBe(2);
+    expect(json.suggestions).toHaveLength(2);
+  });
+
+  // WHY: over a pool this size the raw average fills the panel with players who
+  //      had one good afternoon — 22 once outranks 18 across three weeks, and
+  //      there are far more of the former than the latter. Ranking on the
+  //      projected mean shrinks a thin sample toward what the position does, and
+  //      the order inverts: 14.0 against 14.8.
+  it('ranks a sustained record above a one-game outlier', async () => {
+    const { leagueId } = freshIds();
+    const twoWrs = new Map([
+      ['qb-1',      { name: 'Patrick Mahomes', position: 'QB', team: 'KC',  gsisId: '00-gsis-qb-1' }],
+      ['qb-2',      { name: 'Josh Allen',      position: 'QB', team: 'BUF', gsisId: '00-gsis-qb-2' }],
+      ['wr-steady', { name: 'Steady Hands',    position: 'WR', team: 'CAR', gsisId: '00-wr-steady' }],
+      ['wr-spike',  { name: 'One Big Day',     position: 'WR', team: 'NYJ', gsisId: '00-wr-spike'  }],
+    ]);
+    mockSleeperGet
+      .mockResolvedValueOnce([rosters[0]] as never)
+      .mockResolvedValueOnce([] as never);   // nothing trending
+    mockGetPlayerMap.mockResolvedValueOnce(twoWrs as never);
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; week?: unknown };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (args?.where?.week === undefined) return [];
+      return [
+        // Three weeks at 18 — an 18.0 average on a real record.
+        { playerId: '00-wr-steady', position: 'WR', fantasyPoints: 18, receptions: 0 },
+        { playerId: '00-wr-steady', position: 'WR', fantasyPoints: 18, receptions: 0 },
+        { playerId: '00-wr-steady', position: 'WR', fantasyPoints: 18, receptions: 0 },
+        // One week at 22 — a 22.0 average on one game.
+        { playerId: '00-wr-spike',  position: 'WR', fantasyPoints: 22, receptions: 0 },
+        // The rest of the league's receivers, which is what the positional
+        // baseline is drawn from. Not in this league's player map, so they set
+        // the prior (mean 10) without joining the pool.
+        { playerId: '00-wr-f1', position: 'WR', fantasyPoints: 6, receptions: 0 },
+        { playerId: '00-wr-f1', position: 'WR', fantasyPoints: 6, receptions: 0 },
+        { playerId: '00-wr-f2', position: 'WR', fantasyPoints: 6, receptions: 0 },
+        { playerId: '00-wr-f2', position: 'WR', fantasyPoints: 6, receptions: 0 },
+        { playerId: '00-wr-f3', position: 'WR', fantasyPoints: 6, receptions: 0 },
+        { playerId: '00-wr-f3', position: 'WR', fantasyPoints: 6, receptions: 0 },
+      ];
+    }) as never);
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as {
+      suggestions: { playerId: string; recentAvg: number; games: number; projected: number }[];
+    };
+
+    const ids = json.suggestions.map((x) => x.playerId);
+    expect(ids.indexOf('wr-steady')).toBeLessThan(ids.indexOf('wr-spike'));
+
+    const spike  = json.suggestions.find((x) => x.playerId === 'wr-spike')!;
+    const steady = json.suggestions.find((x) => x.playerId === 'wr-steady')!;
+    // The averages still report what each player did — 22 is not rewritten to
+    // 14. It is the ranking that refuses to read one afternoon as a rate, and
+    // the game count beside it that says why.
+    expect(spike.recentAvg).toBe(22);
+    expect(spike.games).toBe(1);
+    expect(spike.projected).toBeCloseTo(14.0, 1);
+    expect(steady.projected).toBeCloseTo(14.8, 1);
   });
 
   // ── Season resolution ───────────────────────────────────────────────────────
@@ -419,14 +616,16 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
       .mockResolvedValueOnce(rosters as never)
       .mockResolvedValueOnce(trendingRaw as never);
     mockGetPlayerMap.mockResolvedValueOnce(playerMapData as never);
-    // Two games, 18 and 12. No population rows, so there is no positional
-    // baseline to shrink toward and the band is the player's own spread:
-    // mean 15, sigma 3, band 15 +/- 1.28 x 3.
+    // Two games, 18 and 12: mean 15, sigma 3. They are also the only rows in the
+    // window, so the TE baseline is the same pair, and blending two observed
+    // games with a two-game prior of the same shape leaves the mean at 15 and
+    // widens sigma to sqrt(9 x 5/4) — the uncertainty in the mean itself, which
+    // is what stops a two-game sample from reading as a certainty.
     mockFindMany.mockImplementation((async (args: {
-      where?: { headshot?: unknown; playerId?: { in: string[] } };
+      where?: { headshot?: unknown; week?: unknown };
     }) => {
       if (args?.where?.headshot) return [];
-      if (!args?.where?.playerId) return [];   // the window population
+      if (args?.where?.week === undefined) return [];
       return [
         { playerId: '00-gsis-te-1', position: 'TE', fantasyPoints: 18, receptions: 0 },
         { playerId: '00-gsis-te-1', position: 'TE', fantasyPoints: 12, receptions: 0 },
@@ -443,8 +642,8 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
     expect(kraft?.recentAvg).toBe(15);
     expect(kraft?.games).toBe(2);
     expect(kraft?.projected).toBe(15);
-    expect(kraft?.floor).toBeCloseTo(11.2, 1);
-    expect(kraft?.ceiling).toBeCloseTo(18.8, 1);
+    expect(kraft?.floor).toBeCloseTo(10.7, 1);
+    expect(kraft?.ceiling).toBeCloseTo(19.3, 1);
   });
 
   // WHY: the info card the matchup report shows is the same card here, built by
@@ -496,10 +695,10 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
       .mockResolvedValueOnce(trendingRaw as never);
     mockGetPlayerMap.mockResolvedValueOnce(rbPlayers as never);
     mockFindMany.mockImplementation((async (args: {
-      where?: { headshot?: unknown; playerId?: { in: string[] } };
+      where?: { headshot?: unknown; week?: unknown };
     }) => {
       if (args?.where?.headshot) return [];
-      if (!args?.where?.playerId) return [];
+      if (args?.where?.week === undefined) return [];
       return [
         { playerId: '00-rb-1', position: 'RB', fantasyPoints: 20, receptions: 0 },
         // rb-2 has no rows at all — the hole this is meant to see.
@@ -540,10 +739,10 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
       .mockResolvedValueOnce(trendingRaw as never);
     mockGetPlayerMap.mockResolvedValueOnce(tePlayers as never);
     mockFindMany.mockImplementation((async (args: {
-      where?: { headshot?: unknown; playerId?: { in: string[] } };
+      where?: { headshot?: unknown; week?: unknown };
     }) => {
       if (args?.where?.headshot) return [];
-      if (!args?.where?.playerId) return [];
+      if (args?.where?.week === undefined) return [];
       return [
         { playerId: '00-te-mine', position: 'TE', fantasyPoints: 8,  receptions: 0 },
         { playerId: '00-te-a',    position: 'TE', fantasyPoints: 10, receptions: 0 },
