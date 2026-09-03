@@ -31,7 +31,9 @@ import { getNflOdds } from '@/lib/odds';
 import type { SleeperRoster, SleeperTrendingRaw } from '@/lib/sleeper/types';
 import type { VegasLine } from '@/types/projections';
 import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
-import type { WaiverSuggestion, WaiverSuggestionsResponse, StatWindow } from '@/types/suggestions';
+import type {
+  WaiverSuggestion, WaiverSuggestionsResponse, StatWindow, PositionNeed,
+} from '@/types/suggestions';
 import { ok, err } from '@/lib/api';
 
 export type { WaiverSuggestion, WaiverSuggestionsResponse };
@@ -61,14 +63,48 @@ function isSkillPos(p: string): p is SkillPos {
  */
 const WINDOW_WEEKS = 3;
 
-/** How far below the league median a position has to sit to count as weak. */
+/**
+ * How far below the league median a position must sit to count as weak.
+ *
+ * One of two conditions, not the whole test — see the weakness section below for
+ * why a percentage on its own flagged perfectly good starters.
+ */
 const WEAK_THRESHOLD = 0.85; // >15% below
+
+/**
+ * How far down the league a position must rank to count as weak.
+ *
+ * The bottom third: rank 8, 9 or 10 of ten. The other half of the test.
+ */
+const WEAK_RANK_SHARE = 2 / 3;
 
 /** Percentile the floor/ceiling band is read at — 1.28σ ≈ 10th/90th. */
 const BAND_Z = 1.28;
 
-/** How many suggestions the panel shows. */
-const TOP_N = 8;
+/**
+ * Suggestions returned, for the panel to page through.
+ *
+ * Eight was the whole answer when the pool was fifty trending names. Against a
+ * real free-agent pool eight rows is a keyhole, and which eight depended
+ * entirely on the ranking being right.
+ */
+const MAX_SUGGESTIONS = 100;
+
+/** Most from any one position, so the deepest one cannot crowd out the rest. */
+const MAX_PER_POSITION = 30;
+
+/**
+ * Points per game a suggestion can gain from filling the worst position on the
+ * roster, and from being the most-added player in the league.
+ *
+ * Expressed in the same units as the projection they are added to, so the
+ * trade-off is legible: at four points, a free agent who fills the biggest hole
+ * outranks one projected four points better at a position already covered. Both
+ * are deliberately smaller than the spread between a startable player and a
+ * replacement-level one — they order the list, they do not decide it.
+ */
+const NEED_POINTS  = 4;
+const TREND_POINTS = 3;
 
 /** Mean of a list, or 0 when it is empty. */
 function mean(values: number[]): number {
@@ -348,17 +384,86 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return mean(values);
     }
 
-    const weakPositions: string[] = [];
-    for (const pos of SKILL_POSITIONS) {
-      if ((starterSlots[pos] ?? 0) === 0) continue; // the league does not start one
-      const leagueValues = rosterList.map((r) => startingGroup(r.players ?? [], pos));
-      const par = median(leagueValues);
-      // A median of zero says the window has nothing to compare on — a position
-      // nobody scored in, or a season with no rows. Everyone is equally short of
-      // nothing, so nothing is weak.
-      if (par <= 0) continue;
-      if (startingGroup(myPlayerIds, pos) < par * WEAK_THRESHOLD) weakPositions.push(pos);
+    /** Games behind a roster's starting group at `pos`. 0 means nothing measured. */
+    function groupGames(playerIds: string[], pos: SkillPos): number {
+      const slots = starterSlots[pos] ?? 0;
+      return playerIds
+        .filter((pid) => playerMap.get(pid)?.position === pos)
+        .sort((a, b) => avg(b) - avg(a))
+        .slice(0, slots)
+        .reduce((n, pid) => n + gamesPlayed(pid), 0);
     }
+
+    // ── Where each position sits against the league ───────────────────────────
+    //
+    // Weakness used to be one test: more than 15% below the league median. It
+    // reads as reasonable and it flags good starters, because a percentage of
+    // the median says nothing about where a roster actually stands. Whenever the
+    // top of a position pulls away from the middle — five elite quarterbacks and
+    // everyone else, which is an ordinary season — the median rides up with them
+    // and a startable mid-table QB lands more than 15% below it. Ten averages of
+    // 30, 28, 26, 25, 24, 17, 16, 15, 14, 13 put the median at 20.5 and call the
+    // 17 weak, when it is sixth of ten.
+    //
+    // A rank survives whatever shape the position has, so that is what gets
+    // reported. Weakness now needs both readings to agree: bottom third of the
+    // league *and* a gap worth acting on. The mid-table starter above fails the
+    // first; an evenly matched league fails the second.
+    //
+    // The third case is the one a percentage could never express: a roster whose
+    // players have no games in the window at all. That is a hole in the data,
+    // not a hole in the roster — an unsynced week, a name the stat table files
+    // differently — and calling it a weakness sends someone to drop a starter.
+    // It is reported as unmeasured and never counted weak.
+    const positionNeeds: PositionNeed[] = [];
+    for (const pos of SKILL_POSITIONS) {
+      const slots = starterSlots[pos] ?? 0;
+      if (slots === 0) continue; // the league does not start one
+
+      const leagueValues = rosterList.map((r) => startingGroup(r.players ?? [], pos));
+      const mine  = startingGroup(myPlayerIds, pos);
+      const games = groupGames(myPlayerIds, pos);
+      const par   = median(leagueValues);
+
+      // 1 = best in the league. Ties share the better rank, so two identical
+      // rosters are not told one of them is behind.
+      const rank = leagueValues.filter((v) => v > mine).length + 1;
+      const of   = leagueValues.length;
+
+      const unmeasured = games === 0;
+      const weak = !unmeasured
+        && par > 0
+        && mine < par * WEAK_THRESHOLD
+        && rank / of > WEAK_RANK_SHARE;
+
+      positionNeeds.push({
+        position: pos, slots,
+        mine:   parseFloat(mine.toFixed(1)),
+        median: parseFloat(par.toFixed(1)),
+        rank, of, games, weak, unmeasured,
+      });
+    }
+
+    // Worst first. An unmeasured position sorts last rather than to the top: it
+    // is the one thing on this list that is not a claim about the roster.
+    positionNeeds.sort((a, b) =>
+      Number(a.unmeasured) - Number(b.unmeasured) || (b.rank / b.of) - (a.rank / a.of));
+
+    const weakPositions = positionNeeds.filter((n) => n.weak).map((n) => n.position);
+
+    /**
+     * How badly this roster needs a position, from 0 (best in the league) to 1.
+     *
+     * Drawn from the rank rather than the weak flag, so need is a slope rather
+     * than a cliff: the second-worst position still pulls its free agents up the
+     * list, which is what "a few more weakness areas" means in a ranking.
+     */
+    const needIndex = new Map<string, number>(
+      positionNeeds.map((n) => [
+        n.position,
+        n.unmeasured || n.of < 2 ? 0 : (n.rank - 1) / (n.of - 1),
+      ]),
+    );
 
     // ── Score & rank available players ────────────────────────────────────────
 
@@ -372,6 +477,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // week 1, there are fewer to average and "last 3 wks" would be a claim about
     // weeks that do not exist. Naming the season matters only when it is not the
     // one being played — "last 3 wks" would otherwise imply this year.
+    // The most-added player in the feed, which the trend contribution is scaled
+    // against. Taken from the whole feed rather than the un-rostered part of it:
+    // the busiest add of the week sets what "hot" means even when he is already
+    // owned here.
+    const maxTrend = Math.max(0, ...trendingRaw.map((t) => t.count ?? 0));
+
     const spanWeeks = endWeek - startWeek + 1;
     const windowLabel = stats.fallback
       ? `wks ${startWeek}-${endWeek} of ${stats.season}`
@@ -397,50 +508,99 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
       const band      = bandOf(pid, pos);
       const isWeak    = weakPositions.includes(pos);
-      const needBonus = isWeak ? 15 : 0;
 
-      // Ranked on the projected mean rather than the raw average.
+      // ── What a suggestion is worth, in points per game ───────────────────
       //
-      // A pool this size is what makes the difference matter. On the raw average
-      // a player who went for 22 in his only appearance outranks one averaging 18
-      // across three weeks, and over a whole free-agent pool there are enough
-      // single-game outliers to fill the panel with them. The projection shrinks
-      // a thin sample toward what the position does — those two become 14.0 and
-      // 14.8 — so a sustained record outranks a moderate one-off.
+      // Three readings, all in the same units so the trade-off between them can
+      // be read off the constants rather than reverse-engineered.
       //
-      // It compresses rather than overrules: a genuinely huge single game still
-      // ranks high, because two pseudo-games of prior should not erase a 28-point
-      // afternoon. That is a judgement the reader makes, which is why the game
-      // count and the band travel with the row. See src/lib/projection.ts.
+      // Form is the projected mean, not the raw average. Over a pool this size
+      // that distinction is what keeps the top of the list honest: on the raw
+      // average a player who went for 22 in his only appearance outranks one
+      // averaging 18 across three weeks, and there are far more of the former.
+      // The projection shrinks a thin sample toward what the position does —
+      // those two become 14.0 and 14.8. It compresses rather than overrules; a
+      // genuinely huge single game still ranks high, which is why the game count
+      // and the band travel with the row. See src/lib/projection.ts.
       //
-      // A player with no record at all scores below everyone who has one, and is
-      // ordered against his own kind by how many managers are adding him.
-      const score = games > 0 ? band.projected * 0.7 + needBonus * 0.3 : -1;
+      // Need is a slope, not a bonus for crossing a line. A free agent at the
+      // worst position on the roster gains the full NEED_POINTS, one at the best
+      // gains nothing, and everything between scales — so the second- and
+      // third-weakest positions pull their players up too.
+      //
+      // Trend is Sleeper's add count as a share of the most-added player in the
+      // feed. It is back in the ranking rather than sitting on the row as
+      // decoration: several thousand managers adding someone this week is real
+      // information about a job change the stat window has not caught up with.
+      // Bounded well below the spread between a starter and a replacement, so it
+      // orders the list without deciding it.
+      const formPoints  = games > 0 ? band.projected : 0;
+      const needPoints  = (needIndex.get(pos) ?? 0) * NEED_POINTS;
+      const trendPoints = maxTrend > 0 ? ((trendCount ?? 0) / maxTrend) * TREND_POINTS : 0;
+      const score = formPoints + needPoints + trendPoints;
 
-      const reason = isWeak
-        ? `Addresses ${pos} weakness — ${recentAvg.toFixed(1)} pts avg ${windowLabel}`
-        : games > 0
-          ? `Strong recent form — ${recentAvg.toFixed(1)} pts avg ${windowLabel}${trendCount ? ` · ${trendCount.toLocaleString()} adds` : ''}`
-          : `No games in ${windowLabel}${trendCount ? ` · ${trendCount.toLocaleString()} adds` : ''}`;
+      const adds = trendCount ? ` · ${trendCount.toLocaleString()} adds` : '';
+      const reason = games === 0
+        ? `No games in ${windowLabel}${adds || ' — unplayed'}`
+        : isWeak
+          ? `Addresses ${pos} weakness — ${recentAvg.toFixed(1)} pts avg ${windowLabel}${adds}`
+          : `${recentAvg.toFixed(1)} pts avg ${windowLabel}${adds}`;
 
       suggestions.push({
         playerId: pid, name: info.name, position: pos, team: info.team,
-        headshot: null, // filled in for the shortlist only — see below
+        headshot: null, // filled in for the returned page only — see below
         recentAvg, games, ...band,
         reason, trendingCount: trendCount, _score: score,
       });
     }
 
-    // Trending volume breaks ties, which is the whole ordering for the players
-    // with no record: they all score -1 above.
     suggestions.sort((a, b) =>
       (b._score - a._score) || ((b.trendingCount ?? 0) - (a.trendingCount ?? 0)));
-    const shortlist = suggestions.slice(0, TOP_N);
 
-    // ── Headshots, for the eight that survived ────────────────────────────────
+    // ── A mix, rather than a hundred of whichever position is deepest ────────
+    //
+    // Sorted purely by score the list is honest and close to useless to page
+    // through: receivers outnumber every other position in the pool and score
+    // in the same range, so the first two screens are receivers and the reader
+    // never reaches the one tight end worth having. Taking the best remaining
+    // player at each position in turn puts every position on the first page,
+    // and starting each round at the position this roster most needs means the
+    // first row is a player for the biggest hole.
+    //
+    // Order within a position is untouched — still best first, by the score
+    // above — so the ranking is intact; this decides interleaving, not merit.
+    const byPosition = new Map<string, ScoredSuggestion[]>();
+    for (const sug of suggestions) {
+      const list = byPosition.get(sug.position) ?? [];
+      if (list.length < MAX_PER_POSITION) list.push(sug);
+      byPosition.set(sug.position, list);
+    }
+
+    // Rounds start at the position with the biggest hole. `positionNeeds` is
+    // already worst-first; anything the league does not start trails it.
+    const rotation = [
+      ...positionNeeds.map((n) => n.position),
+      ...[...byPosition.keys()].filter((p) => !positionNeeds.some((n) => n.position === p)),
+    ];
+
+    const mixed: ScoredSuggestion[] = [];
+    for (let round = 0; mixed.length < MAX_SUGGESTIONS; round++) {
+      let placed = 0;
+      for (const pos of rotation) {
+        const next = byPosition.get(pos)?.[round];
+        if (!next) continue;
+        mixed.push(next);
+        placed++;
+        if (mixed.length === MAX_SUGGESTIONS) break;
+      }
+      if (placed === 0) break; // every position exhausted
+    }
+    const shortlist = mixed;
+
+    // ── Headshots, for the players actually returned ──────────────────────────
     // The nflverse-sourced URLs the component prefers over Sleeper's CDN. Looked
-    // up after the ranking, not before: the pool is now the whole free-agent
-    // list, and eight IDs is a lookup where two thousand is a table scan.
+    // up after the ranking, not before: the pool is the whole free-agent list, so
+    // a hundred IDs is a lookup where two thousand is a table scan.
     const shortlistGsisIds = shortlist
       .map((sug) => xref.toGsis.get(sug.playerId))
       .filter((g): g is string => g != null);
@@ -466,8 +626,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // ── Context for the reader, not for the arithmetic ───────────────────────
     // The same fixture, opposing unit, forecast and betting line the matchup
     // report shows, from the same modules. None of it changes a number above it.
-    // Built for the shortlist only: it is what the panel renders, where the pool
-    // behind it is the whole free-agent list.
+    // Built for the returned page only — a hundred rows, against a pool of
+    // roughly two thousand.
     //
     // Fixtures come from the live season and the week about to be played — the
     // week a claim is for — even when the form window above reads an earlier
@@ -503,6 +663,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     const result: WaiverSuggestionsResponse = {
       weakPositions,
+      positionNeeds,
       starterSlots,
       scanned: suggestions.length,
       suggestions: top,

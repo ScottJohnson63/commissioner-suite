@@ -415,8 +415,146 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
       .toContain('No games');
   });
 
-  // WHY: the panel shows eight rows and says what was searched to get them. The
-  //      count has to be the pool actually ranked, not the page.
+  // ── The returned list: volume, mix, and trending ────────────────────────────
+
+  /** A pool shaped like the real one — receivers outnumber everyone else. */
+  function setupPool(): void {
+    const mix = ['WR','WR','WR','WR','RB','RB','RB','WR','TE','QB','WR','RB','K','WR','RB'];
+    const players = new Map<string, { name: string; position: string; team: string | null; gsisId: string }>();
+    for (let i = 0; i < 300; i++) {
+      players.set(`fa-${i}`, {
+        name: `Free Agent ${i}`, position: mix[i % mix.length],
+        team: 'KC', gsisId: `00-fa-${i}`,
+      });
+    }
+    // One roster, so nothing in the pool is owned.
+    mockSleeperGet
+      .mockResolvedValueOnce([{ roster_id: 1, owner_id: 'uid-1', players: [] }] as never)
+      .mockResolvedValueOnce([] as never);
+    mockGetPlayerMap.mockResolvedValueOnce(players as never);
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; week?: unknown };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (args?.where?.week === undefined) return [];
+      return Array.from({ length: 300 }, (_, i) => ([
+        { playerId: `00-fa-${i}`, position: mix[i % mix.length], fantasyPoints: 20 - (i % 19), receptions: 0 },
+        { playerId: `00-fa-${i}`, position: mix[i % mix.length], fantasyPoints: 18 - (i % 17), receptions: 0 },
+      ])).flat();
+    }) as never);
+  }
+
+  // WHY: eight rows was the whole answer when the pool was fifty trending names.
+  //      Against a real free-agent pool it is a keyhole, and which eight showed
+  //      depended entirely on the ranking being right.
+  it('returns a full page-through list rather than a handful', async () => {
+    const { leagueId } = freshIds();
+    setupPool();
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as { suggestions: unknown[]; scanned: number };
+
+    expect(json.suggestions).toHaveLength(100);
+    expect(json.scanned).toBeGreaterThan(100);
+  });
+
+  // WHY: sorted purely by score the list is honest and useless to page through.
+  //      Receivers outnumber every other position and score in the same range,
+  //      so the first two screens are receivers and the reader never reaches the
+  //      one tight end worth having.
+  it('mixes positions rather than leading with the deepest one', async () => {
+    const { leagueId } = freshIds();
+    setupPool();
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as { suggestions: { position: string }[] };
+
+    // The first page the panel renders.
+    const firstPage = json.suggestions.slice(0, 10).map((s) => s.position);
+    expect(new Set(firstPage).size).toBeGreaterThanOrEqual(4);
+
+    // And no single position swamps the list, however deep the pool is in it.
+    const counts = new Map<string, number>();
+    for (const s of json.suggestions) counts.set(s.position, (counts.get(s.position) ?? 0) + 1);
+    for (const n of counts.values()) expect(n).toBeLessThanOrEqual(30);
+  });
+
+  // WHY: the trending feed is back in the ranking rather than sitting on the row
+  //      as decoration. Several thousand managers adding someone this week is
+  //      real information about a job change the stat window has not caught up
+  //      with, and it should be able to move a player up the list.
+  it('lets add volume lift a player over a slightly better producer', async () => {
+    const { leagueId } = freshIds();
+    const players = new Map([
+      ['wr-hot',  { name: 'Just Promoted', position: 'WR', team: 'KC',  gsisId: '00-wr-hot'  }],
+      ['wr-cold', { name: 'Nobody Wants',  position: 'WR', team: 'BUF', gsisId: '00-wr-cold' }],
+    ]);
+    mockSleeperGet
+      .mockResolvedValueOnce([{ roster_id: 1, owner_id: 'uid-1', players: [] }] as never)
+      // wr-hot is the most-added player in the league this week.
+      .mockResolvedValueOnce([{ player_id: 'wr-hot', count: 9000 }] as never);
+    mockGetPlayerMap.mockResolvedValueOnce(players as never);
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; week?: unknown };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (args?.where?.week === undefined) return [];
+      return [
+        // The cold player is the better producer, but only just.
+        { playerId: '00-wr-cold', position: 'WR', fantasyPoints: 12, receptions: 0 },
+        { playerId: '00-wr-cold', position: 'WR', fantasyPoints: 12, receptions: 0 },
+        { playerId: '00-wr-hot',  position: 'WR', fantasyPoints: 11, receptions: 0 },
+        { playerId: '00-wr-hot',  position: 'WR', fantasyPoints: 11, receptions: 0 },
+      ];
+    }) as never);
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as {
+      suggestions: { playerId: string; recentAvg: number; trendingCount: number | null }[];
+    };
+
+    const ids = json.suggestions.map((s) => s.playerId);
+    expect(ids.indexOf('wr-hot')).toBeLessThan(ids.indexOf('wr-cold'));
+    // The averages still report what each did — the adds moved the order, not
+    // the numbers.
+    expect(json.suggestions.find((s) => s.playerId === 'wr-hot')?.recentAvg).toBe(11);
+    expect(json.suggestions.find((s) => s.playerId === 'wr-hot')?.trendingCount).toBe(9000);
+  });
+
+  // WHY: bounded, not decisive. A week of hype must not outrank a genuinely
+  //      better player — the add count orders the list, it does not decide it.
+  it('does not let add volume outrank a genuinely better player', async () => {
+    const { leagueId } = freshIds();
+    const players = new Map([
+      ['wr-hot',  { name: 'Hyped',      position: 'WR', team: 'KC',  gsisId: '00-wr-hot'  }],
+      ['wr-good', { name: 'Much Better', position: 'WR', team: 'BUF', gsisId: '00-wr-good' }],
+    ]);
+    mockSleeperGet
+      .mockResolvedValueOnce([{ roster_id: 1, owner_id: 'uid-1', players: [] }] as never)
+      .mockResolvedValueOnce([{ player_id: 'wr-hot', count: 9000 }] as never);
+    mockGetPlayerMap.mockResolvedValueOnce(players as never);
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; week?: unknown };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (args?.where?.week === undefined) return [];
+      return [
+        { playerId: '00-wr-good', position: 'WR', fantasyPoints: 20, receptions: 0 },
+        { playerId: '00-wr-good', position: 'WR', fantasyPoints: 20, receptions: 0 },
+        { playerId: '00-wr-hot',  position: 'WR', fantasyPoints: 8,  receptions: 0 },
+        { playerId: '00-wr-hot',  position: 'WR', fantasyPoints: 8,  receptions: 0 },
+      ];
+    }) as never);
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as { suggestions: { playerId: string }[] };
+
+    const ids = json.suggestions.map((s) => s.playerId);
+    expect(ids.indexOf('wr-good')).toBeLessThan(ids.indexOf('wr-hot'));
+  });
+
+  // WHY: the panel pages through the list and says what was searched to build
+  //      it. The count has to be the pool actually ranked, not the page.
   it('reports how many free agents were ranked', async () => {
     const { leagueId, userId } = freshIds();
     setupScan();
@@ -711,6 +849,138 @@ describe('GET /api/sleeper/waiver-suggestions', () => {
     const json = await res.json() as { weakPositions: string[] };
 
     expect(json.weakPositions).toContain('RB');
+  });
+
+  // WHY (reported): a manager with two quarterbacks, one a solid starter, was
+  //      told QB was his weakness. "More than 15% below the league median" was
+  //      the whole test, and a percentage of the median says nothing about where
+  //      a roster actually stands. Whenever the top of a position pulls away
+  //      from the middle — five elite quarterbacks and everyone else, which is
+  //      an ordinary season — the median rides up with them and a perfectly
+  //      startable mid-table QB lands more than 15% below it. Weakness now needs
+  //      the rank to agree, and the rank is the reading that survives whatever
+  //      shape the position happens to have.
+  it('does not call a mid-table starter weak when the top of the league pulls away', async () => {
+    const { leagueId } = freshIds();
+    // Ten teams. Five elite quarterbacks bunched at the top, then a gap, then
+    // the rest. Mine is 17 — sixth of ten, a starter anybody would play, and
+    // 17.6% below a median that only sits at 20.5 because of the five above it.
+    const qbAverages = [30, 28, 26, 25, 24, 17, 16, 15, 14, 13];
+    const MINE = 5; // index of the roster under test
+    const qbRosters = qbAverages.map((_, i) => ({
+      roster_id: i + 1,
+      owner_id: `uid-${i}`,
+      // Mine carries two, as reported: the starter and a backup.
+      players: i === MINE ? ['qb-mine', 'qb-mine-2'] : [`qb-${i}`],
+    }));
+    const qbPlayers = new Map<string, { name: string; position: string; team: string | null; gsisId: string }>([
+      ['qb-mine',   { name: 'My Starter', position: 'QB', team: 'KC',  gsisId: '00-qb-mine'   }],
+      ['qb-mine-2', { name: 'My Backup',  position: 'QB', team: 'NYJ', gsisId: '00-qb-mine-2' }],
+    ]);
+    qbAverages.forEach((_, i) => {
+      if (i === MINE) return;
+      qbPlayers.set(`qb-${i}`, { name: `QB ${i}`, position: 'QB', team: 'BUF', gsisId: `00-qb-${i}` });
+    });
+
+    const rows = qbAverages.flatMap((pts, i) =>
+      i === MINE
+        ? [{ playerId: '00-qb-mine', position: 'QB', fantasyPoints: pts, receptions: 0 },
+           // The backup really is poor. Taking the best of the two, rather than
+           // averaging them, is why carrying a backup cannot create a weakness.
+           { playerId: '00-qb-mine-2', position: 'QB', fantasyPoints: 4, receptions: 0 }]
+        : [{ playerId: `00-qb-${i}`, position: 'QB', fantasyPoints: pts, receptions: 0 }]);
+
+    mockSleeperGet
+      .mockResolvedValueOnce(qbRosters as never)
+      .mockResolvedValueOnce([] as never);
+    mockGetPlayerMap.mockResolvedValueOnce(qbPlayers as never);
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; week?: unknown };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (args?.where?.week === undefined) return [];
+      return rows;
+    }) as never);
+
+    const res  = await GET(makeReq(leagueId, `uid-${MINE}`));
+    const json = await res.json() as {
+      weakPositions: string[];
+      positionNeeds: { position: string; mine: number; median: number; rank: number; of: number }[];
+    };
+
+    const qb = json.positionNeeds.find((n) => n.position === 'QB')!;
+    // Carrying a backup does not drag the group down: the group is the starter.
+    expect(qb.mine).toBe(17);
+    expect(qb.median).toBe(20.5);
+    // The old test, kept in the fixture on purpose — this is the exact condition
+    // that produced the false flag, and it is still true.
+    expect(qb.mine).toBeLessThan(qb.median * 0.85);
+    // The rank disagrees, and the rank is what decides.
+    expect(qb.rank).toBe(6);
+    expect(qb.of).toBe(10);
+    expect(json.weakPositions).not.toContain('QB');
+  });
+
+  // WHY: a roster whose players have no games in the window is a hole in the
+  //      data — an unsynced week, a name the stat table files differently, a
+  //      season fallback that predates the player — not a hole in the roster.
+  //      Calling that a weakness sends someone to drop a starter over it.
+  it('reports a position with no games as unmeasured rather than weak', async () => {
+    const { leagueId } = freshIds();
+    const qbRosters = [
+      { roster_id: 1, owner_id: 'uid-1', players: ['qb-unknown'] },
+      { roster_id: 2, owner_id: 'uid-2', players: ['qb-known'] },
+    ];
+    const qbPlayers = new Map([
+      // Nothing in the stat window resolves to this player at all.
+      ['qb-unknown', { name: 'Unresolved QB', position: 'QB', team: 'KC',  gsisId: '00-qb-unknown' }],
+      ['qb-known',   { name: 'Known QB',      position: 'QB', team: 'BUF', gsisId: '00-qb-known'   }],
+    ]);
+    mockSleeperGet
+      .mockResolvedValueOnce(qbRosters as never)
+      .mockResolvedValueOnce([] as never);
+    mockGetPlayerMap.mockResolvedValueOnce(qbPlayers as never);
+    mockFindMany.mockImplementation((async (args: {
+      where?: { headshot?: unknown; week?: unknown };
+    }) => {
+      if (args?.where?.headshot) return [];
+      if (args?.where?.week === undefined) return [];
+      return [{ playerId: '00-qb-known', position: 'QB', fantasyPoints: 22, receptions: 0 }];
+    }) as never);
+
+    const res  = await GET(makeReq(leagueId, 'uid-1'));
+    const json = await res.json() as {
+      weakPositions: string[];
+      positionNeeds: { position: string; unmeasured: boolean; weak: boolean; games: number }[];
+    };
+
+    const qb = json.positionNeeds.find((n) => n.position === 'QB')!;
+    expect(qb.games).toBe(0);
+    expect(qb.unmeasured).toBe(true);
+    expect(qb.weak).toBe(false);
+    expect(json.weakPositions).not.toContain('QB');
+  });
+
+  // WHY: every roster has a thinnest position whether or not it is bad enough to
+  //      act on. Showing only what crossed a threshold meant most weeks showed
+  //      nothing at all, and a week that showed one chip gave no way to judge it.
+  it('ranks every started position, not only the weak ones', async () => {
+    const { leagueId, userId } = freshIds();
+    setupHappyPath();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as {
+      positionNeeds: { position: string; rank: number; of: number; slots: number }[];
+    };
+
+    // One entry per position the league starts — QB, RB, WR, TE, K.
+    expect(json.positionNeeds.map((n) => n.position).sort())
+      .toEqual(['K', 'QB', 'RB', 'TE', 'WR']);
+    for (const need of json.positionNeeds) {
+      expect(need.rank).toBeGreaterThanOrEqual(1);
+      expect(need.rank).toBeLessThanOrEqual(need.of);
+      expect(need.slots).toBeGreaterThan(0);
+    }
   });
 
   // WHY: a roster carrying nobody at a position used to be left out of that

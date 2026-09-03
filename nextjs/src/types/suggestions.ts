@@ -19,6 +19,47 @@ export interface StatWindow {
   fallback:  boolean;
 }
 
+/**
+ * Where one position on a roster sits against the rest of the league.
+ *
+ * Reported for every position the league starts, ranked rather than flagged.
+ * "More than 15% below the median" was the whole test and it flagged good
+ * starters: when the top of a position pulls away from the middle, the median
+ * rides up with it and a mid-table starter falls more than 15% short of a number
+ * no mid-table roster is near. A rank survives that; a percentage does not.
+ */
+export interface PositionNeed {
+  position: string;
+  /** Starting slots the league gives this position, which `mine` is measured over. */
+  slots:    number;
+  /** My starting group's points per game across the window. */
+  mine:     number;
+  /** League median of the same figure. */
+  median:   number;
+  /** 1 = best in the league. Ties share the better rank. */
+  rank:     number;
+  /** Rosters compared — the league size. */
+  of:       number;
+  /** Games behind `mine`. 0 means nothing was measured, not that I scored zero. */
+  games:    number;
+  /**
+   * Bottom third of the league *and* more than 15% below the median.
+   *
+   * Both, because either alone is wrong: a rank alone calls someone weak in a
+   * league where every roster is within a point, and a percentage alone calls a
+   * mid-table starter weak at a position that happens to be tightly packed.
+   */
+  weak:     boolean;
+  /**
+   * No player in my group has a game in the window.
+   *
+   * A hole in the data — an unsynced week, a name the stat table files
+   * differently — not a hole in the roster, and never counted weak. Reported so
+   * a zero on the panel can be read as "not measured" rather than "scored none".
+   */
+  unmeasured: boolean;
+}
+
 export interface WaiverSuggestion {
   playerId:      string;
   name:          string;
@@ -61,7 +102,16 @@ export interface WaiverSuggestion {
 }
 
 export interface WaiverSuggestionsResponse {
+  /** Positions that are genuinely weak — the subset of `positionNeeds` with `weak`. */
   weakPositions: string[];
+  /**
+   * Every position the league starts, worst first.
+   *
+   * The panel shows the top few as a needs ladder rather than a single flag, so
+   * a roster with no position past the weakness bar still gets an answer to
+   * "where am I thinnest".
+   */
+  positionNeeds: PositionNeed[];
   /**
    * Starting slots per position in this league, which is what `weakPositions`
    * was measured over — two RB slots means the RB comparison ran over each
