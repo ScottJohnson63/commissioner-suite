@@ -1,7 +1,12 @@
 // src/app/api/sleeper/trade-suggestions/route.ts
 //
-// Identifies mutually beneficial trade opportunities by comparing every team's
-// positional surplus and deficit, then surfaces balanced proposals.
+// Identifies mutually beneficial trade opportunities by reading every roster as
+// a depth chart, then surfacing the deals that improve both starting lineups.
+//
+// The pieces each side offers come from its own surplus rather than the top of
+// its best position, so the same void produces several different proposals —
+// see src/lib/tradeFinder.ts for why the best player at a position is almost
+// never the right one to trade.
 //
 // GET /api/sleeper/trade-suggestions?leagueId=&userId=&season=
 
@@ -13,10 +18,16 @@ import { resolveSeason } from '@/lib/sleeper/week';
 import { resolveStatsSeason } from '@/lib/statsSeason';
 import { buildGsisXref } from '@/lib/sleeper/gsisXref';
 import { getScoringSettings } from '@/lib/sleeper/scoringSettings';
+import { getStarterSlots } from '@/lib/sleeper/lineup';
 import { scoreRow, STAT_LINE_SELECT } from '@/lib/scoring';
 import { sleeperGet } from '@/lib/sleeper/client';
 import type { SleeperRoster, SleeperUser } from '@/lib/sleeper/types';
 import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
+import {
+  TRADE_POSITIONS, isTradePos, buildRosterShape, findTrades, describeTrade,
+  positionStrength,
+} from '@/lib/tradeFinder';
+import type { DepthPlayer, RosterEntry, RosterShape } from '@/lib/tradeFinder';
 import type { TradePlayer, TradeProposal, TradeSuggestionsResponse } from '@/types/suggestions';
 import { ok, err } from '@/lib/api';
 
@@ -24,42 +35,32 @@ export type { TradePlayer, TradeProposal, TradeSuggestionsResponse };
 
 const LIVE_TTL = ROUTE_CACHE_TTL.LIVE;
 
+/** Proposals returned — what the panel shows. */
+const MAX_PROPOSALS = 5;
+
 // ─── Cache ────────────────────────────────────────────────────────────────────
 
 const cache = new RouteCache<TradeSuggestionsResponse>();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const POSITIONS = ['QB', 'RB', 'WR', 'TE', 'K'] as const;
-type Pos = (typeof POSITIONS)[number];
-
-function isPos(p: string): p is Pos {
-  return (POSITIONS as readonly string[]).includes(p);
-}
-
 /**
- * Computes a trade fairness score from 0–100.
- * 100 = perfectly balanced (equal season points on both sides).
- * Scores below 60 are filtered out as too lopsided to recommend.
+ * A depth-chart player as the panel wants him.
  *
- * Formula: 100 − (100 × |give − receive| / max(give, receive, 1))
+ * `cost` stays server-side: it is the reason the finder picked this player, and
+ * `describeTrade` has already said it in words the panel can print.
  */
-function fairness(givePts: number, receivePts: number): number {
-  const denom = Math.max(givePts, receivePts, 1);
-  return Math.max(0, Math.min(100, 100 - (100 * Math.abs(givePts - receivePts)) / denom));
-}
-
-/**
- * Generates a one-sentence human-readable summary of a trade proposal.
- * If both sides involve the same position, describes it as a like-for-like
- * upgrade; otherwise describes it as trading depth for a starter at a
- * different position.
- */
-function buildSummary(give: TradePlayer[], receive: TradePlayer[]): string {
-  const givePos    = [...new Set(give.map((p) => p.position))].join('/');
-  const receivePos = [...new Set(receive.map((p) => p.position))].join('/');
-  if (givePos === receivePos) return `Upgrade your ${givePos} with a like-for-like swap`;
-  return `Trade ${givePos} depth for their ${receivePos} starter`;
+function toTradePlayer(p: DepthPlayer): TradePlayer {
+  return {
+    // The roster ID is already the Sleeper ID, which is what CDN headshots key on.
+    playerId:        p.playerId,
+    sleeperPlayerId: p.playerId,
+    name:            p.name,
+    position:        p.position,
+    seasonPts:       p.seasonPts,
+    depthRank:       p.depthRank,
+    starter:         p.starter,
+  };
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────
@@ -94,6 +95,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // a stored column, and the stored one is full PPR with kickers at zero and
     // no defenses — so each week is scored under this league's own rules first.
     const scoring = await getScoringSettings(leagueId);
+
+    // How many players this league starts at each position — the line that
+    // separates a roster's surplus from the lineup it has to field.
+    const starterSlots = await getStarterSlots(leagueId);
 
     /**
      * Season points per player, summed from weekly rows under `scoring`.
@@ -147,124 +152,71 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       }
     }
 
-    // ── Shared analysis ────────────────────────────────────────────────────────
+    // ── Depth charts ───────────────────────────────────────────────────────────
 
-    const myRoster = rosters.find((r) => r.owner_id === userId);
-    if (!myRoster) {
+    const shapes: RosterShape[] = [];
+    for (const roster of rosters) {
+      if (!roster.owner_id) continue;
+      const entries: RosterEntry[] = [];
+      for (const pid of roster.players ?? []) {
+        const info = playerMap.get(pid);
+        if (!info || !isTradePos(info.position)) continue;
+        entries.push({
+          playerId:  pid,
+          name:      info.name,
+          position:  info.position,
+          seasonPts: seasonPtsMap.get(pid) ?? 0,
+        });
+      }
+      shapes.push(buildRosterShape(roster.owner_id, entries, starterSlots));
+    }
+
+    const myShape = shapes.find((s) => s.ownerId === userId);
+    if (!myShape) {
       return err('Roster not found for this user', 404);
     }
 
-    // For each team: find their best player per position
-    interface TeamPosBest { ownerId: string; playerId: string; pts: number }
-    const posBest: Record<Pos, TeamPosBest[]> = { QB: [], RB: [], WR: [], TE: [], K: [] };
-
-    for (const roster of rosters) {
-      if (!roster.owner_id) continue;
-      const byPos: Partial<Record<Pos, { pid: string; pts: number }[]>> = {};
-      for (const pid of roster.players ?? []) {
-        const info = playerMap.get(pid);
-        const pos  = info?.position;
-        if (!pos || !isPos(pos)) continue;
-        if (!byPos[pos]) byPos[pos] = [];
-        byPos[pos]!.push({ pid, pts: seasonPtsMap.get(pid) ?? 0 });
-      }
-      for (const pos of POSITIONS) {
-        const sorted = (byPos[pos] ?? []).sort((a, b) => b.pts - a.pts);
-        if (sorted.length > 0) {
-          posBest[pos].push({ ownerId: roster.owner_id, playerId: sorted[0].pid, pts: sorted[0].pts });
-        }
-      }
-    }
-
-    // User's position ranks (1 = best in league)
+    // ── Where I stand, position by position ────────────────────────────────────
+    // Ranked on the whole starting group rather than the single best player: a
+    // league that starts two running backs is not described by anyone's RB1, and
+    // an elite RB1 with nothing behind him used to read as strength at the exact
+    // position this roster most needs to fill.
     const myPositionRanks: Record<string, number> = {};
-    for (const pos of POSITIONS) {
-      const sorted = [...posBest[pos]].sort((a, b) => b.pts - a.pts);
-      const rank   = sorted.findIndex((e) => e.ownerId === userId) + 1;
+    for (const pos of TRADE_POSITIONS) {
+      const strengths = shapes.map((s) => ({
+        ownerId: s.ownerId,
+        pts:     positionStrength(s, pos, starterSlots),
+      }));
+      // A position nobody in the league rosters is not a ranking, it is a gap in
+      // the player map. Reporting "#1" for it would be a badge for owning nothing.
+      if (strengths.every((s) => s.pts === 0)) continue;
+      strengths.sort((a, b) => b.pts - a.pts);
+      const rank = strengths.findIndex((s) => s.ownerId === userId) + 1;
       if (rank > 0) myPositionRanks[pos] = rank;
     }
 
-    const leagueSize = rosters.filter((r) => r.owner_id).length;
-    const midpoint   = Math.ceil(leagueSize / 2);
+    // ── Proposals ──────────────────────────────────────────────────────────────
 
-    const mySurplusPos = POSITIONS.filter((p) => (myPositionRanks[p] ?? 999) <= 3);
-    const myDeficitPos = POSITIONS.filter((p) => (myPositionRanks[p] ?? 999) > midpoint);
+    const rosterIdByOwner = new Map<string, number>();
+    for (const r of rosters) if (r.owner_id) rosterIdByOwner.set(r.owner_id, r.roster_id);
 
-    // Build trade proposals against each other team
-    const proposals: TradeProposal[] = [];
-
-    function topPlayerForPos(
-      rosterObj: SleeperRoster,
-      pos: Pos,
-      exclude: Set<string>,
-    ): TradePlayer | null {
-      const candidates = (rosterObj.players ?? [])
-        .filter((pid) => {
-          const info = playerMap.get(pid);
-          return info?.position === pos && !exclude.has(pid);
-        })
-        .map((pid) => ({ pid, pts: seasonPtsMap.get(pid) ?? 0 }))
-        .sort((a, b) => b.pts - a.pts);
-      if (candidates.length === 0) return null;
-      const { pid, pts } = candidates[0];
-      const info = playerMap.get(pid);
-      if (!info) return null;
-      // pid is already the Sleeper ID, which is what the CDN headshots key on.
-      return { playerId: pid, sleeperPlayerId: pid, name: info.name, position: pos, seasonPts: pts };
-    }
-
-    for (const otherRoster of rosters) {
-      if (!otherRoster.owner_id || otherRoster.owner_id === userId) continue;
-      const otherOwner = otherRoster.owner_id;
-
-      const otherPosRanks: Record<string, number> = {};
-      for (const pos of POSITIONS) {
-        const sorted = [...posBest[pos]].sort((a, b) => b.pts - a.pts);
-        const rank   = sorted.findIndex((e) => e.ownerId === otherOwner) + 1;
-        if (rank > 0) otherPosRanks[pos] = rank;
-      }
-
-      const theirSurplusAtMyDeficit = myDeficitPos.filter((p) => (otherPosRanks[p] ?? 999) <= 3);
-      const theirDeficitAtMySurplus = mySurplusPos.filter((p) => (otherPosRanks[p] ?? 999) > midpoint);
-
-      if (theirSurplusAtMyDeficit.length === 0 || theirDeficitAtMySurplus.length === 0) continue;
-
-      for (const receivePos of theirSurplusAtMyDeficit) {
-        for (const givePos of theirDeficitAtMySurplus) {
-          const receivePlayer = topPlayerForPos(otherRoster, receivePos as Pos, new Set());
-          const givePlayer    = topPlayerForPos(myRoster,    givePos    as Pos, new Set());
-          if (!receivePlayer || !givePlayer) continue;
-
-          const score = fairness(givePlayer.seasonPts, receivePlayer.seasonPts);
-          if (score < 60) continue;
-
-          proposals.push({
-            targetTeamName: teamNameMap.get(otherOwner) ?? `Roster ${otherRoster.roster_id}`,
-            targetOwnerId:  otherOwner,
-            give:           [givePlayer],
-            receive:        [receivePlayer],
-            fairnessScore:  score,
-            summary:        buildSummary([givePlayer], [receivePlayer]),
-          });
-        }
-      }
-    }
-
-    // Deduplicate and sort
-    proposals.sort((a, b) => b.fairnessScore - a.fairnessScore);
-    const seen    = new Set<string>();
-    const deduped = proposals
-      .filter((p) => {
-        const key = `${p.give[0]?.playerId}-${p.receive[0]?.playerId}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .slice(0, 5);
+    const proposals: TradeProposal[] = findTrades(myShape, shapes, starterSlots, MAX_PROPOSALS)
+      .map((c) => ({
+        targetTeamName: teamNameMap.get(c.targetOwnerId)
+                        ?? `Roster ${rosterIdByOwner.get(c.targetOwnerId) ?? '?'}`,
+        targetOwnerId:  c.targetOwnerId,
+        give:           c.give.map(toTradePlayer),
+        receive:        c.receive.map(toTradePlayer),
+        fairnessScore:  c.fairnessScore,
+        lineupGain:     Math.round(c.myGain * 10) / 10,
+        theirLineupGain: Math.round(c.theirGain * 10) / 10,
+        summary:        describeTrade(c),
+      }));
 
     const result: TradeSuggestionsResponse = {
       myPositionRanks,
-      proposals: deduped,
+      starterSlots,
+      proposals,
       statsSeason,
       statsFallback,
     };

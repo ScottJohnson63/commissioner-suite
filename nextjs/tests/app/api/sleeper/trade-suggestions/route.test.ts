@@ -2,9 +2,15 @@
 //
 // GET /api/sleeper/trade-suggestions?leagueId=&userId=
 //
-// Identifies mutually beneficial trade opportunities by comparing positional
-// surplus/deficit across teams and surfacing balanced proposals (fairness ≥ 60).
-// Results are cached 10 minutes in live mode.
+// Identifies mutually beneficial trade opportunities by reading each roster as a
+// depth chart and surfacing the balanced proposals (fairness ≥ 60) that improve
+// both starting lineups. Results are cached 10 minutes in live mode.
+//
+// The second describe block below covers what the depth chart is for: which
+// player a roster offers, and how much the returned set varies. Both are things
+// the old surplus/deficit version got wrong by construction — it could only ever
+// offer the best player at a position, so every proposal for one void was the
+// same trade with a different partner's name on it.
 //
 // ── Rate-limit context ────────────────────────────────────────────────────────
 // Sleeper docs: stay under 1000 req/min globally; no per-endpoint throttle.
@@ -15,6 +21,7 @@
 // Mocks:
 //   @/lib/sleeper/client       — sleeperGet  (rosters + users)
 //   @/lib/sleeper/playerCache  — getPlayerMapSafe
+//   @/lib/sleeper/lineup       — getStarterSlots
 //   @/lib/prisma               — nflWeeklyStat.groupBy (season totals)
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
@@ -36,6 +43,14 @@ jest.mock('@/lib/sleeper/playerCache', () => ({
 // sleeperGet responses in order, and an extra call would shift that sequence.
 jest.mock('@/lib/sleeper/scoringSettings', () => ({
   getScoringSettings: jest.fn(async () => ({ rec: 0.5, fgm_30_39: 3, xpm: 1, sack: 1, int: 2 })),
+}));
+
+// Same reason as the scoring settings above — getStarterSlots reads the league
+// payload through sleeperGet, and a fourth call would shift the queued order.
+// The slot counts are the line every depth rank and every trade cost in these
+// tests is drawn against, so they are stated here rather than defaulted.
+jest.mock('@/lib/sleeper/lineup', () => ({
+  getStarterSlots: jest.fn(async () => ({ QB: 1, RB: 2, WR: 2, TE: 1, K: 1 })),
 }));
 
 jest.mock('@/lib/prisma', () => ({
@@ -365,5 +380,249 @@ describe('GET /api/sleeper/trade-suggestions', () => {
 
     const res = await GET(makeReq(leagueId, userId));
     expect(res.status).toBe(502);
+  });
+});
+
+// ── Roster-shape behaviour ────────────────────────────────────────────────────
+//
+// A deeper league than the fixture above, because depth is the whole subject:
+// uid-1 (me) starts two RBs and rosters four, has no tight end at all, and has
+// exactly one quarterback. Its partners are each lopsided a different way.
+
+const deepRosters = [
+  {
+    roster_id: 1, owner_id: 'uid-1',
+    // RB-rich, TE-barren, one QB and no second one behind him.
+    players: ['qb-1', 'rb-1', 'rb-2', 'rb-3', 'rb-4', 'wr-1', 'wr-2', 'k-1'],
+    settings: { wins: 5, losses: 3, fpts: 0, fpts_decimal: 0 },
+  },
+  {
+    roster_id: 2, owner_id: 'uid-2',
+    // Two startable TEs in a league that starts one; thin at RB.
+    players: ['qb-2', 'te-1', 'te-2', 'rb-5', 'wr-3', 'wr-4'],
+    settings: { wins: 4, losses: 4, fpts: 0, fpts_decimal: 0 },
+  },
+  {
+    roster_id: 3, owner_id: 'uid-3',
+    // Three startable WRs in a league that starts two; weak RB2.
+    players: ['qb-3', 'wr-5', 'wr-6', 'wr-7', 'te-3', 'rb-6', 'rb-7'],
+    settings: { wins: 6, losses: 2, fpts: 0, fpts_decimal: 0 },
+  },
+  {
+    roster_id: 4, owner_id: 'uid-4',
+    // An elite TE, a startable one behind him, and no running backs at all.
+    players: ['qb-4', 'te-4', 'te-5', 'wr-8'],
+    settings: { wins: 2, losses: 6, fpts: 0, fpts_decimal: 0 },
+  },
+];
+
+const deepUsers = [
+  { user_id: 'uid-1', display_name: 'Alice', metadata: { team_name: 'Alpha Squad' } },
+  { user_id: 'uid-2', display_name: 'Bob',   metadata: { team_name: 'Beta Force'  } },
+  { user_id: 'uid-3', display_name: 'Cara',  metadata: { team_name: 'Gamma Gang'  } },
+  { user_id: 'uid-4', display_name: 'Dan',   metadata: { team_name: 'Delta Dawgs' } },
+];
+
+const deepPlayers: [string, string, string, number][] = [
+  // id,     name,          position, season points
+  ['qb-1',  'My QB1',       'QB', 320],
+  ['rb-1',  'My RB1',       'RB', 300],
+  ['rb-2',  'My RB2',       'RB', 250],
+  ['rb-3',  'My RB3',       'RB', 220],
+  ['rb-4',  'My RB4',       'RB', 190],
+  ['wr-1',  'My WR1',       'WR', 240],
+  ['wr-2',  'My WR2',       'WR', 210],
+  ['k-1',   'My K',         'K',  120],
+  ['qb-2',  'Their QB',     'QB', 280],
+  ['te-1',  'Their TE1',    'TE', 260],
+  ['te-2',  'Their TE2',    'TE', 230],
+  ['rb-5',  'Their RB1',    'RB', 200],
+  ['wr-3',  'Their WR1',    'WR', 180],
+  ['wr-4',  'Their WR2',    'WR', 170],
+  ['qb-3',  'Gamma QB',     'QB', 240],
+  ['wr-5',  'Gamma WR1',    'WR', 320],
+  ['wr-6',  'Gamma WR2',    'WR', 300],
+  ['wr-7',  'Gamma WR3',    'WR', 270],
+  ['te-3',  'Gamma TE',     'TE', 240],
+  ['rb-6',  'Gamma RB1',    'RB', 210],
+  ['rb-7',  'Gamma RB2',    'RB', 150],
+  ['qb-4',  'Delta QB',     'QB', 210],
+  ['te-4',  'Delta TE1',    'TE', 420],
+  ['te-5',  'Delta TE2',    'TE', 200],
+  ['wr-8',  'Delta WR',     'WR', 150],
+];
+
+const deepPlayerMap = new Map(
+  deepPlayers.map(([id, name, position]) =>
+    [id, { name, position, team: 'NFL', gsisId: `00-gsis-${id}` }]),
+);
+
+const deepStatRows = deepPlayers.map(([id, , position, pts]) =>
+  ({ playerId: `00-gsis-${id}`, position, fantasyPoints: pts, receptions: 0 }));
+
+interface ProposalJson {
+  targetOwnerId:   string;
+  give:            { playerId: string; position: string; depthRank: number; starter: boolean }[];
+  receive:         { playerId: string; position: string; depthRank: number; starter: boolean }[];
+  fairnessScore:   number;
+  lineupGain:      number;
+  theirLineupGain: number;
+  summary:         string;
+}
+
+describe('GET /api/sleeper/trade-suggestions — roster shape', () => {
+  beforeEach(() => {
+    mockSleeperGet.mockReset();
+    mockGetPlayerMap.mockReset();
+    mockGroupBy.mockReset();
+    mockFindMany.mockReset();
+    mockAggregate.mockReset();
+    mockGetPlayerMap.mockResolvedValue(new Map() as never);
+    mockGroupBy.mockResolvedValue([] as never);
+    mockAggregate.mockResolvedValue({ _max: { week: 18 } } as never);
+    clearStatsSeasonCache();
+    clearGsisXrefCache();
+  });
+
+  async function deepProposals(): Promise<ProposalJson[]> {
+    const { leagueId, userId } = freshIds();
+    mockSleeperGet
+      .mockResolvedValueOnce(deepRosters as never)
+      .mockResolvedValueOnce(deepUsers   as never);
+    mockGetPlayerMap.mockResolvedValueOnce(deepPlayerMap as never);
+    mockFindMany.mockResolvedValue(deepStatRows as never);
+
+    const res  = await GET(makeReq(leagueId, userId));
+    expect(res.status).toBe(200);
+    const json = await res.json() as { proposals: ProposalJson[] };
+    return json.proposals;
+  }
+
+  // WHY: the point of the rewrite. One void used to produce one proposal built
+  //      on one player, repeated against every partner who happened to have a
+  //      surplus there. A roster with four RBs and no TE has several different
+  //      ways to fill the hole and should be shown more than one of them.
+  it('varies the players and the partners across the returned proposals', async () => {
+    const proposals = await deepProposals();
+
+    expect(proposals.length).toBeGreaterThan(1);
+
+    const partners  = new Set(proposals.map((p) => p.targetOwnerId));
+    const givenIds  = new Set(proposals.flatMap((p) => p.give.map((pl) => pl.playerId)));
+    expect(partners.size).toBeGreaterThan(1);
+    expect(givenIds.size).toBeGreaterThan(1);
+
+    // And no single player carries the whole list.
+    for (const id of givenIds) {
+      const appearances = proposals.filter((p) => p.give.some((pl) => pl.playerId === id));
+      expect(appearances.length).toBeLessThan(proposals.length);
+    }
+  });
+
+  // WHY: the old finder offered each roster's best player at a position, which
+  //      on this fixture means offering the only quarterback to fill the tight
+  //      end hole — swapping the void for a new one. Cost is measured against
+  //      the man who slides up, and behind qb-1 there is nobody.
+  it('never offers the only starter at a position with nothing behind him', async () => {
+    const proposals = await deepProposals();
+
+    const given = proposals.flatMap((p) => p.give.map((pl) => pl.playerId));
+    expect(given.length).toBeGreaterThan(0);
+    expect(given).not.toContain('qb-1');
+    // The kicker is never offered either — he scores nothing under this
+    // league's rules, so there is no deal in which he is worth a roster spot.
+    expect(given).not.toContain('k-1');
+  });
+
+  // WHY: depth behind the starter line is what a roster can actually spare, so
+  //      at least some proposals should be spending it rather than a starter.
+  it('offers depth from behind the starter line', async () => {
+    const proposals = await deepProposals();
+
+    expect(proposals.some((p) => p.give.every((pl) => !pl.starter))).toBe(true);
+    // RB3 and RB4 are behind two starting slots; either is free to move.
+    const given = proposals.flatMap((p) => p.give.map((pl) => pl.playerId));
+    expect(given.some((id) => id === 'rb-3' || id === 'rb-4')).toBe(true);
+  });
+
+  // WHY: a 420-point tight end cannot be bought with any single spare piece
+  //      without failing the fairness test — 220-for-420 scores 52. Two spare
+  //      backs together score 98, and both lineups still come out ahead. A
+  //      one-player-per-side finder simply cannot see that trade.
+  it('packages two spare players when no single one balances a star', async () => {
+    const proposals = await deepProposals();
+
+    const packaged = proposals.filter((p) => p.give.length > 1 || p.receive.length > 1);
+    expect(packaged.length).toBeGreaterThan(0);
+    for (const p of packaged) {
+      expect(p.fairnessScore).toBeGreaterThanOrEqual(60);
+    }
+    // Specifically: the elite TE is reachable, and only as a package.
+    const forEliteTe = proposals.find((p) => p.receive.some((pl) => pl.playerId === 'te-4'));
+    expect(forEliteTe?.give.length).toBe(2);
+  });
+
+  // WHY: a proposal that does not improve the lineup is not a suggestion, and
+  //      one the other manager has no reason to accept is not a trade. Both
+  //      deltas are computed on the same starting-slot arithmetic, so both are
+  //      assertable.
+  it('only returns trades that improve both starting lineups', async () => {
+    const proposals = await deepProposals();
+
+    expect(proposals.length).toBeGreaterThan(0);
+    for (const p of proposals) {
+      expect(p.lineupGain).toBeGreaterThan(0);
+      expect(p.theirLineupGain).toBeGreaterThan(0);
+      expect(p.fairnessScore).toBeGreaterThanOrEqual(60);
+    }
+  });
+
+  // WHY: the depth rank is the answer to "why this player?" — the panel prints
+  //      it as "RB3" beside the name — and it is taken on the roster the player
+  //      is leaving, not on the one receiving him.
+  it('labels every player with his own roster depth rank', async () => {
+    const proposals = await deepProposals();
+
+    const myDepth: Record<string, number> = { 'rb-1': 1, 'rb-2': 2, 'rb-3': 3, 'rb-4': 4 };
+    for (const p of proposals) {
+      for (const pl of [...p.give, ...p.receive]) {
+        expect(pl.depthRank).toBeGreaterThan(0);
+      }
+      for (const pl of p.give) {
+        if (myDepth[pl.playerId]) expect(pl.depthRank).toBe(myDepth[pl.playerId]);
+        // Two RB slots: ranks 1 and 2 start, 3 and 4 do not.
+        if (pl.position === 'RB') expect(pl.starter).toBe(pl.depthRank <= 2);
+      }
+    }
+  });
+
+  // WHY: rank is taken on the whole starting group, not the best player. uid-1
+  //      starts two RBs and is deepest in the league at the position; a
+  //      single-best-player rank cannot see the difference between that and one
+  //      elite back with nothing behind him.
+  it('ranks positions on the starting group, and skips positions nobody rosters', async () => {
+    const { leagueId, userId } = freshIds();
+    mockSleeperGet
+      .mockResolvedValueOnce(deepRosters as never)
+      .mockResolvedValueOnce(deepUsers   as never);
+    mockGetPlayerMap.mockResolvedValueOnce(deepPlayerMap as never);
+    mockFindMany.mockResolvedValue(deepStatRows as never);
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as {
+      myPositionRanks: Record<string, number>;
+      starterSlots:    Record<string, number>;
+    };
+
+    // RB: mine is 300 + 250 = 550, the best top-two in the league.
+    expect(json.myPositionRanks.RB).toBe(1);
+    // TE: rostered by three teams and not by me, so last of four.
+    expect(json.myPositionRanks.TE).toBe(4);
+    // K: the fixture's kicker rows carry no made kicks, so the league scores
+    // nothing at the position. A rank of "#1" there would be a badge for a
+    // column of zeroes, so the position is left off entirely.
+    expect(json.myPositionRanks).not.toHaveProperty('K');
+    // The slots come back so the panel can say what "RB3" was measured against.
+    expect(json.starterSlots).toEqual({ QB: 1, RB: 2, WR: 2, TE: 1, K: 1 });
   });
 });

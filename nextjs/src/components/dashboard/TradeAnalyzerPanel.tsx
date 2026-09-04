@@ -33,7 +33,7 @@ export function TradeAnalyzerPanel({
           <div className="min-w-0">
             <p className="text-sm font-semibold" style={{ color: '#e8e6df' }}>Trade Finder</p>
             <p className="text-[10px] truncate" style={{ color: '#555' }}>
-              Realistic trades that address your roster needs
+              Spare depth for starters — trades both rosters gain from
             </p>
           </div>
         </div>
@@ -80,6 +80,15 @@ export function TradeAnalyzerPanel({
                       {p.targetTeamName}
                     </span>
                     <div className="flex items-center gap-1.5 shrink-0">
+                      {/* What the deal is actually worth: points added to the
+                          starting lineup. The fairness bar beside it says only
+                          that the two sides are comparable, not that the trade
+                          helps. */}
+                      <span className="text-[10px] tabular-nums px-1.5 py-0.5 rounded font-medium"
+                        style={{ background: 'rgba(128,255,73,0.12)', color: '#80ff49' }}
+                        title="Season points this adds to your starting lineup">
+                        +{p.lineupGain.toFixed(0)}
+                      </span>
                       <div className="w-14 h-1.5 rounded-full overflow-hidden"
                         style={{ background: '#1e1e20' }}>
                         <div className="h-full rounded-full transition-all" style={{
@@ -102,22 +111,38 @@ export function TradeAnalyzerPanel({
                           style={{ color: '#555' }}>
                           {side === 'give' ? 'You give' : 'You get'}
                         </p>
-                        {p[side].map((pl) => (
-                          <div key={pl.playerId}
-                            className="flex items-center gap-1.5 text-[10px]">
-                            <PlayerAvatar
-                              playerId={pl.sleeperPlayerId}
-                              name={pl.name}
-                              size={24}
-                            />
-                            <span className="truncate flex-1"
-                              style={{ color: '#e8e6df' }}>{pl.name}</span>
-                            <span className="tabular-nums shrink-0"
-                              style={{ color: side === 'receive' ? '#80ff49' : '#555' }}>
-                              {pl.seasonPts.toFixed(0)}
-                            </span>
-                          </div>
-                        ))}
+                        {/* Packages are the normal case now — two spare pieces
+                            for one starter reads as a list, not a single row. */}
+                        <div className="flex flex-col gap-1">
+                          {p[side].map((pl) => (
+                            <div key={pl.playerId}
+                              className="flex items-center gap-1.5 text-[10px]">
+                              <PlayerAvatar
+                                playerId={pl.sleeperPlayerId}
+                                name={pl.name}
+                                size={24}
+                              />
+                              <span className="truncate flex-1"
+                                style={{ color: '#e8e6df' }}>{pl.name}</span>
+                              {/* Depth slot, not position: "RB3" is the reason
+                                  this player is the one being moved. */}
+                              <span className="text-[9px] px-1 py-px rounded shrink-0 tabular-nums"
+                                style={{
+                                  background: pl.starter ? 'rgba(250,204,21,0.12)'
+                                                         : 'rgba(232,230,223,0.06)',
+                                  color:      pl.starter ? '#facc15' : '#777',
+                                }}
+                                title={pl.starter ? 'A starter on that roster'
+                                                  : 'Bench depth on that roster'}>
+                                {pl.position}{pl.depthRank}
+                              </span>
+                              <span className="tabular-nums shrink-0 w-7 text-right"
+                                style={{ color: side === 'receive' ? '#80ff49' : '#555' }}>
+                                {pl.seasonPts.toFixed(0)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>
