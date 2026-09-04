@@ -1,4 +1,6 @@
 import type { PlayerContext } from '@/lib/matchupContext';
+import type { Acceptance } from '@/lib/tradeFinder';
+import type { ValueBasis } from '@/lib/tradeValues';
 
 /**
  * The exact weeks a form number covers.
@@ -156,6 +158,18 @@ export interface TradePlayer {
   depthRank:       number;
   /** Inside his roster's starting slots at this position. */
   starter:         boolean;
+  /**
+   * The high-low band around `seasonPts`, on the projected basis only.
+   *
+   * When there are no season totals to trade on, the single number is a
+   * projected mean per game rather than a result, and the range around it is
+   * most of what there is to say about it — see src/lib/tradeValues.ts. Absent
+   * whenever the numbers are real season totals, which need no band.
+   */
+  floor?:          number;
+  ceiling?:        number;
+  /** Games behind a projection. 0 means it is entirely his position's baseline. */
+  games?:          number;
 }
 
 export interface TradeProposal {
@@ -173,6 +187,15 @@ export interface TradeProposal {
   lineupGain:      number;
   /** The same figure for the other roster — why they would accept. */
   theirLineupGain: number;
+  /**
+   * How likely the other manager is to say yes — see src/lib/tradeFinder.ts.
+   *
+   * Carried so the panel can show the weaker deals as weaker rather than
+   * either hiding them or presenting them as sure things. A list that goes
+   * empty whenever the ideal trade does not exist is not more honest than one
+   * that says "this one needs a pitch"; it is just less useful.
+   */
+  acceptance:      Acceptance;
   summary:        string;
 }
 
@@ -185,6 +208,37 @@ export interface TradeSuggestionsResponse {
    */
   starterSlots:    Record<string, number>;
   proposals:       TradeProposal[];
+  /**
+   * Rostered players in the league with any points in `statsSeason`.
+   *
+   * Zero means the stat table had nothing for these rosters — an unsynced
+   * season, a cross-reference that missed — not that the league is talentless.
+   * Every trade here is priced on season points, so with none there is nothing
+   * to price and the panel says so instead of "no fair trades found".
+   */
+  scoredPlayers:   number;
+  /**
+   * Players on other rosters who would improve my starting lineup at all.
+   *
+   * Zero is the other specific empty case: the roster already fielding the best
+   * starter in the league everywhere it starts one. Nothing is wrong, and no
+   * amount of looking again will help.
+   */
+  upgradesAvailable: number;
+  /** Why `proposals` is empty, when it is. Absent when it is not. */
+  noTradesReason?: 'no-stats' | 'no-upgrades' | 'no-fit';
+  /**
+   * Which scale every points figure on this response is on.
+   *
+   * `season-points` is the normal answer: totals for `statsSeason`, summed under
+   * the league's own rules. `projected` means there were none for these rosters
+   * and the finder priced them from recent form and positional baselines
+   * instead — points per *game*, one to two orders of magnitude smaller, and
+   * never to be printed as though it were a season total.
+   */
+  valueBasis:      ValueBasis;
+  /** The weeks behind a projected value. Absent on the season-points basis. */
+  valueWindow?:    StatWindow;
   /** Season the underlying stats came from — see src/lib/statsSeason.ts. */
   statsSeason?:   number;
   /** True when statsSeason is not the season being played (pre-kickoff, sync lag). */
