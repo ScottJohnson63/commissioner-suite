@@ -146,6 +146,16 @@ export interface TradePlayer {
   name:            string;
   position:        string;
   seasonPts:       number;
+  /**
+   * Where he sits on his own roster's depth chart at this position, 1 = best.
+   *
+   * This is the answer to "why him?". A proposal that moves an RB3 is moving
+   * depth the roster does not start; one that moves an RB1 is moving the
+   * roster's strength, and the panel should not show the two the same way.
+   */
+  depthRank:       number;
+  /** Inside his roster's starting slots at this position. */
+  starter:         boolean;
 }
 
 export interface TradeProposal {
@@ -154,11 +164,26 @@ export interface TradeProposal {
   give:           TradePlayer[];
   receive:        TradePlayer[];
   fairnessScore:  number;
+  /**
+   * Season points this adds to my starting lineup — the whole point of the
+   * deal, and always positive: proposals that leave the lineup flat or worse
+   * are not returned. Not the same as the points differential, which counts
+   * bench players the lineup never fields.
+   */
+  lineupGain:      number;
+  /** The same figure for the other roster — why they would accept. */
+  theirLineupGain: number;
   summary:        string;
 }
 
 export interface TradeSuggestionsResponse {
   myPositionRanks: Record<string, number>;
+  /**
+   * Starting slots per position in this league — the line every depthRank and
+   * `starter` flag on this response was drawn against. See
+   * src/lib/sleeper/lineup.ts.
+   */
+  starterSlots:    Record<string, number>;
   proposals:       TradeProposal[];
   /** Season the underlying stats came from — see src/lib/statsSeason.ts. */
   statsSeason?:   number;
