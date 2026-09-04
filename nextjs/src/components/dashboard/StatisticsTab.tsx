@@ -143,9 +143,18 @@ function StatLeadersTable() {
             </svg>
           </div>
 
-          {/* Off by default: the totals above are regular season, and this adds
-              the postseason on top of them. */}
-          <label className="flex items-center gap-1.5 shrink-0 cursor-pointer select-none">
+          {/* Off by default: the totals are regular season, and this adds the
+              postseason on top. Framed like the dropdown beside it — at the
+              palette's de-emphasized greys this read as part of the header
+              rather than as something you could click. */}
+          <label
+            className="flex items-center gap-2 shrink-0 cursor-pointer select-none
+              rounded px-2.5 py-1.5 transition-colors"
+            style={{
+              background: includePlayoffs ? 'rgba(128,255,73,0.12)' : '#0e0e0f',
+              border: `1px solid ${includePlayoffs ? 'rgba(128,255,73,0.35)' : '#2a2a2c'}`,
+            }}
+          >
             <input
               type="checkbox"
               checked={includePlayoffs}
@@ -154,23 +163,23 @@ function StatLeadersTable() {
             />
             <span
               aria-hidden="true"
-              className="w-3.5 h-3.5 rounded-sm flex items-center justify-center transition-colors
-                peer-focus-visible:outline peer-focus-visible:outline-1
+              className="w-3.5 h-3.5 rounded-[3px] shrink-0 flex items-center justify-center
+                transition-colors peer-focus-visible:outline peer-focus-visible:outline-1
                 peer-focus-visible:outline-offset-1 peer-focus-visible:outline-[#80ff49]"
               style={{
-                background: includePlayoffs ? 'rgba(128,255,73,0.15)' : '#0e0e0f',
-                border: `1px solid ${includePlayoffs ? 'rgba(128,255,73,0.5)' : '#2a2a2c'}`,
+                background: includePlayoffs ? '#80ff49' : 'transparent',
+                border: `1px solid ${includePlayoffs ? '#80ff49' : '#6b6b70'}`,
               }}
             >
               {includePlayoffs && (
                 <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
-                  <path d="M1 3.5L3.5 6L8 1" stroke="#80ff49" strokeWidth="1.5"
+                  <path d="M1 3.5L3.5 6L8 1" stroke="#0e0e0f" strokeWidth="1.8"
                     strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               )}
             </span>
-            <span className="text-[11px] whitespace-nowrap"
-              style={{ color: includePlayoffs ? '#80ff49' : '#555' }}>
+            <span className="text-xs whitespace-nowrap"
+              style={{ color: includePlayoffs ? '#80ff49' : '#9a9a9a' }}>
               Includes playoffs
             </span>
           </label>
