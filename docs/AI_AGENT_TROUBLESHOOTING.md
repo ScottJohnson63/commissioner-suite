@@ -125,3 +125,20 @@ first, then match it here:
 year by accident. Set it explicitly — it decides which season "this year" and
 "last year" resolve to, and a season with no rows yet produces confident,
 empty-handed answers rather than an error.
+
+## The Sleeper player map is downloaded once a day, app-wide
+
+`/players/nfl` is ~10 MB and Sleeper asks callers to hit it at most once per
+day. `src/lib/sleeper/playerCache.ts` is the **only** place in the app that
+calls it, and it enforces the limit on four levels: an in-memory cache, a
+single-flight promise so concurrent callers share one download, the
+`nfl_players` DB row, and an `nfl_players_fetch_attempt` DB row claimed
+*before* the download — so a Sleeper outage, a timeout, a failed write-back, or
+a fleet of cold serverless instances cannot buy a second attempt. When the
+day's slot is spent and the stored map is stale, the stale map is served
+instead of refreshed.
+
+The agent's `fetchSleeperPlayerMap()` delegates to that cache. It previously
+kept a second copy under its own key (`nfl_player_map`), which meant two
+independent daily downloads. That key is no longer written; the leftover row
+can be deleted from `SleeperCache` whenever convenient.

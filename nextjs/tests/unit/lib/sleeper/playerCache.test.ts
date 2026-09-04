@@ -133,9 +133,11 @@ describe('getPlayerMap()', () => {
       data:      playerJson,
       fetchedAt: new Date(Date.now() - (ONE_DAY_MS + 5000)), // 24h + 5s ago
     };
-    mockFindUnique.mockResolvedValueOnce(staleDbEntry);
+    // The data row is stale and no attempt has been claimed today.
+    mockFindUnique.mockImplementation(async (args: unknown) =>
+      (args as { where: { key: string } }).where.key === 'nfl_players' ? staleDbEntry : null);
     mockFetch.mockResolvedValueOnce(new Response(playerJson, { status: 200 }));
-    mockUpsert.mockResolvedValueOnce({} as never);
+    mockUpsert.mockResolvedValue({} as never);
 
     const result = await getPlayerMap();
     expect(result.size).toBeGreaterThan(0);
@@ -145,19 +147,68 @@ describe('getPlayerMap()', () => {
   // WHY: A successful Sleeper API fetch must return the parsed map AND persist
   //      the raw JSON to the DB for the next process restart.
   it('persists fetched player data to the DB via upsert', async () => {
-    mockFindUnique.mockResolvedValueOnce(null); // no DB entry
+    mockFindUnique.mockResolvedValue(null); // no DB entry, no prior attempt
     mockFetch.mockResolvedValueOnce(new Response(playerJson, { status: 200 }));
-    mockUpsert.mockResolvedValueOnce({} as never);
+    mockUpsert.mockResolvedValue({} as never);
 
     await getPlayerMap();
 
-    expect(mockUpsert).toHaveBeenCalledTimes(1);
     expect(mockUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where:  { key: 'nfl_players' },
         create: expect.objectContaining({ data: playerJson }),
       }),
     );
+  });
+
+  // WHY: Sleeper asks callers to hit /players/nfl at most once a day. The claim
+  //      is written BEFORE the download, so a failure cannot buy a second one.
+  it('claims the daily slot in the DB before downloading', async () => {
+    mockFindUnique.mockResolvedValue(null);
+    mockUpsert.mockResolvedValue({} as never);
+    let claimedBeforeFetch = false;
+    mockFetch.mockImplementationOnce(async () => {
+      claimedBeforeFetch = mockUpsert.mock.calls.some(
+        ([arg]) => (arg as { where: { key: string } }).where.key === 'nfl_players_fetch_attempt',
+      );
+      return new Response(playerJson, { status: 200 });
+    });
+
+    await getPlayerMap();
+
+    expect(claimedBeforeFetch).toBe(true);
+  });
+
+  // WHY: The failure paths are how this endpoint actually gets hammered — an
+  //      outage or a timeout leaves nothing cached, so the next caller would
+  //      download again immediately. A spent slot stays spent.
+  it('does not download a second time after a failed download', async () => {
+    mockFindUnique.mockResolvedValue(null);
+    mockUpsert.mockResolvedValue({} as never);
+    mockFetch.mockRejectedValueOnce(new Error('socket hang up'));
+
+    await expect(getPlayerMap()).rejects.toThrow('socket hang up');
+    await expect(getPlayerMap()).rejects.toThrow(/already been used/);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // WHY: When the slot is spent and the stored map is past its refresh, stale
+  //      names are far better than a second download — or than no names at all.
+  it('serves the stale map instead of spending a second download', async () => {
+    mockFindUnique.mockImplementation(async (args: unknown) => {
+      const key = (args as { where: { key: string } }).where.key;
+      if (key === 'nfl_players') {
+        return { key, data: playerJson, fetchedAt: new Date(Date.now() - (ONE_DAY_MS + 5000)) };
+      }
+      // Today's slot was already claimed by another instance an hour ago.
+      return { key, data: '', fetchedAt: new Date(Date.now() - 60 * 60 * 1000) };
+    });
+
+    const result = await getPlayerMap();
+
+    expect(result.get('4046')).toEqual(expect.objectContaining({ name: 'Tom Brady' }));
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   // WHY: A non-ok response from the Sleeper API must throw so the caller knows

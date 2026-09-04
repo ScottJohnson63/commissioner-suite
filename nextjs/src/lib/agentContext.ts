@@ -6,6 +6,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { SLEEPER_BASE } from '@/lib/sleeper/client';
+import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { buildUserMap, resolveTeamName } from '@/lib/sleeper/teams';
 import type { SleeperUser as SleeperUserShape } from '@/lib/sleeper/types';
 
@@ -83,7 +84,6 @@ interface SleeperStateRaw {
 
 const SLEEPER_MIN_INTERVAL_MS = 10 * 60 * 1000;
 const TRENDING_TTL_MS         = 10 * 60 * 1000;
-const PLAYER_MAP_TTL_MS       = 24 * 60 * 60 * 1000;
 const ROSTER_TTL_MS           = 5 * 60 * 1000;
 
 // Every Sleeper call sits on the request path of an AI answer, so none of them
@@ -92,8 +92,6 @@ const ROSTER_TTL_MS           = 5 * 60 * 1000;
 // A timed-out call degrades to cached (or absent) data instead — a slightly
 // thinner prompt beats no answer at all.
 const SLEEPER_TIMEOUT_MS      = 6 * 1000;
-// The full player list is ~10 MB of JSON, so it gets a longer budget.
-const PLAYER_MAP_TIMEOUT_MS   = 12 * 1000;
 
 interface SleeperCacheEntry<T> { data: T; fetchedAt: number; }
 const sleeperCache     = new Map<string, SleeperCacheEntry<unknown>>();
@@ -140,46 +138,22 @@ export async function fetchTrending(): Promise<{ adds: TrendingPlayer[]; drops: 
   };
 }
 
-// ── Player map — L1 memory | L2 Turso | L3 Sleeper ───────────────────────────
+// ── Player map ────────────────────────────────────────────────────────────────
 
-const PLAYER_MAP_CACHE_KEY = 'nfl_player_map';
-let playerMapMemory:   Record<string, string> | null = null;
-let playerMapMemoryAt  = 0;
-
+/**
+ * player_id → display name, for labelling trending rows and league rosters.
+ *
+ * Delegates to the app-wide Sleeper player cache. This module used to carry its
+ * own copy of that logic under a *different* cache key (`nfl_player_map` vs
+ * `nfl_players`), so `/players/nfl` — the ~10 MB endpoint Sleeper explicitly
+ * asks callers to hit at most once a day — was downloaded on two independent
+ * daily schedules, and neither knew about the other. One cache, one download.
+ */
 export async function fetchSleeperPlayerMap(): Promise<Record<string, string>> {
-  const now = Date.now();
-  if (playerMapMemory && now - playerMapMemoryAt < PLAYER_MAP_TTL_MS) return playerMapMemory;
-  try {
-    const row = await prisma.sleeperCache.findUnique({ where: { key: PLAYER_MAP_CACHE_KEY } });
-    if (row) {
-      const ageMs = now - row.fetchedAt.getTime();
-      if (ageMs < PLAYER_MAP_TTL_MS) {
-        const parsed = JSON.parse(row.data) as Record<string, string>;
-        playerMapMemory  = parsed;
-        playerMapMemoryAt = row.fetchedAt.getTime();
-        return parsed;
-      }
-    }
-  } catch (dbErr) { console.error('[player-map] DB read error:', dbErr); }
-
-  type RawPlayer = { full_name?: string };
-  const raw = await sleeperFetch<Record<string, RawPlayer>>(`${SLEEPER_BASE}/players/nfl`, PLAYER_MAP_TTL_MS, PLAYER_MAP_TIMEOUT_MS);
-  if (!raw) return playerMapMemory ?? {};
-
-  const mapped = Object.fromEntries(
-    Object.entries(raw).filter(([, p]) => p.full_name).map(([id, p]) => [id, p.full_name!]),
-  );
-  try {
-    await prisma.sleeperCache.upsert({
-      where:  { key: PLAYER_MAP_CACHE_KEY },
-      update: { data: JSON.stringify(mapped), fetchedAt: new Date() },
-      create: { key: PLAYER_MAP_CACHE_KEY, data: JSON.stringify(mapped) },
-    });
-  } catch (dbErr) { console.error('[player-map] DB write error:', dbErr); }
-
-  playerMapMemory  = mapped;
-  playerMapMemoryAt = now;
-  return mapped;
+  const map = await getPlayerMapSafe();
+  const names: Record<string, string> = {};
+  for (const [id, info] of map) names[id] = info.name;
+  return names;
 }
 
 // ── League context ────────────────────────────────────────────────────────────

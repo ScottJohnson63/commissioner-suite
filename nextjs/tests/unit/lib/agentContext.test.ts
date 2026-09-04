@@ -19,6 +19,13 @@ jest.mock('@/lib/prisma', () => ({
   },
 }));
 
+// The player map comes from the app-wide Sleeper cache, which owns the daily
+// rate limit on /players/nfl. This module must go through it, never around it.
+const mockGetPlayerMapSafe = jest.fn<() => Promise<Map<string, { name: string }>>>();
+jest.mock('@/lib/sleeper/playerCache', () => ({
+  getPlayerMapSafe: mockGetPlayerMapSafe,
+}));
+
 type AgentContext = typeof import('@/lib/agentContext');
 
 async function freshModule(): Promise<AgentContext> {
@@ -34,6 +41,8 @@ const mockFetch = jest.fn<typeof fetch>();
 describe('agentContext — Sleeper fetches', () => {
   beforeEach(() => {
     mockFetch.mockReset();
+    mockGetPlayerMapSafe.mockReset();
+    mockGetPlayerMapSafe.mockResolvedValue(new Map());
     global.fetch = mockFetch as unknown as typeof fetch;
   });
 
@@ -70,11 +79,31 @@ describe('agentContext — Sleeper fetches', () => {
     await expect(fetchTrending()).resolves.toEqual({ adds: [], drops: [] });
   });
 
-  // WHY: The player list is ~10 MB and is fetched inline whenever the cache is
-  //      stale, so it is the most likely call to stall. A failure there must
-  //      still yield a usable (empty) map.
-  it('returns an empty player map rather than throwing when the fetch fails', async () => {
-    mockFetch.mockRejectedValue(new Error('socket hang up'));
+  // WHY: Sleeper asks callers to hit /players/nfl at most once a day, and this
+  //      module used to keep its own copy under a different cache key — a second
+  //      daily download of the same ~10 MB payload. It must delegate to the
+  //      shared cache and never reach for the endpoint itself.
+  it('takes the player map from the shared cache without touching Sleeper', async () => {
+    mockGetPlayerMapSafe.mockResolvedValue(new Map([
+      ['4046', { name: 'Tom Brady' }],
+      ['7564', { name: 'Justin Jefferson' }],
+    ]));
+
+    const { fetchSleeperPlayerMap } = await freshModule();
+    await expect(fetchSleeperPlayerMap()).resolves.toEqual({
+      '4046': 'Tom Brady',
+      '7564': 'Justin Jefferson',
+    });
+
+    expect(mockGetPlayerMapSafe).toHaveBeenCalledTimes(1);
+    const urls = (mockFetch.mock.calls as [string][]).map(([url]) => url);
+    expect(urls.filter((u) => /\/players\/nfl$/.test(u))).toHaveLength(0);
+  });
+
+  // WHY: The map is cosmetic — it labels trending rows. Losing it must cost the
+  //      labels, never the answer.
+  it('returns an empty player map when the shared cache has nothing', async () => {
+    mockGetPlayerMapSafe.mockResolvedValue(new Map());
 
     const { fetchSleeperPlayerMap } = await freshModule();
     await expect(fetchSleeperPlayerMap()).resolves.toEqual({});
