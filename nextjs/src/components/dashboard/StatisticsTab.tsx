@@ -39,18 +39,29 @@ function StatLeadersTable() {
   const [seasons, setSeasons]   = useState<number[]>([]);
   const [season, setSeason]     = useState<number | null>(null);
   const [position, setPosition] = useState('All');
+  // Regular season only by default — the postseason is a separate body of work
+  // and folding it in silently would quietly change every historical total.
+  const [includePlayoffs, setIncludePlayoffs] = useState(false);
   const [leaders, setLeaders]   = useState<StatLeader[]>([]);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
 
-  const fetchLeaders = useCallback(async (stat: string, pos: string, yr: number | null) => {
+  const fetchLeaders = useCallback(async (
+    stat: string,
+    pos: string,
+    yr: number | null,
+    withPlayoffs: boolean,
+  ) => {
     setLoading(true);
     setError(null);
     try {
       const posParam = pos !== 'All' ? `&position=${pos}` : '';
       // No season param on the first load — the server answers with its newest.
       const yrParam = yr ? `&season=${yr}` : '';
-      const res = await fetch(`/api/nfl/leaders?stat=${stat}&limit=25${posParam}${yrParam}`);
+      const postParam = withPlayoffs ? '&includePlayoffs=true' : '';
+      const res = await fetch(
+        `/api/nfl/leaders?stat=${stat}&limit=25${posParam}${yrParam}${postParam}`,
+      );
       if (!res.ok) throw new Error('Failed to load stats');
       setLeaders(await res.json() as StatLeader[]);
     } catch (err) {
@@ -60,8 +71,10 @@ function StatLeadersTable() {
     }
   }, []);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { void fetchLeaders(statKey, position, season); }, [statKey, position, season, fetchLeaders]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void fetchLeaders(statKey, position, season, includePlayoffs);
+  }, [statKey, position, season, includePlayoffs, fetchLeaders]);
 
   useEffect(() => {
     void fetch('/api/nfl/seasons')
@@ -88,9 +101,10 @@ function StatLeadersTable() {
       <div className="flex flex-col gap-2 px-4 py-3 border-b"
         style={{ borderColor: '#1e1e20' }}>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <p className="text-[10px] uppercase tracking-widest flex-1" style={{ color: '#80ff49' }}>
             NFL Stat Leaders{season ? ` · ${season}` : ''}
+            {includePlayoffs ? ' · incl. playoffs' : ''}
           </p>
 
           {/* Only worth showing once more than one season has been synced. */}
@@ -128,6 +142,38 @@ function StatLeadersTable() {
                 strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </div>
+
+          {/* Off by default: the totals above are regular season, and this adds
+              the postseason on top of them. */}
+          <label className="flex items-center gap-1.5 shrink-0 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={includePlayoffs}
+              onChange={(e) => setIncludePlayoffs(e.target.checked)}
+              className="sr-only peer"
+            />
+            <span
+              aria-hidden="true"
+              className="w-3.5 h-3.5 rounded-sm flex items-center justify-center transition-colors
+                peer-focus-visible:outline peer-focus-visible:outline-1
+                peer-focus-visible:outline-offset-1 peer-focus-visible:outline-[#80ff49]"
+              style={{
+                background: includePlayoffs ? 'rgba(128,255,73,0.15)' : '#0e0e0f',
+                border: `1px solid ${includePlayoffs ? 'rgba(128,255,73,0.5)' : '#2a2a2c'}`,
+              }}
+            >
+              {includePlayoffs && (
+                <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
+                  <path d="M1 3.5L3.5 6L8 1" stroke="#80ff49" strokeWidth="1.5"
+                    strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </span>
+            <span className="text-[11px] whitespace-nowrap"
+              style={{ color: includePlayoffs ? '#80ff49' : '#555' }}>
+              Includes playoffs
+            </span>
+          </label>
         </div>
 
         <div className="flex gap-1 overflow-x-auto pb-0.5"

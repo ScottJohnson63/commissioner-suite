@@ -5,13 +5,15 @@
 //
 // Supported endpoints (path segment after /api/nfl/):
 //
-//   leaders — GET /api/nfl/leaders?season=&stat=&position=&limit=
+//   leaders — GET /api/nfl/leaders?season=&stat=&position=&limit=&includePlayoffs=
 //               Aggregates season totals for a given stat column and returns
 //               the top N players by that stat. Drives the Statistics tab
-//               leaderboards. Only columns in ALLOWED_STAT_COLS may be queried
-//               (SQL injection prevention — the column name is interpolated
-//               directly into a raw query because Prisma does not support
-//               dynamic aggregate columns).
+//               leaderboards. Regular-season games only unless
+//               includePlayoffs=true, which folds the postseason in on top.
+//               Preseason is never counted either way. Only columns in
+//               ALLOWED_STAT_COLS may be queried (SQL injection prevention —
+//               the column name is interpolated directly into a raw query
+//               because Prisma does not support dynamic aggregate columns).
 //
 // Reads the Turso DB only; no external API calls happen on the request path.
 
@@ -59,6 +61,7 @@ export async function GET(
 
       // ── Season stat leaders (aggregated totals) ─────────────────────────────
       // GET /api/nfl/leaders?stat=passingYards&position=QB&limit=25[&season=2025]
+      //                     [&includePlayoffs=true]
       case 'leaders': {
         // Omitting `season` means "the newest one with data", so the page keeps
         // working across a rollover without a redeploy.
@@ -74,6 +77,7 @@ export async function GET(
         const rawStat = searchParams.get('stat') ?? 'fantasyPointsPpr';
         const pos     = searchParams.get('position')?.toUpperCase() ?? '';
         const limit   = Math.min(Number(searchParams.get('limit') ?? '25'), 100);
+        const withPost = searchParams.get('includePlayoffs') === 'true';
 
         if (!ALLOWED_STAT_COLS.has(rawStat)) {
           return err(`Invalid stat column: ${rawStat}`, 400);
@@ -84,6 +88,13 @@ export async function GET(
         const safePosClause = pos && /^[A-Z]{1,3}$/.test(pos)
           ? `AND position = '${pos}'`
           : '';
+
+        // Regular season by default; the checkbox in the Statistics tab adds the
+        // postseason on top. Preseason rows are excluded either way, and the
+        // clause is a fixed literal rather than anything caller-supplied.
+        const seasonTypeClause = withPost
+          ? `AND seasonType IN ('REG', 'POST')`
+          : `AND seasonType = 'REG'`;
 
         // $queryRawUnsafe is appropriate here: stat column is whitelist-validated,
         // position is regex-stripped, season/limit are parameterised.
@@ -99,6 +110,7 @@ export async function GET(
            FROM NflWeeklyStat
            WHERE season = ?
              AND ${rawStat} IS NOT NULL
+             ${seasonTypeClause}
              ${safePosClause}
            GROUP BY playerId
            HAVING SUM(${rawStat}) > 0

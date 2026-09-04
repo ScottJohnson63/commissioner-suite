@@ -96,6 +96,48 @@ describe('GET /api/nfl/leaders', () => {
     );
   });
 
+  it('counts regular-season games only by default', async () => {
+    mockQueryRaw.mockResolvedValueOnce([] as never);
+
+    await GET(makeRequest('leaders?season=2025&stat=passingYards'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    expect(mockQueryRaw).toHaveBeenCalledWith(
+      expect.stringContaining("AND seasonType = 'REG'"),
+      2025,
+      25,
+    );
+  });
+
+  it('folds the postseason in when includePlayoffs=true', async () => {
+    mockQueryRaw.mockResolvedValueOnce([] as never);
+
+    await GET(makeRequest('leaders?season=2025&includePlayoffs=true'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    expect(mockQueryRaw).toHaveBeenCalledWith(
+      expect.stringContaining("AND seasonType IN ('REG', 'POST')"),
+      2025,
+      25,
+    );
+  });
+
+  it('treats any includePlayoffs value other than "true" as regular season', async () => {
+    mockQueryRaw.mockResolvedValueOnce([] as never);
+
+    await GET(makeRequest('leaders?season=2025&includePlayoffs=1'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    expect(mockQueryRaw).toHaveBeenCalledWith(
+      expect.stringContaining("AND seasonType = 'REG'"),
+      2025,
+      25,
+    );
+  });
+
   it('caps the limit at 100', async () => {
     mockQueryRaw.mockResolvedValueOnce([] as never);
 
