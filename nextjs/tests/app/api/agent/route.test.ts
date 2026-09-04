@@ -52,10 +52,12 @@ jest.mock('@/lib/prisma', () => ({
 // __esModule: true is required so TypeScript's __importDefault doesn't double-wrap
 // the mock, which would make `groq_sdk_1.default` a plain object instead of a constructor.
 const mockGroqCreate = jest.fn<(params: unknown) => Promise<unknown>>();
+const mockGroqModelList = jest.fn<() => Promise<unknown>>();
 jest.mock('groq-sdk', () => ({
   __esModule: true,
   default: jest.fn().mockImplementation(() => ({
-    chat: { completions: { create: mockGroqCreate } },
+    chat:   { completions: { create: mockGroqCreate } },
+    models: { list: mockGroqModelList },
   })),
 }));
 
@@ -149,6 +151,13 @@ describe('POST /api/agent', () => {
     mockStatGroupBy.mockReset();
     mockSendMessageStream.mockReset();
     mockGenerateContent.mockReset();
+    mockGroqModelList.mockReset();
+    // Default catalogue: the model the candidate lists prefer for each pass.
+    mockGroqModelList.mockResolvedValue({
+      data: [{ id: 'llama-3.1-8b-instant' }, { id: 'llama-3.3-70b-versatile' }],
+    });
+    delete process.env.GROQ_MODEL;
+    delete process.env.GROQ_PLANNER_MODEL;
 
     // Keys are opted into per test — a leaked key would silently change which
     // provider a test exercises.
@@ -390,6 +399,59 @@ describe('POST /api/agent', () => {
     const text = await res.text();
     expect(text).toContain('Start him');
     expect(text).toContain('upstream connection reset');
+  });
+
+  // WHY: A hardcoded model ID is a time bomb — Groq retires models and every
+  //      request then 404s, which reads as an outage. The model actually used
+  //      must come from the account's own catalogue.
+  //      NOTE: the catalogue cache is keyed by API key, so these tests use a
+  //      distinct key to avoid inheriting an earlier test's catalogue.
+  it('picks the model from the catalogue the account can reach', async () => {
+    process.env.GROQ_API_KEY = 'discovery-key-1';
+    // llama-3.1-8b-instant is gone; the next answer candidate should win.
+    mockGroqModelList.mockResolvedValue({
+      data: [{ id: 'llama-3.3-70b-versatile' }, { id: 'whisper-large-v3' }],
+    });
+    setupHappyPath();
+
+    await POST(makeReq({ messages: [{ role: 'user', content: 'Which model?' }] }));
+
+    const [pass1Call, pass2Call] = mockGroqCreate.mock.calls;
+    expect((pass1Call[0] as { model: string }).model).toBe('llama-3.3-70b-versatile');
+    expect((pass2Call[0] as { model: string }).model).toBe('llama-3.3-70b-versatile');
+  });
+
+  // WHY: An operator pinning GROQ_MODEL must not be second-guessed, and pinning
+  //      it should not cost a catalogue round-trip.
+  it('honours GROQ_MODEL without listing the catalogue', async () => {
+    process.env.GROQ_API_KEY = 'discovery-key-2';
+    process.env.GROQ_MODEL   = 'pinned-model-id';
+    setupHappyPath();
+
+    await POST(makeReq({ messages: [{ role: 'user', content: 'Pinned' }] }));
+
+    expect(mockGroqModelList).not.toHaveBeenCalled();
+    expect((mockGroqCreate.mock.calls[1][0] as { model: string }).model).toBe('pinned-model-id');
+  });
+
+  // WHY: This is the exact failure seen in production — a 404 model_not_found on
+  //      every request. A stale cached catalogue must be re-read and retried
+  //      once, rather than falling through to a second provider.
+  it('refreshes the catalogue and retries once on model_not_found', async () => {
+    process.env.GROQ_API_KEY = 'discovery-key-3';
+    mockGroqModelList.mockResolvedValue({ data: [{ id: 'llama-3.3-70b-versatile' }] });
+
+    mockGroqCreate
+      .mockResolvedValueOnce(pass1Response)                                        // Pass 1
+      .mockRejectedValueOnce(new Error('404 {"error":{"code":"model_not_found"}}')) // Pass 2, stale ID
+      .mockResolvedValueOnce(fakeGroqStream());                                     // Pass 2, retry
+    setupContextMocks();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Retry' }] }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Model-Used')).toBe('groq');
+    expect(await res.text()).toBe('Great pick! Start him.');
   });
 
   // WHY: A malformed body used to throw out of req.json() as an unhandled

@@ -2,13 +2,34 @@
 //
 // Fetches the Sleeper NFL player map (https://api.sleeper.app/v1/players/nfl)
 // and caches it in-memory + DB. The Sleeper docs say this endpoint should be
-// called at most once per 24 h — we enforce that limit here.
+// called at most once per 24 h — this module is the only place in the app that
+// calls it, and it enforces that limit on four levels:
+//
+//   1. In-memory cache      — no DB round trip within the process.
+//   2. Single-flight        — concurrent callers join one download.
+//   3. DB data row          — survives restarts, shared across instances.
+//   4. DB attempt row       — claimed *before* the download, so a failure or a
+//                             cold-start stampede cannot retry it either.
+//
+// When the day's slot is spent and the stored map is stale, the stale map is
+// served rather than refreshed. Names change slowly; the rate limit does not.
 
 import { prisma } from '@/lib/prisma';
+import { isUniqueViolation } from '@/lib/cards/db';
 import { SLEEPER_BASE, SLEEPER_TTL, SLEEPER_USER_AGENT } from '@/lib/sleeper/client';
 
 const CACHE_KEY = 'nfl_players';
+// Records that a download was *attempted*, separately from the data itself, so
+// a failed attempt still consumes the day's budget. See claimDailyFetch().
+const ATTEMPT_KEY = 'nfl_players_fetch_attempt';
 const ONE_DAY_MS = SLEEPER_TTL.PLAYERS * 1000;
+// How long a stale map is served from memory before the DB is consulted again —
+// long enough to keep the DB off the request path, short enough to pick up
+// another instance's refresh.
+const STALE_RECHECK_MS = 15 * 60 * 1000;
+// The payload is ~10 MB; an un-aborted fetch would pin every caller waiting on
+// this one download until the platform kills the function.
+const FETCH_TIMEOUT_MS = 20 * 1000;
 const SLEEPER_PLAYERS_URL = `${SLEEPER_BASE}/players/nfl`;
 
 export interface SleeperPlayerInfo {
@@ -21,7 +42,12 @@ export interface SleeperPlayerInfo {
 
 // Module-level in-memory cache so the DB is only hit once per process restart.
 let memCache: Map<string, SleeperPlayerInfo> | null = null;
-let memCacheTs = 0;
+// Absolute time at which memCache stops being served — a full day for fresh
+// data, a short recheck window for stale data served past its refresh.
+let memCacheUntil = 0;
+// Last download attempt made by this process. The DB row is the real guard;
+// this is the backstop for when the DB itself is unreachable.
+let lastAttemptTs = 0;
 
 /**
  * The one in-flight refresh, when there is one.
@@ -53,11 +79,15 @@ export async function getPlayerMapSafe(): Promise<Map<string, SleeperPlayerInfo>
  *   1. In-memory (fastest — same process, <24 h old)
  *   2. A load already in flight (concurrent callers wait rather than duplicate)
  *   3. SleeperCache DB row (survives server restarts, <24 h old)
- *   4. Sleeper API (at most once per 24 h)
+ *   4. The day's download slot, claimed atomically across every instance
+ *   5. Sleeper API — only with that slot in hand
+ *
+ * Past step 4 there is no path back to the network: a refused claim serves the
+ * stored map however old it is, or nothing at all.
  */
 export async function getPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
   // ── 1. In-memory ────────────────────────────────────────────────────────────
-  if (memCache && Date.now() - memCacheTs < ONE_DAY_MS) {
+  if (memCache && Date.now() < memCacheUntil) {
     return memCache;
   }
 
@@ -73,11 +103,73 @@ export async function getPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
   }
 }
 
+/** Backs this process off for as long as the instance that won the slot holds it. */
+async function adoptAttemptStamp(now: number): Promise<void> {
+  try {
+    const row = await prisma.sleeperCache.findUnique({ where: { key: ATTEMPT_KEY } });
+    lastAttemptTs = row ? new Date(row.fetchedAt).getTime() : now;
+  } catch {
+    lastAttemptTs = now;   // unknown — back off a full day rather than risk a call
+  }
+}
+
+/**
+ * Takes the day's single download slot, or refuses.
+ *
+ * The slot is claimed in the DB *before* the network call, not after it
+ * succeeds, because the ways this endpoint gets hammered are all failure paths:
+ * a Sleeper outage, a timeout, a write-back error, or a fleet of cold
+ * serverless instances that each find no cache. Recording the attempt makes a
+ * failed download cost exactly what a successful one costs.
+ *
+ * The claim is a compare-and-set rather than a read-then-write, because
+ * read-then-write is not a claim at all: two instances waking at the day
+ * boundary both read "stale", both write, and both download.
+ *
+ * @param hasStale  Whether a stored map exists to serve if the claim is refused.
+ * @returns true if the caller may download, false if today's slot is spent.
+ */
+async function claimDailyFetch(now: number, hasStale: boolean): Promise<boolean> {
+  // This process already spent its attempt today.
+  if (now - lastAttemptTs < ONE_DAY_MS) return false;
+
+  const stamp = { data: new Date(now).toISOString(), fetchedAt: new Date(now) };
+  try {
+    // Writers are serialised, so of any number of instances racing here exactly
+    // one UPDATE can match a stamp older than the cutoff. Everyone else gets
+    // count 0 and stands down.
+    const { count } = await prisma.sleeperCache.updateMany({
+      where: { key: ATTEMPT_KEY, fetchedAt: { lt: new Date(now - ONE_DAY_MS) } },
+      data:  stamp,
+    });
+    if (count === 0) {
+      // The row is either fresh (someone claimed today) or has never existed.
+      // The primary key settles which: this is a race nobody can tie.
+      try {
+        await prisma.sleeperCache.create({ data: { key: ATTEMPT_KEY, ...stamp } });
+      } catch (createErr) {
+        if (!isUniqueViolation(createErr)) throw createErr;
+        await adoptAttemptStamp(now);
+        return false;
+      }
+    }
+  } catch (dbErr) {
+    console.error('[player-map] could not claim the daily fetch slot:', dbErr);
+    // With no DB there is no fleet-wide claim, so refuse while there is
+    // anything at all to serve. Only a completely empty cache is worth an
+    // unclaimed call, and the in-process stamp still holds that to one a day.
+    if (hasStale) return false;
+  }
+  lastAttemptTs = now;
+  return true;
+}
+
 /** The actual DB-then-API load. Only ever one of these runs at a time. */
 async function loadPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
   const now = Date.now();
 
   // ── 2. DB cache ──────────────────────────────────────────────────────────────
+  let stale: string | null = null;
   try {
     const row = await prisma.sleeperCache.findUnique({ where: { key: CACHE_KEY } });
     if (row) {
@@ -85,21 +177,50 @@ async function loadPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
       if (age < ONE_DAY_MS) {
         const map = parsePlayerJson(row.data);
         memCache = map;
-        memCacheTs = new Date(row.fetchedAt).getTime();
+        memCacheUntil = new Date(row.fetchedAt).getTime() + ONE_DAY_MS;
         return map;
       }
+      stale = row.data;   // past its refresh, but far better than nothing
     }
   } catch {
     // DB read failed — fall through to API fetch
   }
 
-  // ── 3. Sleeper API ───────────────────────────────────────────────────────────
-  const res = await fetch(SLEEPER_PLAYERS_URL, {
-    next: { revalidate: SLEEPER_TTL.PLAYERS },
-    headers: { 'User-Agent': SLEEPER_USER_AGENT },
-  });
-  if (!res.ok) throw new Error(`Sleeper players API ${res.status}`);
-  const raw = await res.text();
+  // Serving yesterday's names beats spending a second download on today's.
+  // Returns null only if the stored blob is unparseable, which is not a reason
+  // to reach for the network — the day's slot is spent either way.
+  const serveStale = (): Map<string, SleeperPlayerInfo> | null => {
+    if (stale === null) return null;
+    try {
+      const map = parsePlayerJson(stale);
+      memCache = map;
+      memCacheUntil = now + STALE_RECHECK_MS;
+      return map;
+    } catch {
+      return null;
+    }
+  };
+
+  // ── 3. Sleeper API — at most once per day, fleet-wide ────────────────────────
+  if (!(await claimDailyFetch(now, stale !== null))) {
+    return serveStale() ?? throwSlotSpent();
+  }
+
+  let raw: string;
+  try {
+    const res = await fetch(SLEEPER_PLAYERS_URL, {
+      next: { revalidate: SLEEPER_TTL.PLAYERS },
+      headers: { 'User-Agent': SLEEPER_USER_AGENT },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`Sleeper players API ${res.status}`);
+    raw = await res.text();
+  } catch (fetchErr) {
+    // The slot is spent either way; salvage the answer if we can.
+    const salvaged = serveStale();
+    if (salvaged) return salvaged;
+    throw fetchErr;
+  }
 
   // Persist to DB (non-fatal if it fails)
   try {
@@ -114,8 +235,12 @@ async function loadPlayerMap(): Promise<Map<string, SleeperPlayerInfo>> {
 
   const map = parsePlayerJson(raw);
   memCache = map;
-  memCacheTs = now;
+  memCacheUntil = now + ONE_DAY_MS;
   return map;
+}
+
+function throwSlotSpent(): never {
+  throw new Error("Sleeper player map unavailable — today's single refresh has already been used");
 }
 
 function parsePlayerJson(json: string): Map<string, SleeperPlayerInfo> {
