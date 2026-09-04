@@ -513,7 +513,27 @@ function byValue(a: TradeCandidate, b: TradeCandidate): number {
   return ACCEPTANCE_RANK[a.acceptance] - ACCEPTANCE_RANK[b.acceptance]
       || (b.myGain + b.theirGain) - (a.myGain + a.theirGain)
       || b.fairnessScore - a.fairnessScore
+      || depthMoved(b) - depthMoved(a)
       || tradeKey(a).localeCompare(tradeKey(b));
+}
+
+/**
+ * How far down the two depth charts a deal reaches, for breaking ties.
+ *
+ * Two proposals can be worth exactly the same and still not be equally good to
+ * send. That happens whenever a roster's players are indistinguishable to the
+ * model — most sharply on the projected basis, where every back at a position
+ * prices at the same positional baseline, so losing the nominal RB1 costs
+ * nothing because an identical RB2 slides up. Ranked on value alone the list
+ * then says "trade your RB1" on a coin toss, which reads as a judgement the
+ * finder has not made and cannot make.
+ *
+ * So a tie moves the deeper piece, on both sides: my spare rather than my
+ * starter, and theirs rather than the name their season is built on — the same
+ * deal, from the part of each roster that will miss it least.
+ */
+function depthMoved(c: TradeCandidate): number {
+  return [...c.give, ...c.receive].reduce((sum, p) => sum + p.depthRank, 0);
 }
 
 /**
@@ -573,12 +593,19 @@ function depthLabel(p: DepthPlayer): string {
  *
  * It names depth slots rather than positions — "your RB3" is the reason the
  * proposal picked him, and "your RB" is not.
+ *
+ * @param unit  What the points are: season totals by default, or `pts/gm` when
+ *              the finder is running on projections. The two differ by an order
+ *              of magnitude and a sentence that does not say which is being
+ *              quoted is worse than no sentence.
  */
-export function describeTrade(candidate: TradeCandidate): string {
+export function describeTrade(candidate: TradeCandidate, unit = 'pts'): string {
   const { give, receive, myGain } = candidate;
   const giveLabel    = give.map(depthLabel).join(' + ');
   const receiveLabel = receive.map(depthLabel).join(' + ');
-  const gain         = `+${Math.round(myGain)} pts to your starters`;
+  // A projected gain is small enough that rounding to a whole number loses it.
+  const shown        = myGain >= 10 ? Math.round(myGain) : parseFloat(myGain.toFixed(1));
+  const gain         = `+${shown} ${unit} to your starters`;
 
   const opening = give.every((p) => !p.starter)
     ? `Spare ${giveLabel} depth`

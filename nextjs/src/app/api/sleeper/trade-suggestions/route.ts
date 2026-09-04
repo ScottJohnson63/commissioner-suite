@@ -14,7 +14,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { resolveTeamName } from '@/lib/sleeper/teams';
-import { resolveSeason } from '@/lib/sleeper/week';
+import { resolveSeason, resolveWeeks } from '@/lib/sleeper/week';
 import { resolveStatsSeason } from '@/lib/statsSeason';
 import { buildGsisXref } from '@/lib/sleeper/gsisXref';
 import { getScoringSettings } from '@/lib/sleeper/scoringSettings';
@@ -28,7 +28,11 @@ import {
   positionStrength, countUpgrades,
 } from '@/lib/tradeFinder';
 import type { DepthPlayer, RosterEntry, RosterShape } from '@/lib/tradeFinder';
-import type { TradePlayer, TradeProposal, TradeSuggestionsResponse } from '@/types/suggestions';
+import { projectedValues, valueWindow } from '@/lib/tradeValues';
+import type { PlayerValue, ValueBasis } from '@/lib/tradeValues';
+import type {
+  StatWindow, TradePlayer, TradeProposal, TradeSuggestionsResponse,
+} from '@/types/suggestions';
 import { ok, err } from '@/lib/api';
 
 export type { TradePlayer, TradeProposal, TradeSuggestionsResponse };
@@ -50,7 +54,7 @@ const cache = new RouteCache<TradeSuggestionsResponse>();
  * `cost` stays server-side: it is the reason the finder picked this player, and
  * `describeTrade` has already said it in words the panel can print.
  */
-function toTradePlayer(p: DepthPlayer): TradePlayer {
+function toTradePlayer(p: DepthPlayer, band?: PlayerValue): TradePlayer {
   return {
     // The roster ID is already the Sleeper ID, which is what CDN headshots key on.
     playerId:        p.playerId,
@@ -60,6 +64,11 @@ function toTradePlayer(p: DepthPlayer): TradePlayer {
     seasonPts:       p.seasonPts,
     depthRank:       p.depthRank,
     starter:         p.starter,
+    // Only on the projected basis, where the single number is a mean and the
+    // range around it is most of what there is to say about it.
+    floor:           band?.floor,
+    ceiling:         band?.ceiling,
+    games:           band?.games,
   };
 }
 
@@ -88,7 +97,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // points, so before kickoff — when the live season has no rows — the honest
     // baseline is last season's totals rather than a roster of zeroes, which
     // would score every proposal as perfectly balanced.
-    const { season: statsSeason, fallback: statsFallback } =
+    const { season: statsSeason, maxWeek: statsMaxWeek, fallback: statsFallback } =
       await resolveStatsSeason(season);
 
     // Totals are summed here rather than by the database. A SQL SUM can only add
@@ -144,13 +153,57 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // zeroes scores as perfectly fair.
     const allPlayerIds = [...new Set(liveRosters.flatMap((r) => r.players ?? []))];
     const seasonPtsMap = new Map<string, number>();
-    if (allPlayerIds.length > 0) {
-      const xref = await buildGsisXref(allPlayerIds, livePlayerMap, statsSeason);
+    const xref = allPlayerIds.length > 0
+      ? await buildGsisXref(allPlayerIds, livePlayerMap, statsSeason)
+      : null;
+    if (xref) {
       for (const [statId, pts] of await seasonTotals(xref.gsisIds)) {
         const sleeperId = xref.toSleeper.get(statId);
         if (sleeperId) seasonPtsMap.set(sleeperId, pts);
       }
     }
+
+    // ── Falling back to projections ────────────────────────────────────────────
+    // No totals for anybody on any roster — a season not yet played, a sync that
+    // has not landed, a cross-reference that found nothing. Every player prices
+    // at zero, which is not "worth nothing" but "not known", and a finder that
+    // cannot tell the two apart either invents five perfectly fair trades of
+    // nothing or returns none at all.
+    //
+    // So the fallback prices players the way the matchup report does: the mean
+    // of the last six weeks blended toward what the position typically does,
+    // with the band around it carried through to the panel. It is a weaker
+    // reading and it is labelled as one — points per game, not points per
+    // season, and never mixed with them. See src/lib/tradeValues.ts.
+    const values = new Map<string, PlayerValue>();
+    let valueBasis: ValueBasis = 'season-points';
+    // Deliberately not named `window`: this runs in Node, but shadowing the
+    // browser global invites a confusing read. Same note as the waiver route.
+    let pricedWindow: StatWindow | undefined;
+
+    if (xref && [...seasonPtsMap.values()].every((pts) => pts <= 0)) {
+      const { completed } = await resolveWeeks(searchParams.get('week'));
+      pricedWindow = valueWindow(
+        { season: statsSeason, maxWeek: statsMaxWeek, fallback: statsFallback }, completed);
+
+      const rostered = allPlayerIds
+        .map((pid) => ({ pid, info: playerMap.get(pid) }))
+        .filter((e): e is { pid: string; info: PlayerInfo } =>
+          !!e.info && isTradePos(e.info.position))
+        .map((e) => ({ playerId: e.pid, position: e.info.position }));
+
+      for (const [pid, value] of await projectedValues(rostered, pricedWindow, xref, scoring)) {
+        values.set(pid, value);
+      }
+      // Only claim the projected basis if the projection actually said something.
+      if (values.size > 0) valueBasis = 'projected';
+      else pricedWindow = undefined;
+    }
+
+    /** What one player is priced at, on whichever basis this request is using. */
+    const pointsFor = (pid: string): number =>
+      valueBasis === 'projected' ? values.get(pid)?.points ?? 0
+                                 : seasonPtsMap.get(pid) ?? 0;
 
     // ── Depth charts ───────────────────────────────────────────────────────────
 
@@ -165,7 +218,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           playerId:  pid,
           name:      info.name,
           position:  info.position,
-          seasonPts: seasonPtsMap.get(pid) ?? 0,
+          seasonPts: pointsFor(pid),
         });
       }
       shapes.push(buildRosterShape(roster.owner_id, entries, starterSlots));
@@ -205,13 +258,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         targetTeamName: teamNameMap.get(c.targetOwnerId)
                         ?? `Roster ${rosterIdByOwner.get(c.targetOwnerId) ?? '?'}`,
         targetOwnerId:  c.targetOwnerId,
-        give:           c.give.map(toTradePlayer),
-        receive:        c.receive.map(toTradePlayer),
+        give:           c.give.map((p) => toTradePlayer(p, values.get(p.playerId))),
+        receive:        c.receive.map((p) => toTradePlayer(p, values.get(p.playerId))),
         fairnessScore:  c.fairnessScore,
         lineupGain:     Math.round(c.myGain * 10) / 10,
         theirLineupGain: Math.round(c.theirGain * 10) / 10,
         acceptance:     c.acceptance,
-        summary:        describeTrade(c),
+        summary:        describeTrade(c, valueBasis === 'projected' ? 'pts/gm' : 'pts'),
       }));
 
     // ── Why an empty list is empty ─────────────────────────────────────────────
@@ -220,7 +273,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // fair trades found, try again after more games" — is wrong advice for two
     // of them: it reads as a quiet failure when the stat table is empty, and as
     // false hope when the roster is already the best in the league everywhere.
-    const scoredPlayers     = [...seasonPtsMap.values()].filter((pts) => pts > 0).length;
+    const scoredPlayers = valueBasis === 'projected'
+      ? values.size
+      : [...seasonPtsMap.values()].filter((pts) => pts > 0).length;
     const upgradesAvailable = countUpgrades(myShape, shapes, starterSlots);
     const noTradesReason: TradeSuggestionsResponse['noTradesReason'] =
       proposals.length > 0    ? undefined
@@ -235,6 +290,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       scoredPlayers,
       upgradesAvailable,
       noTradesReason,
+      valueBasis,
+      valueWindow: pricedWindow,
       statsSeason,
       statsFallback,
     };

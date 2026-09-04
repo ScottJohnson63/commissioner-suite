@@ -23,8 +23,9 @@ const ACCEPTANCE: Record<Acceptance, { label: string; color: string; bg: string;
 
 /** What an empty list actually means — three situations, three answers. */
 const EMPTY_MESSAGE: Record<NonNullable<TradeSuggestionsResponse['noTradesReason']>, string> = {
-  'no-stats':    'No season stats for these rosters yet — trades are priced on '
-               + 'season points, so there is nothing to compare until the sync fills in',
+  'no-stats':    'No stats for these rosters yet — not season totals, and not '
+               + 'enough recent form to project from either, so there is nothing '
+               + 'to price a trade on until the sync fills in',
   'no-upgrades': 'Nobody in the league would upgrade your starting lineup — '
                + 'you already field the best starter at every position you start',
   'no-fit':      'Upgrades are out there, but nothing balanced enough to be worth '
@@ -75,6 +76,18 @@ export function TradeAnalyzerPanel({
       {data && !loading && (
         <>
           <StatsSeasonNote season={data.statsSeason} fallback={data.statsFallback} />
+          {/* The two bases are an order of magnitude apart — 320 points a season
+              against 14 a game — so a panel that does not say which it is
+              showing is showing a wrong number half the time. */}
+          {data.valueBasis === 'projected' && data.valueWindow && (
+            <p className="text-[10px] leading-relaxed" style={{ color: '#facc15' }}>
+              No season totals for these rosters — priced on projected points per
+              game from weeks {data.valueWindow.startWeek}–{data.valueWindow.endWeek} of{' '}
+              {data.valueWindow.season}, with each player&apos;s low–high range beside him.
+              Weaker footing than a played season: it can spot an unfilled slot,
+              not tell two backs apart.
+            </p>
+          )}
           {Object.keys(data.myPositionRanks).length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-[10px] uppercase tracking-wider shrink-0" style={{ color: '#555' }}>
@@ -123,8 +136,10 @@ export function TradeAnalyzerPanel({
                           helps. */}
                       <span className="text-[10px] tabular-nums px-1.5 py-0.5 rounded font-medium"
                         style={{ background: 'rgba(128,255,73,0.12)', color: '#80ff49' }}
-                        title="Season points this adds to your starting lineup">
-                        +{p.lineupGain.toFixed(0)}
+                        title={data.valueBasis === 'projected'
+                          ? 'Projected points per game this adds to your starting lineup'
+                          : 'Season points this adds to your starting lineup'}>
+                        +{p.lineupGain.toFixed(data.valueBasis === 'projected' ? 1 : 0)}
                       </span>
                       <div className="w-14 h-1.5 rounded-full overflow-hidden"
                         style={{ background: '#1e1e20' }}>
@@ -152,8 +167,8 @@ export function TradeAnalyzerPanel({
                             for one starter reads as a list, not a single row. */}
                         <div className="flex flex-col gap-1">
                           {p[side].map((pl) => (
-                            <div key={pl.playerId}
-                              className="flex items-center gap-1.5 text-[10px]">
+                            <div key={pl.playerId} className="flex flex-col">
+                            <div className="flex items-center gap-1.5 text-[10px]">
                               <PlayerAvatar
                                 playerId={pl.sleeperPlayerId}
                                 name={pl.name}
@@ -173,10 +188,26 @@ export function TradeAnalyzerPanel({
                                                   : 'Bench depth on that roster'}>
                                 {pl.position}{pl.depthRank}
                               </span>
-                              <span className="tabular-nums shrink-0 w-7 text-right"
-                                style={{ color: side === 'receive' ? '#80ff49' : '#555' }}>
-                                {pl.seasonPts.toFixed(0)}
+                              <span className="tabular-nums shrink-0 text-right"
+                                style={{ color: side === 'receive' ? '#80ff49' : '#555' }}
+                                title={pl.games === 0
+                                  ? 'Projected from his position\'s baseline — no games of his own in the window'
+                                  : undefined}>
+                                {data.valueBasis === 'projected'
+                                  ? pl.seasonPts.toFixed(1)
+                                  : pl.seasonPts.toFixed(0)}
                               </span>
+                            </div>
+                            {/* The low–high the projection actually spans. On a
+                                mean drawn from a positional baseline this is the
+                                honest part of the number. */}
+                            {data.valueBasis === 'projected' && pl.ceiling !== undefined && (
+                              <span className="text-[9px] tabular-nums pl-[30px]"
+                                style={{ color: '#555' }}
+                                title="Roughly the 10th and 90th percentile of a single game">
+                                {(pl.floor ?? 0).toFixed(1)}–{pl.ceiling.toFixed(1)}
+                              </span>
+                            )}
                             </div>
                           ))}
                         </div>

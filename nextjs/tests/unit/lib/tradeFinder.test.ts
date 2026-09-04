@@ -272,6 +272,30 @@ describe('findTrades()', () => {
     expect(found.length).toBe(5);
   });
 
+  // WHY: when every back on a roster prices the same — which is what the
+  //      projected basis does to a roster with no games behind it — losing the
+  //      nominal RB1 costs nothing, because an identical RB2 slides up. Ranked
+  //      on value alone the list then says "trade your RB1" on a coin toss.
+  it('moves the deeper piece when two deals are worth the same', () => {
+    // Four identical backs and no tight end; one partner with two identical TEs.
+    const flat = buildRosterShape('flat', entries([
+      ['qb-f', 'QB', 20],
+      ['rb-w', 'RB', 12], ['rb-x', 'RB', 12], ['rb-y', 'RB', 12], ['rb-z', 'RB', 12],
+      ['wr-f', 'WR', 11], ['wr-g', 'WR', 11],
+    ]), SLOTS);
+    const partner = buildRosterShape('partner', entries([
+      ['qb-p', 'QB', 20], ['te-p', 'TE', 10], ['te-q', 'TE', 10],
+      ['rb-p', 'RB', 12], ['wr-p', 'WR', 11], ['wr-q', 'WR', 11],
+    ]), SLOTS);
+
+    const [best] = findTrades(flat, [partner], SLOTS);
+    expect(best).toBeDefined();
+    // My spare, not my nominal starter — and their spare, not their TE1.
+    expect(best.give.every((p) => !p.starter)).toBe(true);
+    expect(best.give[0].depthRank).toBe(4);
+    expect(best.receive[0].depthRank).toBe(2);
+  });
+
   it('honours the requested limit', () => {
     expect(findTrades(deepAtRb(), partners, SLOTS, 2).length).toBeLessThanOrEqual(2);
   });

@@ -14,7 +14,9 @@
 //
 // ── Rate-limit context ────────────────────────────────────────────────────────
 // Sleeper docs: stay under 1000 req/min globally; no per-endpoint throttle.
-// The route makes 3 Sleeper calls per request (rosters, users, player map).
+// The route makes 3 Sleeper calls per request (rosters, users, player map), and
+// a 4th (/state/nfl, itself cached) only on the projected-values path, which is
+// reached when the season totals come back empty.
 // The RouteCache prevents re-fetching within 10 minutes — tests verify this
 // explicitly so the rate-limit protection is documented and regression-tested.
 //
@@ -69,6 +71,7 @@ import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { prisma } from '@/lib/prisma';
 import { clearStatsSeasonCache } from '@/lib/statsSeason';
 import { clearGsisXrefCache } from '@/lib/sleeper/gsisXref';
+import { clearWindowRowsCache } from '@/lib/formWindow';
 
 const mockSleeperGet   = sleeperGet   as jest.MockedFunction<typeof sleeperGet>;
 const mockGetPlayerMap = getPlayerMapSafe as jest.MockedFunction<typeof getPlayerMapSafe>;
@@ -173,9 +176,10 @@ describe('GET /api/sleeper/trade-suggestions', () => {
     mockFindMany.mockResolvedValue([] as never);
     // The requested season has rows, so no season fallback unless a test says so.
     mockAggregate.mockResolvedValue({ _max: { week: 18 } } as never);
-    // Both helpers memoise per season across calls; each test starts clean.
+    // These memoise across calls; each test starts clean.
     clearStatsSeasonCache();
     clearGsisXrefCache();
+    clearWindowRowsCache();
   });
 
   // WHY: leagueId drives every Sleeper roster/user call — missing it means no
@@ -460,11 +464,22 @@ const deepPlayerMap = new Map(
 const deepStatRows = deepPlayers.map(([id, , position, pts]) =>
   ({ playerId: `00-gsis-${id}`, position, fantasyPoints: pts, receptions: 0 }));
 
+interface PlayerJson {
+  playerId:  string;
+  position:  string;
+  depthRank: number;
+  starter:   boolean;
+  seasonPts: number;
+  /** Present only on the projected basis — see src/lib/tradeValues.ts. */
+  floor?:    number;
+  ceiling?:  number;
+}
+
 interface ProposalJson {
   targetOwnerId:   string;
   acceptance:      string;
-  give:            { playerId: string; position: string; depthRank: number; starter: boolean }[];
-  receive:         { playerId: string; position: string; depthRank: number; starter: boolean }[];
+  give:            PlayerJson[];
+  receive:         PlayerJson[];
   fairnessScore:   number;
   lineupGain:      number;
   theirLineupGain: number;
@@ -483,6 +498,7 @@ describe('GET /api/sleeper/trade-suggestions — roster shape', () => {
     mockAggregate.mockResolvedValue({ _max: { week: 18 } } as never);
     clearStatsSeasonCache();
     clearGsisXrefCache();
+    clearWindowRowsCache();
   });
 
   async function deepProposals(): Promise<ProposalJson[]> {
@@ -651,6 +667,7 @@ describe('GET /api/sleeper/trade-suggestions — empty results', () => {
     mockAggregate.mockResolvedValue({ _max: { week: 18 } } as never);
     clearStatsSeasonCache();
     clearGsisXrefCache();
+    clearWindowRowsCache();
   });
 
   async function run(
@@ -733,5 +750,155 @@ describe('GET /api/sleeper/trade-suggestions — empty results', () => {
     expect(json.proposals.length).toBeGreaterThan(0);
     expect(json.noTradesReason).toBeUndefined();
     expect(json.scoredPlayers).toBeGreaterThan(0);
+  });
+});
+
+// ── Pricing from projections ──────────────────────────────────────────────────
+//
+// With no season totals every player prices at zero, which reads as "worth
+// nothing" when it means "not known". The finder falls back to the matchup
+// report's projection — recent form blended toward the position's baseline —
+// and says on the response which of the two scales it is quoting.
+
+describe('GET /api/sleeper/trade-suggestions — projected values', () => {
+  beforeEach(() => {
+    mockSleeperGet.mockReset();
+    mockGetPlayerMap.mockReset();
+    mockGroupBy.mockReset();
+    mockFindMany.mockReset();
+    mockAggregate.mockReset();
+    mockGetPlayerMap.mockResolvedValue(new Map() as never);
+    mockGroupBy.mockResolvedValue([] as never);
+    mockAggregate.mockResolvedValue({ _max: { week: 18 } } as never);
+    clearStatsSeasonCache();
+    clearGsisXrefCache();
+    clearWindowRowsCache();
+  });
+
+  /** A window population none of whose players are on these rosters. */
+  const windowRows = [
+    ...[14, 15, 16].flatMap((week) => [
+      { playerId: 'g-qb-a', position: 'QB', week, team: 'BUF', opponentTeam: 'MIA',
+        fantasyPoints: 24, receptions: 0 },
+      { playerId: 'g-qb-b', position: 'QB', week, team: 'KC', opponentTeam: 'LV',
+        fantasyPoints: 20, receptions: 0 },
+      { playerId: 'g-rb-a', position: 'RB', week, team: 'PHI', opponentTeam: 'DAL',
+        fantasyPoints: 15, receptions: 0 },
+      { playerId: 'g-rb-b', position: 'RB', week, team: 'SF', opponentTeam: 'SEA',
+        fantasyPoints: 9,  receptions: 0 },
+      { playerId: 'g-te-a', position: 'TE', week, team: 'KC', opponentTeam: 'LV',
+        fantasyPoints: 13, receptions: 0 },
+      { playerId: 'g-te-b', position: 'TE', week, team: 'IND', opponentTeam: 'HOU',
+        fantasyPoints: 7,  receptions: 0 },
+      { playerId: 'g-wr-a', position: 'WR', week, team: 'MIA', opponentTeam: 'BUF',
+        fantasyPoints: 14, receptions: 0 },
+      { playerId: 'g-wr-b', position: 'WR', week, team: 'BUF', opponentTeam: 'MIA',
+        fantasyPoints: 10, receptions: 0 },
+    ]),
+  ];
+
+  /**
+   * The season-totals query returns nothing for these rosters; the window query
+   * — no player filter, a week range — returns the population above. That is
+   * exactly the shape of a cross-reference that missed, or a roster of players
+   * with no rows of their own.
+   */
+  function setupNoTotals(): void {
+    mockSleeperGet
+      .mockResolvedValueOnce(deepRosters as never)   // rosters
+      .mockResolvedValueOnce(deepUsers   as never)   // users
+      // Week 17 live, so the six-week form window closes on completed week 16 —
+      // the weeks the fixture rows above sit in.
+      .mockResolvedValueOnce({ week: 17, season: '2025' } as never); // /state/nfl
+    mockGetPlayerMap.mockResolvedValueOnce(deepPlayerMap as never);
+    mockFindMany.mockImplementation((async (args: { where: { week?: unknown } }) =>
+      (args.where.week ? windowRows : [])) as never);
+  }
+
+  // WHY: the request behind this. Zero totals used to end the panel; the same
+  //      rosters now price from recent form and produce something to act on.
+  it('prices from projections when there are no season totals', async () => {
+    const { leagueId, userId } = freshIds();
+    setupNoTotals();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as {
+      valueBasis: string; valueWindow?: { season: number; startWeek: number; endWeek: number };
+      proposals: ProposalJson[]; noTradesReason?: string; scoredPlayers: number;
+    };
+
+    expect(res.status).toBe(200);
+    expect(json.valueBasis).toBe('projected');
+    expect(json.scoredPlayers).toBeGreaterThan(0);
+    expect(json.noTradesReason).toBeUndefined();
+    expect(json.proposals.length).toBeGreaterThan(0);
+    // Six weeks, closing on the last completed week rather than the last synced
+    // one — week 16, with rows through 18 in the table.
+    expect(json.valueWindow).toEqual({ season: 2025, startWeek: 11, endWeek: 16, fallback: false });
+  });
+
+  // WHY: 320 points a season and 14 a game are an order of magnitude apart. A
+  //      response that does not say which it is quoting is quoting a wrong
+  //      number half the time, and the panel prints it either way.
+  it('quotes per-game figures and the band behind each one', async () => {
+    const { leagueId, userId } = freshIds();
+    setupNoTotals();
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { proposals: ProposalJson[] };
+
+    const players = json.proposals.flatMap((p) => [...p.give, ...p.receive]);
+    expect(players.length).toBeGreaterThan(0);
+    for (const pl of players) {
+      // Per game, not per season — nobody scores 300 in a week.
+      expect(pl.seasonPts).toBeLessThan(60);
+      expect(pl.seasonPts).toBeGreaterThan(0);
+      expect(pl.floor).toBeLessThanOrEqual(pl.seasonPts);
+      expect(pl.ceiling).toBeGreaterThanOrEqual(pl.seasonPts);
+      expect(pl.floor).toBeGreaterThanOrEqual(0);
+    }
+    for (const p of json.proposals) expect(p.summary).toContain('pts/gm');
+  });
+
+  // WHY: the fallback is for the empty case only. Priced on projections when
+  //      real totals exist, every panel would quietly change scale mid-season.
+  it('stays on season points whenever the totals are there', async () => {
+    const { leagueId, userId } = freshIds();
+    mockSleeperGet
+      .mockResolvedValueOnce(deepRosters as never)
+      .mockResolvedValueOnce(deepUsers   as never);
+    mockGetPlayerMap.mockResolvedValueOnce(deepPlayerMap as never);
+    mockFindMany.mockResolvedValue(deepStatRows as never);
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { valueBasis: string; valueWindow?: unknown;
+                                       proposals: ProposalJson[] };
+
+    expect(json.valueBasis).toBe('season-points');
+    expect(json.valueWindow).toBeUndefined();
+    for (const p of json.proposals) {
+      for (const pl of [...p.give, ...p.receive]) expect(pl.floor).toBeUndefined();
+      expect(p.summary).toContain(' pts to your starters');
+    }
+  });
+
+  // WHY: no totals and no window either is the one case where there really is
+  //      nothing to say, and it must not be dressed up as a projection.
+  it('reports a stats gap when the window cannot price anyone either', async () => {
+    const { leagueId, userId } = freshIds();
+    mockSleeperGet
+      .mockResolvedValueOnce(deepRosters as never)
+      .mockResolvedValueOnce(deepUsers   as never)
+      .mockResolvedValueOnce({ week: 17, season: '2025' } as never);
+    mockGetPlayerMap.mockResolvedValueOnce(deepPlayerMap as never);
+    mockFindMany.mockResolvedValue([] as never);
+
+    const res  = await GET(makeReq(leagueId, userId));
+    const json = await res.json() as { valueBasis: string; noTradesReason?: string;
+                                       proposals: unknown[] };
+
+    expect(json.valueBasis).toBe('season-points');
+    expect(json.proposals).toEqual([]);
+    expect(json.noTradesReason).toBe('no-stats');
   });
 });
