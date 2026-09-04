@@ -73,3 +73,22 @@ text verbatim, so the message on screen is the real reason.
 
 Server-side logs are prefixed `[pass-1]` (intent classification), `[pass-2]`
 (answer generation), and `[agent]` (route-level).
+
+## If the probe says `ready: true` and it still fails
+
+Both keys are visible to the server, so the failure is downstream of
+configuration. The page now prints the route's real error text — read that
+first, then match it here:
+
+| On screen | Cause |
+| --- | --- |
+| `HTTP 504` / `HTTP 502` with no JSON body | The function was killed before it answered. The route now declares `maxDuration = 60`, and every Sleeper call is bounded (6 s, 12 s for the ~10 MB player list). |
+| `Every AI provider failed — Groq: …; Gemini: …` | Both upstreams rejected the call. The quoted text is the provider's own message: an invalid key, a retired model ID, a quota. |
+| `⚠ Response interrupted: …` after partial text | The provider dropped the connection mid-answer. |
+| `The model returned an empty response.` | The provider accepted the call and produced no tokens. |
+| Answers that ignore your league | Check `X-Query-Intent`. Always `general` means Pass 1 is failing; always `false` on `X-League-Context` means no Sleeper league ID was sent. |
+
+`NFL_SEASON` is unset if the probe's `season` matches the current calendar
+year by accident. Set it explicitly — it decides which season "this year" and
+"last year" resolve to, and a season with no rows yet produces confident,
+empty-handed answers rather than an error.

@@ -890,6 +890,12 @@ async function streamGroq(systemPrompt: string, messages: { role: string; conten
 
 // ── Route handler ─────────────────────────────────────────────────────────────
 
+// Two sequential model calls plus Sleeper and DB context do not fit in the 10 s
+// default serverless budget on a cold cache. Exceeding it kills the function
+// mid-request and the browser sees a 504 with an HTML body — indistinguishable,
+// from the user's side, from the assistant being broken.
+export const maxDuration = 60;
+
 /**
  * GET /api/agent — configuration probe.
  *

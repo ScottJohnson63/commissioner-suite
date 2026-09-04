@@ -86,11 +86,20 @@ const TRENDING_TTL_MS         = 10 * 60 * 1000;
 const PLAYER_MAP_TTL_MS       = 24 * 60 * 60 * 1000;
 const ROSTER_TTL_MS           = 5 * 60 * 1000;
 
+// Every Sleeper call sits on the request path of an AI answer, so none of them
+// may hang: an un-aborted fetch keeps the serverless function alive until the
+// platform kills it, and the browser gets a 504 with no usable explanation.
+// A timed-out call degrades to cached (or absent) data instead — a slightly
+// thinner prompt beats no answer at all.
+const SLEEPER_TIMEOUT_MS      = 6 * 1000;
+// The full player list is ~10 MB of JSON, so it gets a longer budget.
+const PLAYER_MAP_TIMEOUT_MS   = 12 * 1000;
+
 interface SleeperCacheEntry<T> { data: T; fetchedAt: number; }
 const sleeperCache     = new Map<string, SleeperCacheEntry<unknown>>();
 const sleeperLastFetch = new Map<string, number>();
 
-async function sleeperFetch<T>(url: string, ttlMs: number): Promise<T | null> {
+async function sleeperFetch<T>(url: string, ttlMs: number, timeoutMs = SLEEPER_TIMEOUT_MS): Promise<T | null> {
   const now       = Date.now();
   const cached    = sleeperCache.get(url) as SleeperCacheEntry<T> | undefined;
   const lastFetch = sleeperLastFetch.get(url) ?? 0;
@@ -101,7 +110,10 @@ async function sleeperFetch<T>(url: string, ttlMs: number): Promise<T | null> {
   }
   try {
     sleeperLastFetch.set(url, now);
-    const res = await fetch(url, { next: { revalidate: Math.floor(ttlMs / 1000) } });
+    const res = await fetch(url, {
+      next: { revalidate: Math.floor(ttlMs / 1000) },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (!res.ok) {
       console.error(`[sleeper] HTTP ${res.status} for ${url}`);
       return cached?.data ?? null;
@@ -151,7 +163,7 @@ export async function fetchSleeperPlayerMap(): Promise<Record<string, string>> {
   } catch (dbErr) { console.error('[player-map] DB read error:', dbErr); }
 
   type RawPlayer = { full_name?: string };
-  const raw = await sleeperFetch<Record<string, RawPlayer>>(`${SLEEPER_BASE}/players/nfl`, PLAYER_MAP_TTL_MS);
+  const raw = await sleeperFetch<Record<string, RawPlayer>>(`${SLEEPER_BASE}/players/nfl`, PLAYER_MAP_TTL_MS, PLAYER_MAP_TIMEOUT_MS);
   if (!raw) return playerMapMemory ?? {};
 
   const mapped = Object.fromEntries(
