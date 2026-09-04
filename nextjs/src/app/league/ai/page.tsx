@@ -128,13 +128,17 @@ function UsageBar({
   );
 }
 
-function ModelBadge({ model }: { model: ModelUsed }) {
-  const label = model === 'gemini' ? 'Gemini 2.5 Flash' : 'Llama 3.1 · Groq';
+function ModelBadge({ model, modelId }: { model: ModelUsed; modelId: string | null }) {
+  // The server discovers the Groq model at request time, so the badge reports
+  // the ID that actually answered rather than a name baked in here.
+  const provider = model === 'gemini' ? 'Gemini' : 'Groq';
+  const label = modelId ? `${modelId} · ${provider}` : provider;
   const color = model === 'gemini' ? '#60a5fa' : '#80ff49';
   return (
     <span
       className="text-xs px-2 py-1 rounded transition-all"
       style={{ background: '#1a1a1c', color }}
+      title={`Answered by ${provider}${modelId ? ` (${modelId})` : ''}`}
     >
       {label}
     </span>
@@ -181,6 +185,7 @@ export default function AIPage() {
   const [hourlyUsed, setHourlyUsed] = useState(0);
   const [dailyUsed, setDailyUsed] = useState(0);
   const [modelUsed, setModelUsed] = useState<ModelUsed>('groq');
+  const [modelId, setModelId] = useState<string | null>(null);
   const [rateLimited, setRateLimited] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -259,6 +264,7 @@ export default function AIPage() {
       const daily = Number(res.headers.get('X-Daily-Prompts-Used') ?? 0);
 
       setModelUsed(newModel);
+      setModelId(res.headers.get('X-Model-Id'));
       setHourlyUsed(HOURLY_LIMIT - remaining);
       setDailyUsed(daily);
 
@@ -339,7 +345,7 @@ export default function AIPage() {
             onSelect={setActiveLeagueId}
           />
 
-          <ModelBadge model={modelUsed} />
+          <ModelBadge model={modelUsed} modelId={modelId} />
         </div>
       </div>
 

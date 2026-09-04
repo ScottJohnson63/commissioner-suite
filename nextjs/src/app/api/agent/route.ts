@@ -43,6 +43,10 @@
 //   fails does the route return 502, and the body carries each provider's error
 //   so the browser can show what actually went wrong.
 //
+//   Groq model IDs are discovered from the account's own catalogue rather than
+//   hardcoded, because a retired ID 404s every request and reads as an outage.
+//   GET /api/agent?live=1 reports what each key can actually reach.
+//
 // ── League context (Phase 2) ─────────────────────────────────────────────────
 //   If the client includes `sleeperLeagueId` in the request body AND the
 //   classified intent is league-aware (standings, roster_scan, etc.), the route
@@ -56,7 +60,9 @@
 //                     GEMINI_API_KEY is set; at least one of the two is required.
 //   GEMINI_API_KEY  — fallback provider for Pass 1 and Pass 2. Optional if
 //                     GROQ_API_KEY is set.
-//   GROQ_MODEL      — optional model ID override (default llama-3.1-8b-instant).
+//   GROQ_MODEL      — optional. Pins the Groq model for both passes; without it
+//                     the model is discovered from the account's catalogue.
+//   GROQ_PLANNER_MODEL — optional. Pins Pass 1 only.
 //   GEMINI_MODEL    — optional model ID override (default gemini-2.5-flash).
 //   NFL_SEASON      — current NFL season year (e.g. 2025); defaults to the
 //                     current calendar year. Set this explicitly — stale values
@@ -103,11 +109,91 @@ function getGemini(): GoogleGenerativeAI | null {
     return geminiClient.client;
 }
 
-// Model IDs are overridable via env so a decommissioned model can be swapped
-// without a redeploy of code — a dead model ID is otherwise indistinguishable
-// from an outage from the user's side.
-const GROQ_MODEL   = process.env.GROQ_MODEL?.trim()   || 'llama-3.1-8b-instant';
-const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+// ── Model selection ───────────────────────────────────────────────────────────
+//
+// Providers retire model IDs on their own schedule, and a retired ID answers
+// every request with a 404 that looks exactly like an outage. So the Groq model
+// is not a hardcoded constant: the candidates below are matched against the
+// models the account can actually reach, and the first hit wins. An explicit
+// GROQ_MODEL / GROQ_PLANNER_MODEL always overrides the search.
+
+/** Answer pass (pass 2) — capable first, cheap last. */
+const GROQ_ANSWER_CANDIDATES = [
+    'llama-3.3-70b-versatile',
+    'openai/gpt-oss-120b',
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+    'openai/gpt-oss-20b',
+    'llama-3.1-8b-instant',
+];
+
+/** Planner pass (pass 1) — a temp=0 JSON classification, so cheap first. */
+const GROQ_PLANNER_CANDIDATES = [
+    'llama-3.1-8b-instant',
+    'openai/gpt-oss-20b',
+    'llama-3.3-70b-versatile',
+    'meta-llama/llama-4-scout-17b-16e-instruct',
+];
+
+/** Model families on the Groq catalogue that cannot serve chat completions. */
+const NON_CHAT_MODEL_PATTERN = /whisper|tts|guard|embed|prompt-?guard/i;
+
+function geminiModel(): string {
+    return process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+}
+
+// Catalogue cache, keyed by API key so a rotated key re-reads it.
+let groqCatalogue: { key: string; ids: string[] } | null = null;
+
+/** Model IDs the configured Groq key can reach, or null if the list is unavailable. */
+async function groqModelIds(): Promise<string[] | null> {
+    const client = getGroq();
+    const key = process.env.GROQ_API_KEY?.trim();
+    if (!client || !key) return null;
+    if (groqCatalogue?.key === key) return groqCatalogue.ids;
+    try {
+        const listed = await client.models.list();
+        const ids = (listed?.data ?? []).map((m) => m.id).filter(Boolean);
+        if (!ids.length) return null;
+        groqCatalogue = { key, ids };
+        return ids;
+    } catch (listErr) {
+        // Not fatal: fall back to the first candidate and let the completion
+        // call report the real problem.
+        console.error('[groq] model catalogue unavailable:', listErr);
+        return null;
+    }
+}
+
+/**
+ * Picks the model ID to use for a Groq pass.
+ *
+ * Order: explicit env override → first candidate the account offers → any chat
+ * model the account offers → first candidate as a blind guess.
+ */
+async function resolveGroqModel(kind: 'planner' | 'answer'): Promise<string> {
+    const override = kind === 'planner'
+        ? (process.env.GROQ_PLANNER_MODEL?.trim() || process.env.GROQ_MODEL?.trim())
+        : process.env.GROQ_MODEL?.trim();
+    if (override) return override;
+
+    const candidates = kind === 'planner' ? GROQ_PLANNER_CANDIDATES : GROQ_ANSWER_CANDIDATES;
+    const ids = await groqModelIds();
+    if (!ids) return candidates[0];
+    const preferred = candidates.find((c) => ids.includes(c));
+    if (preferred) return preferred;
+    // Every ID we know about is gone — take whatever chat model is on offer
+    // rather than failing on a name that is certainly dead.
+    const usable = ids.find((id) => !NON_CHAT_MODEL_PATTERN.test(id));
+    if (usable) console.warn(`[groq] no known model available — falling back to ${usable}`);
+    return usable ?? candidates[0];
+}
+
+/** True for the 404 a retired or inaccessible model ID produces. */
+function isModelNotFoundError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message.toLowerCase();
+    return msg.includes('model_not_found') || msg.includes('does not exist');
+}
 
 // NFL_SEASON must be set to the most recently completed season (e.g. 2025).
 // "Last year" queries resolve to PREV_SEASON. Missing or stale env var is the
@@ -518,9 +604,9 @@ IMPORTANT: If the question mentions "our league", "my league", "the league", "fi
 async function planWithGroq(userMessage: string): Promise<string | null> {
     const client = getGroq();
     if (!client) return null;
-    try {
+    const run = async (): Promise<string> => {
         const response = await client.chat.completions.create({
-            model: GROQ_MODEL,
+            model: await resolveGroqModel('planner'),
             messages: [
                 { role: 'system', content: PLANNER_SYSTEM_PROMPT },
                 { role: 'user', content: userMessage },
@@ -530,7 +616,19 @@ async function planWithGroq(userMessage: string): Promise<string | null> {
             max_tokens: 150,
         });
         return response.choices[0]?.message?.content ?? '';
+    };
+    try {
+        return await run();
     } catch (err) {
+        if (isModelNotFoundError(err)) {
+            // The cached catalogue named a model the account cannot use.
+            // Re-read it once and try the replacement.
+            groqCatalogue = null;
+            try { return await run(); } catch (retryErr) {
+                console.error('[pass-1] groq planner error after model refresh:', retryErr);
+                return null;
+            }
+        }
         console.error('[pass-1] groq planner error:', err);
         return null;
     }
@@ -541,7 +639,7 @@ async function planWithGemini(userMessage: string): Promise<string | null> {
     const client = getGemini();
     if (!client) return null;
     try {
-        const model = client.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: PLANNER_SYSTEM_PROMPT });
+        const model = client.getGenerativeModel({ model: geminiModel(), systemInstruction: PLANNER_SYSTEM_PROMPT });
         const result = await model.generateContent(userMessage);
         return result.response.text();
     } catch (err) {
@@ -789,6 +887,12 @@ function isGroqRateLimitError(err: unknown): boolean {
         ('status' in err && (err as { status: number }).status === 429);
 }
 
+/** A provider's answer stream, plus the model ID that actually served it. */
+interface StreamResult {
+    stream: ReadableStream<Uint8Array>;
+    model: string;
+}
+
 /** Shown when a provider completes without emitting a single token. */
 const EMPTY_ANSWER_NOTE =
     'The model returned an empty response. Please try rephrasing your question.';
@@ -842,10 +946,11 @@ function toReadableStream(chunks: AsyncIterable<string>): ReadableStream<Uint8Ar
  *
  * @returns  A ReadableStream of UTF-8 encoded text chunks.
  */
-async function streamGemini(systemPrompt: string, messages: { role: string; content: string }[]): Promise<ReadableStream<Uint8Array>> {
+async function streamGemini(systemPrompt: string, messages: { role: string; content: string }[]): Promise<StreamResult> {
     const client = getGemini();
     if (!client) throw new Error('GEMINI_API_KEY is not configured');
-    const model = client.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: systemPrompt });
+    const modelId = geminiModel();
+    const model = client.getGenerativeModel({ model: modelId, systemInstruction: systemPrompt });
     const history = messages.slice(0, -1).map((m) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
@@ -853,11 +958,14 @@ async function streamGemini(systemPrompt: string, messages: { role: string; cont
     const lastMessage = messages[messages.length - 1];
     const chat = model.startChat({ history });
     const result = await chat.sendMessageStream(lastMessage.content);
-    return toReadableStream((async function* () {
-        for await (const chunk of result.stream) {
-            yield chunk.text();
-        }
-    })());
+    return {
+        model: modelId,
+        stream: toReadableStream((async function* () {
+            for await (const chunk of result.stream) {
+                yield chunk.text();
+            }
+        })()),
+    };
 }
 
 /**
@@ -868,11 +976,12 @@ async function streamGemini(systemPrompt: string, messages: { role: string; cont
  *
  * @returns  A ReadableStream of UTF-8 encoded text chunks.
  */
-async function streamGroq(systemPrompt: string, messages: { role: string; content: string }[]): Promise<ReadableStream<Uint8Array>> {
+async function streamGroq(systemPrompt: string, messages: { role: string; content: string }[]): Promise<StreamResult> {
     const client = getGroq();
     if (!client) throw new Error('GROQ_API_KEY is not configured');
-    const stream = await client.chat.completions.create({
-        model: GROQ_MODEL,
+    let modelId = '';
+    const open = async () => client.chat.completions.create({
+        model: (modelId = await resolveGroqModel('answer')),
         messages: [
             { role: 'system', content: systemPrompt },
             ...messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
@@ -881,11 +990,27 @@ async function streamGroq(systemPrompt: string, messages: { role: string; conten
         temperature: 0.3,
         max_tokens: 512,
     });
-    return toReadableStream((async function* () {
-        for await (const chunk of stream) {
-            yield chunk.choices[0]?.delta?.content ?? '';
-        }
-    })());
+
+    let stream;
+    try {
+        stream = await open();
+    } catch (openErr) {
+        // A retired model ID 404s every request until the catalogue is re-read,
+        // which is exactly the failure this whole path exists to survive.
+        if (!isModelNotFoundError(openErr)) throw openErr;
+        console.warn('[pass-2] model rejected — refreshing the Groq catalogue');
+        groqCatalogue = null;
+        stream = await open();
+    }
+
+    return {
+        model: modelId,
+        stream: toReadableStream((async function* () {
+            for await (const chunk of stream) {
+                yield chunk.choices[0]?.delta?.content ?? '';
+            }
+        })()),
+    };
 }
 
 // ── Route handler ─────────────────────────────────────────────────────────────
@@ -896,25 +1021,85 @@ async function streamGroq(systemPrompt: string, messages: { role: string; conten
 // from the user's side, from the assistant being broken.
 export const maxDuration = 60;
 
+/** Live check: can the Groq key list models, and which one would be used? */
+async function probeGroq(): Promise<Record<string, unknown>> {
+    if (!getGroq()) return { configured: false };
+    const ids = await groqModelIds();
+    if (!ids) return { configured: true, reachable: false, error: 'Could not list models — see server logs for the provider error.' };
+    return {
+        configured: true,
+        reachable:  true,
+        selected:   { planner: await resolveGroqModel('planner'), answer: await resolveGroqModel('answer') },
+        available:  ids.filter((id) => !NON_CHAT_MODEL_PATTERN.test(id)).sort(),
+    };
+}
+
+/** Live check: is the Gemini key valid, and is the configured model on offer? */
+async function probeGemini(): Promise<Record<string, unknown>> {
+    const wanted = geminiModel();
+    const key = process.env.GEMINI_API_KEY?.trim();
+    if (!key) return { configured: false };
+    try {
+        // Key goes in the header, never the URL, so it cannot end up in a log.
+        const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+            headers: { 'x-goog-api-key': key },
+            signal:  AbortSignal.timeout(8000),
+        });
+        if (!res.ok) {
+            const detail = (await res.text()).slice(0, 300);
+            return { configured: true, reachable: false, model: wanted, error: `HTTP ${res.status}: ${detail}` };
+        }
+        const body = (await res.json()) as { models?: { name?: string; supportedGenerationMethods?: string[] }[] };
+        const available = (body.models ?? [])
+            .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
+            .map((m) => (m.name ?? '').replace(/^models\//, ''))
+            .filter(Boolean)
+            .sort();
+        return {
+            configured: true,
+            reachable:  true,
+            model:      wanted,
+            modelExists: available.includes(wanted),
+            available,
+        };
+    } catch (probeErr) {
+        const message = probeErr instanceof Error ? probeErr.message : 'unknown error';
+        return { configured: true, reachable: false, model: wanted, error: message };
+    }
+}
+
 /**
  * GET /api/agent — configuration probe.
  *
- * Reports which AI providers this deployment can actually reach and which model
- * IDs it will use. Exposes booleans and model names only, never key material.
- * Exists because a missing or invalid key looks exactly like an outage from the
- * browser, and production has no other way to tell the two apart.
+ * Default: a free, offline summary of which providers are configured.
+ * `?live=1`: actually calls each provider to report whether the key works and
+ * which model IDs it can reach — the two things a 404 or a 400 from inside a
+ * streaming answer cannot tell you.
+ *
+ * Exposes booleans, model IDs and provider error text only, never key material.
  */
-export async function GET(): Promise<Response> {
+export async function GET(req: NextRequest): Promise<Response> {
     const session = await auth();
     if (!session) return err('Unauthorized', 401);
 
     const groqReady   = getGroq()   !== null;
     const geminiReady = getGemini() !== null;
+
+    if (new URL(req.url).searchParams.get('live') !== '1') {
+        return NextResponse.json({
+            ready:     groqReady || geminiReady,
+            providers: { groq: groqReady, gemini: geminiReady },
+            season:    CURRENT_SEASON,
+            hint:      'Add ?live=1 to test the keys against each provider.',
+        });
+    }
+
+    const [groqStatus, geminiStatus] = await Promise.all([probeGroq(), probeGemini()]);
     return NextResponse.json({
-        ready:     groqReady || geminiReady,
-        providers: { groq: groqReady, gemini: geminiReady },
-        models:    { groq: GROQ_MODEL, gemini: GEMINI_MODEL },
-        season:    CURRENT_SEASON,
+        ready:  groqStatus.reachable === true || geminiStatus.reachable === true,
+        groq:   groqStatus,
+        gemini: geminiStatus,
+        season: CURRENT_SEASON,
     });
 }
 
@@ -998,14 +1183,14 @@ async function handlePost(req: NextRequest): Promise<Response> {
     // Groq is primary; Gemini takes over on ANY Groq failure, not just a 429.
     // A revoked key, a retired model ID, or a Groq outage used to take the whole
     // assistant down even with a healthy Gemini key sitting right there.
-    let readable: ReadableStream<Uint8Array> | null = null;
+    let answer: StreamResult | null = null;
     let modelUsed: ModelUsed = 'groq';
     let fallbackReason: string | null = null;
     const failures: string[] = [];
 
     if (groqReady) {
         try {
-            readable = await streamGroq(systemPrompt, messages);
+            answer = await streamGroq(systemPrompt, messages);
         } catch (groqErr) {
             const message = groqErr instanceof Error ? groqErr.message : 'Groq API error';
             console.error('[pass-2] groq error:', groqErr);
@@ -1016,14 +1201,14 @@ async function handlePost(req: NextRequest): Promise<Response> {
         fallbackReason = 'groq_unavailable';
     }
 
-    if (!readable) {
+    if (!answer) {
         if (!geminiReady) {
             return err(failures.length
                 ? `The AI service is unavailable — ${failures.join('; ')}`
                 : 'The AI service is unavailable — GROQ_API_KEY is not configured and there is no fallback provider.', 502);
         }
         try {
-            readable = await streamGemini(systemPrompt, messages);
+            answer = await streamGemini(systemPrompt, messages);
             modelUsed = 'gemini';
         } catch (geminiErr) {
             const message = geminiErr instanceof Error ? geminiErr.message : 'Gemini API error';
@@ -1039,6 +1224,7 @@ async function handlePost(req: NextRequest): Promise<Response> {
         'X-Content-Type-Options': 'nosniff',
         'X-Accel-Buffering': 'no',        // don't let a proxy buffer the stream
         'X-Model-Used': modelUsed,
+        'X-Model-Id': answer.model,
         'X-RateLimit-Limit': String(HOURLY_LIMIT),
         'X-RateLimit-Remaining': String(remaining),
         'X-RateLimit-Reset': String(resetAt),
@@ -1048,5 +1234,5 @@ async function handlePost(req: NextRequest): Promise<Response> {
     };
     if (fallbackReason) headers['X-Fallback-Reason'] = fallbackReason;
 
-    return new Response(readable, { headers });
+    return new Response(answer.stream, { headers });
 }
