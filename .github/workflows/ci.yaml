@@ -95,9 +95,52 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # `npm audit` exits 1 both for real advisories and for a registry endpoint
+      # failure, so a bare `npm audit --audit-level=high` turns an npmjs.org
+      # outage into a red build with a misleading message ("Invalid package
+      # tree, run npm install to rebuild your package-lock.json" — the lockfile
+      # is fine; `npm ci` above would have failed first if it weren't).
+      #
+      # Tell the two apart by the shape of --json output: a real report carries
+      # .metadata.vulnerabilities, whereas an endpoint error carries
+      # .statusCode/.message instead (npm/lib/utils/audit-error.js). A genuine
+      # advisory still fails the build; an unreachable endpoint only warns.
       - name: npm audit (high and critical only)
-        run: npm audit --audit-level=high
-        continue-on-error: false
+        run: |
+          for attempt in 1 2; do
+            # Each attempt is capped: npm retries the retired "quick" endpoint
+            # after the bulk one fails, which can hang for many minutes.
+            report=$(timeout 300 npm audit --json || true)
+
+            if printf '%s' "$report" | jq -e 'has("metadata")' >/dev/null 2>&1; then
+              found=$(printf '%s' "$report" \
+                | jq '.metadata.vulnerabilities.high + .metadata.vulnerabilities.critical')
+
+              if [ "$found" -gt 0 ]; then
+                echo "::error::npm audit found $found high/critical advisories"
+                printf '%s' "$report" | jq -r '
+                  .vulnerabilities | to_entries[]
+                  | select(.value.severity == "high" or .value.severity == "critical")
+                  | "  \(.value.severity)\t\(.key)"'
+                exit 1
+              fi
+
+              echo "No high or critical advisories."
+              exit 0
+            fi
+
+            # jq emits nothing at all for empty input, so the fallback for a
+            # killed/hung npm lives in the parameter expansion, not in the filter.
+            reason=$(printf '%s' "$report" \
+              | jq -r '.statusCode // .message // empty' 2>/dev/null || true)
+            echo "Audit endpoint returned no report (attempt $attempt/2): ${reason:-no response}"
+
+            if [ "$attempt" -lt 2 ]; then
+              sleep 30
+            fi
+          done
+
+          echo "::warning::npm audit endpoint unreachable — dependency audit skipped for this run."
 
       - name: Check for outdated packages
         run: |
