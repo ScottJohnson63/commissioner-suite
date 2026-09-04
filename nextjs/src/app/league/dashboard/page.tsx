@@ -123,86 +123,28 @@ export default function LeagueDashboardPage() {
   }
 
   return (
-    <div className="min-h-full px-5 py-6 sm:px-8" style={{ color: '#e8e6df' }}>
+    <div className="min-h-full" style={{ color: '#e8e6df' }}>
 
-      {/* ── Header ── */}
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
-        <div>
-          <p className="text-[10px] uppercase tracking-widest mb-1" style={{ color: '#555' }}>
-            League Portal
-          </p>
-          <h1 className="text-xl font-semibold">Dashboard</h1>
-        </div>
-
-        {/* Nothing here until the session resolves — swapping a Sign in button
-            for the league selector a moment later reads as a glitch. */}
-        <div className="flex items-center gap-3 mt-1">
-          {/* Replays the welcome tour. It opens itself on a first visit, so this
-              is here for everybody after that — including anyone who ticked
-              "Don't show this again". */}
-          <button
-            onClick={openAppIntro}
-            className="text-[11px] font-medium px-3 py-1.5 rounded transition-colors"
-            style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
-          >
-            How it works
-          </button>
-
-          {sessionLoading ? null : isAuthed ? (
-            <>
-              <LeagueSelector
-                sleeperUser={sleeperUser}
-                activeLeagueId={activeLeagueId}
-                onSelect={setActiveLeagueId}
-              />
-              {(sleeperUser?.displayName ?? session?.user?.username) && (
-                <span className="text-xs" style={{ color: '#80ff49' }}>
-                  {sleeperUser?.displayName ?? session?.user?.username}
-                </span>
-              )}
-            </>
-          ) : (
-            // Links to the app's own login page, which has the OAuth buttons
-            // and the commissioner modal. NextAuth's built-in signIn() page
-            // has neither.
-            <Link
-              href="/login"
-              className="text-xs px-3 py-1.5 rounded font-medium transition-opacity hover:opacity-80"
-              style={{ background: '#80ff49', color: '#0e0e0f' }}
-            >
-              Sign in
-            </Link>
-          )}
-        </div>
-      </div>
-
-      {/* ── Tab bar — desktop ── */}
-      <div className="hidden sm:flex items-stretch border-b mb-6" style={{ borderColor: '#1e1e20' }}>
-        {LEFT_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-        {isMember && (
-          <>
-            <div className="flex-1" />
-            <div className="w-px my-2" style={{ background: '#1e1e20' }} />
-            {MEMBER_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-          </>
-        )}
-      </div>
-
-      {/* ── Tab bar — mobile hamburger ── */}
-      <div className="flex sm:hidden items-center border-b mb-6 relative"
-        style={{ borderColor: '#1e1e20' }} ref={mobileMenuRef}>
+      {/* ── Tab picker — mobile ──
+          The tabs are the thing you come here to switch, so on a phone they sit
+          at the very top of the screen rather than under the title, and stay
+          there as the page scrolls. A dropdown rather than a row: a bar that
+          scrolls sideways hides the right-hand tabs, which are the ones hardest
+          to guess at. */}
+      <div
+        ref={mobileMenuRef}
+        className="sm:hidden sticky top-0 z-30 border-b px-5 py-2.5"
+        style={{ borderColor: '#1e1e20', background: 'rgba(14,14,15,0.95)', backdropFilter: 'blur(8px)' }}
+      >
         <button
           onClick={() => setMobileMenuOpen((o) => !o)}
-          className="flex items-center gap-2 px-1 py-2.5 text-sm font-medium transition-colors"
+          aria-expanded={mobileMenuOpen}
+          aria-haspopup="menu"
+          className="flex items-center gap-2 py-1 text-sm font-medium transition-colors"
           style={{ color: '#e8e6df' }}
         >
-          <svg width="16" height="12" viewBox="0 0 16 12" fill="none" aria-hidden>
-            <rect y="0"  width="16" height="2" rx="1" fill="currentColor" />
-            <rect y="5"  width="16" height="2" rx="1" fill="currentColor" />
-            <rect y="10" width="16" height="2" rx="1" fill="currentColor" />
-          </svg>
           <span>{currentTabLabel}</span>
-          <svg width="10" height="6" viewBox="0 0 10 6" fill="none" className="ml-0.5"
+          <svg width="10" height="6" viewBox="0 0 10 6" fill="none"
             style={{ transform: mobileMenuOpen ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }}>
             <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5"
               strokeLinecap="round" strokeLinejoin="round" />
@@ -211,12 +153,14 @@ export default function LeagueDashboardPage() {
 
         {mobileMenuOpen && (
           <div
-            className="absolute top-full left-0 z-50 min-w-[160px] rounded-lg overflow-hidden shadow-lg mt-1"
+            role="menu"
+            className="absolute top-full left-5 z-50 min-w-[170px] rounded-lg overflow-hidden shadow-lg mt-1"
             style={{ background: '#141415', border: '1px solid #2a2a2c' }}
           >
             {allTabs.map(({ id, label }) => (
               <button
                 key={id}
+                role="menuitem"
                 onClick={() => { setTab(id); setMobileMenuOpen(false); }}
                 className="w-full text-left px-4 py-2.5 text-sm transition-colors"
                 style={{
@@ -230,6 +174,71 @@ export default function LeagueDashboardPage() {
               </button>
             ))}
           </div>
+        )}
+      </div>
+
+      <div className="px-5 py-6 sm:px-8">
+
+        {/* ── Header ── */}
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest mb-1" style={{ color: '#555' }}>
+              League Portal
+            </p>
+            <h1 className="text-xl font-semibold">Dashboard</h1>
+          </div>
+
+          {/* Nothing here until the session resolves — swapping a Sign in button
+              for the league selector a moment later reads as a glitch. */}
+          <div className="flex items-center gap-3 mt-1">
+            {/* Replays the welcome tour. It opens itself on a first visit, so this
+                is here for everybody after that — including anyone who ticked
+                "Don't show this again". */}
+            <button
+              onClick={openAppIntro}
+              className="text-[11px] font-medium px-3 py-1.5 rounded transition-colors"
+              style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
+            >
+              How it works
+            </button>
+
+            {sessionLoading ? null : isAuthed ? (
+              <>
+                <LeagueSelector
+                  sleeperUser={sleeperUser}
+                  activeLeagueId={activeLeagueId}
+                  onSelect={setActiveLeagueId}
+                />
+                {(sleeperUser?.displayName ?? session?.user?.username) && (
+                  <span className="text-xs" style={{ color: '#80ff49' }}>
+                    {sleeperUser?.displayName ?? session?.user?.username}
+                  </span>
+                )}
+              </>
+            ) : (
+              // Links to the app's own login page, which has the OAuth buttons
+              // and the commissioner modal. NextAuth's built-in signIn() page
+              // has neither.
+              <Link
+                href="/login"
+                className="text-xs px-3 py-1.5 rounded font-medium transition-opacity hover:opacity-80"
+                style={{ background: '#80ff49', color: '#0e0e0f' }}
+              >
+                Sign in
+              </Link>
+            )}
+          </div>
+      </div>
+
+      {/* ── Tab bar — desktop ── */}
+      <div className="hidden sm:flex items-stretch border-b mb-6" style={{ borderColor: '#1e1e20' }}>
+        {LEFT_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
+        {isMember && (
+          <>
+            <div className="flex-1" />
+            <div className="w-px my-2" style={{ background: '#1e1e20' }} />
+            {MEMBER_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
+          </>
         )}
       </div>
 
@@ -272,6 +281,8 @@ export default function LeagueDashboardPage() {
           className="underline" style={{ color: '#80ff49' }}>Sleeper</a>
         {' '}· Stats from nfl_data_py · Headlines from ESPN
       </p>
+
+      </div>
     </div>
   );
 }
