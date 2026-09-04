@@ -73,6 +73,26 @@ export interface RosterShape {
   lineupPts: number;
 }
 
+/**
+ * How likely the other manager is to say yes.
+ *
+ * Returning only the deals both rosters clearly gain from is the right first
+ * answer and a bad only answer: a roster can be strong enough, or a league
+ * balanced enough, that no such deal exists, and "no fair trades found" is not
+ * something anyone can act on. So the weaker deals are kept and labelled rather
+ * than dropped, and the panel says which is which.
+ */
+export type Acceptance =
+  /** Both starting lineups clearly gain. Send it. */
+  | 'mutual'
+  /** Both gain, one of them barely. Worth asking. */
+  | 'slim'
+  /** Good for me, about neutral for them — needs a pitch or a sweetener. */
+  | 'ask';
+
+/** Best first, and the order the finder fills its list in. */
+const ACCEPTANCE_RANK: Record<Acceptance, number> = { mutual: 0, slim: 1, ask: 2 };
+
 /** A trade the finder is willing to put its name to. */
 export interface TradeCandidate {
   targetOwnerId: string;
@@ -82,18 +102,39 @@ export interface TradeCandidate {
   fairnessScore: number;
   /** Points this adds to my starting lineup. Always > 0. */
   myGain:        number;
-  /** Points it adds to theirs — the reason they would accept. Always > 0. */
+  /** Points it adds to theirs. Positive except on an `ask`, where it is small. */
   theirGain:     number;
+  acceptance:    Acceptance;
 }
 
 // ─── Tuning ───────────────────────────────────────────────────────────────────
 
-/** Below this a proposal is too lopsided in raw points to send. */
-export const MIN_FAIRNESS = 60;
+/**
+ * Fairness floors, one per acceptance tier.
+ *
+ * 60 is the bar a proposal has to clear to be sent without explanation. The
+ * lower two are not "less fair" so much as further from an even split of season
+ * points — a deal can be worth proposing at 52 when the points it moves are
+ * points neither lineup was using.
+ */
+export const MIN_FAIRNESS  = 60;
+const SLIM_FAIRNESS = 55;
+const ASK_FAIRNESS  = 50;
 
 /** Players considered from each side, per partner. Enough for variety, small
  *  enough that the package search stays a few hundred combinations. */
 const MAX_CHIPS = 6;
+
+/**
+ * Players added to the chip list because *this* partner needs them.
+ *
+ * Surplus alone picks the same handful of names for every partner, which is how
+ * a two-sided fit gets missed: the piece I can spare cheapest is not necessarily
+ * a piece anybody wants. These are the ones that most improve the roster across
+ * the table, whatever they cost me — the deal still has to clear both gates, but
+ * now it is at least in the search.
+ */
+const MAX_WANTED = 4;
 
 /** How often one player, or one partner, may appear across the returned set.
  *  The whole point is a spread of ideas rather than the same name five times. */
@@ -246,15 +287,30 @@ const sumPts = (ps: readonly RosterEntry[]) => ps.reduce((s, p) => s + p.seasonP
  * My two highest scorers are added regardless: a one-for-two — sending a real
  * starter out and getting two pieces back — needs a real starter to offer, and
  * the surplus measure will never nominate one.
+ *
+ * And the list is per partner, not per roster, because surplus is only half of
+ * a trade. The pieces this particular manager would want are added too, however
+ * they are priced on my own chart — otherwise the search never contains the one
+ * deal both sides would sign.
  */
-function tradeChips(shape: RosterShape): DepthPlayer[] {
-  const scored  = allPlayers(shape).filter((p) => p.seasonPts > 0);
+function tradeChips(
+  me:    RosterShape,
+  them:  RosterShape,
+  slots: Record<string, number>,
+): DepthPlayer[] {
+  const scored  = allPlayers(me).filter((p) => p.seasonPts > 0);
   const surplus = [...scored].sort((a, b) => (b.seasonPts - b.cost) - (a.seasonPts - a.cost))
                              .slice(0, MAX_CHIPS);
   const best    = [...scored].sort((a, b) => b.seasonPts - a.seasonPts).slice(0, 2);
+  const wanted  = [...scored]
+    .map((p) => ({ p, gain: lineupDelta(them, slots, [], [p]) }))
+    .filter((c) => c.gain > 0)
+    .sort((a, b) => b.gain - a.gain)
+    .slice(0, MAX_WANTED)
+    .map((c) => c.p);
 
   const seen = new Set<string>();
-  return [...surplus, ...best].filter((p) => {
+  return [...surplus, ...best, ...wanted].filter((p) => {
     if (seen.has(p.playerId)) return false;
     seen.add(p.playerId);
     return true;
@@ -322,6 +378,30 @@ function tradeShape(c: TradeCandidate): string {
 }
 
 /**
+ * Which tier a deal belongs in, or null if it is not worth showing at all.
+ *
+ * The tiers loosen in two directions at once — a smaller gain and a wider points
+ * gap — because those are the two ways a real trade market is tighter than the
+ * ideal one. What never loosens is my own side: every tier requires the deal to
+ * improve my starting lineup. A proposal that does not is not a suggestion at
+ * any confidence.
+ */
+function classify(
+  score:      number,
+  myGain:     number,
+  theirGain:  number,
+  myFloor:    number,
+  theirFloor: number,
+): Acceptance | null {
+  if (score >= MIN_FAIRNESS && myGain > myFloor && theirGain > theirFloor) return 'mutual';
+  if (score >= SLIM_FAIRNESS && myGain > 0      && theirGain > 0)          return 'slim';
+  // Neutral for them, within the same noise floor their gain is measured
+  // against: not a fleecing, but not a deal that sells itself either.
+  if (score >= ASK_FAIRNESS && myGain > myFloor && theirGain > -theirFloor) return 'ask';
+  return null;
+}
+
+/**
  * Every trade with this partner that leaves both starting lineups better off.
  *
  * Two players a side at most, and never two on both sides at once: it doubles
@@ -332,7 +412,7 @@ function tradesWith(
   them:  RosterShape,
   slots: Record<string, number>,
 ): TradeCandidate[] {
-  const chips   = tradeChips(me);
+  const chips   = tradeChips(me, them, slots);
   const targets = targetsOn(them, me, slots);
   if (chips.length === 0 || targets.length === 0) return [];
 
@@ -351,17 +431,17 @@ function tradesWith(
       if (!keepsLineupFillable(me,   slots, give,    receive)) continue;
       if (!keepsLineupFillable(them, slots, receive, give))    continue;
 
-      // Both deltas, or this is a proposal only one manager would sign.
-      const myGain = lineupDelta(me, slots, give, receive);
-      if (myGain <= myFloor) continue;
+      // Both deltas: mine says whether to want it, theirs whether to expect a yes.
+      const myGain    = lineupDelta(me,   slots, give,    receive);
       const theirGain = lineupDelta(them, slots, receive, give);
-      if (theirGain <= theirFloor) continue;
+      const acceptance = classify(score, myGain, theirGain, myFloor, theirFloor);
+      if (!acceptance) continue;
 
       out.push({
         targetOwnerId: them.ownerId,
         give, receive,
         fairnessScore: score,
-        myGain, theirGain,
+        myGain, theirGain, acceptance,
       });
     }
   }
@@ -383,10 +463,17 @@ function diversify(ranked: readonly TradeCandidate[], limit: number): TradeCandi
   const perPlayer = new Map<string, number>();
   const shapes    = new Set<string>();
 
+  // Two proposals per partner spreads a twelve-team league and starves a
+  // four-team one, where two partners can never fill a list of five. The cap is
+  // there to stop one team dominating the list, so it only has to hold when
+  // there are enough teams for that to be possible.
+  const partners = new Set(ranked.map((c) => c.targetOwnerId)).size;
+  const teamCap  = Math.max(MAX_PER_TEAM, Math.ceil(limit / Math.max(partners, 1)));
+
   const passes: { team: number; player: number; freshShape: boolean }[] = [
-    { team: 1,            player: 1,              freshShape: true  },
-    { team: MAX_PER_TEAM, player: MAX_PER_PLAYER, freshShape: true  },
-    { team: MAX_PER_TEAM, player: MAX_PER_PLAYER, freshShape: false },
+    { team: 1,       player: 1,              freshShape: true  },
+    { team: teamCap, player: MAX_PER_PLAYER, freshShape: true  },
+    { team: teamCap, player: MAX_PER_PLAYER, freshShape: false },
   ];
 
   for (const pass of passes) {
@@ -415,14 +502,16 @@ function diversify(ranked: readonly TradeCandidate[], limit: number): TradeCandi
 }
 
 /**
- * Best first: the total the deal creates — my gain plus theirs — then fairness,
- * then a stable key so equal proposals do not reorder between requests.
+ * Best first: the deals both sides gain from ahead of the ones needing a pitch,
+ * then the total the deal creates — my gain plus theirs — then fairness, then a
+ * stable key so equal proposals do not reorder between requests.
  *
  * The total rather than my side alone, because a proposal the other manager has
  * no reason to accept is not a suggestion.
  */
 function byValue(a: TradeCandidate, b: TradeCandidate): number {
-  return (b.myGain + b.theirGain) - (a.myGain + a.theirGain)
+  return ACCEPTANCE_RANK[a.acceptance] - ACCEPTANCE_RANK[b.acceptance]
+      || (b.myGain + b.theirGain) - (a.myGain + a.theirGain)
       || b.fairnessScore - a.fairnessScore
       || tradeKey(a).localeCompare(tradeKey(b));
 }
@@ -446,6 +535,30 @@ export function findTrades(
 
   all.sort(byValue);
   return diversify(all, limit).sort(byValue);
+}
+
+/**
+ * How many players on other rosters would improve my starting lineup at all.
+ *
+ * Zero is a real and specific answer — the roster that is already the best in
+ * the league at every position it starts — and it is the difference between
+ * "nothing balanced came together" and "there is nothing out there to want".
+ * The panel says which, because they call for opposite things: wait and look
+ * again, versus stop looking.
+ */
+export function countUpgrades(
+  me:     RosterShape,
+  others: readonly RosterShape[],
+  slots:  Record<string, number>,
+): number {
+  let n = 0;
+  for (const them of others) {
+    if (them.ownerId === me.ownerId) continue;
+    for (const p of allPlayers(them)) {
+      if (lineupDelta(me, slots, [], [p]) > 0) n++;
+    }
+  }
+  return n;
 }
 
 // ─── Wording ──────────────────────────────────────────────────────────────────

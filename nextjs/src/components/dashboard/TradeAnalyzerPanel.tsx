@@ -2,7 +2,34 @@
 
 import { useState } from 'react';
 import type { TradeSuggestionsResponse } from '@/types/suggestions';
+import type { Acceptance } from '@/lib/tradeFinder';
 import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton, NoLeague, PlayerAvatar, StatsSeasonNote } from './shared';
+
+/**
+ * How the three acceptance tiers read on the card.
+ *
+ * The weaker two are shown, not hidden: an empty panel is the one outcome that
+ * tells a manager nothing. Labelled honestly so a long shot is never mistaken
+ * for a deal that sends itself.
+ */
+const ACCEPTANCE: Record<Acceptance, { label: string; color: string; bg: string; title: string }> = {
+  mutual: { label: 'Both gain',   color: '#80ff49', bg: 'rgba(128,255,73,0.12)',
+            title: 'Both starting lineups come out clearly ahead' },
+  slim:   { label: 'Worth asking', color: '#facc15', bg: 'rgba(250,204,21,0.12)',
+            title: 'Both lineups gain, but theirs only barely' },
+  ask:    { label: 'Needs a pitch', color: '#9a9a9a', bg: 'rgba(232,230,223,0.06)',
+            title: 'Clear upgrade for you, about neutral for them' },
+};
+
+/** What an empty list actually means — three situations, three answers. */
+const EMPTY_MESSAGE: Record<NonNullable<TradeSuggestionsResponse['noTradesReason']>, string> = {
+  'no-stats':    'No season stats for these rosters yet — trades are priced on '
+               + 'season points, so there is nothing to compare until the sync fills in',
+  'no-upgrades': 'Nobody in the league would upgrade your starting lineup — '
+               + 'you already field the best starter at every position you start',
+  'no-fit':      'Upgrades are out there, but nothing balanced enough to be worth '
+               + 'sending — try again after more games are played',
+};
 
 export function TradeAnalyzerPanel({
   leagueId, userId,
@@ -68,17 +95,27 @@ export function TradeAnalyzerPanel({
           )}
 
           {data.proposals.length === 0 ? (
-            <p className="text-xs text-center py-3" style={{ color: '#444' }}>
-              No fair trades found — try again after more games are played
+            <p className="text-xs text-center py-3 px-2 leading-relaxed" style={{ color: '#666' }}>
+              {EMPTY_MESSAGE[data.noTradesReason ?? 'no-fit']}
             </p>
           ) : (
             <div className="flex flex-col gap-3">
               {data.proposals.map((p, i) => (
                 <div key={i} className="rounded-lg p-3 flex flex-col gap-2" style={INNER_BG}>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium truncate" style={{ color: '#e8e6df' }}>
-                      {p.targetTeamName}
-                    </span>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-xs font-medium truncate" style={{ color: '#e8e6df' }}>
+                        {p.targetTeamName}
+                      </span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded shrink-0"
+                        style={{
+                          background: ACCEPTANCE[p.acceptance].bg,
+                          color:      ACCEPTANCE[p.acceptance].color,
+                        }}
+                        title={ACCEPTANCE[p.acceptance].title}>
+                        {ACCEPTANCE[p.acceptance].label}
+                      </span>
+                    </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       {/* What the deal is actually worth: points added to the
                           starting lineup. The fairness bar beside it says only

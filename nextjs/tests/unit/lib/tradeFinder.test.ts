@@ -12,7 +12,7 @@
 import { describe, it, expect } from '@jest/globals';
 import {
   buildRosterShape, lineupDelta, findTrades, fairness, describeTrade,
-  positionStrength,
+  positionStrength, countUpgrades,
 } from '@/lib/tradeFinder';
 import type { RosterEntry, RosterShape } from '@/lib/tradeFinder';
 
@@ -203,7 +203,8 @@ describe('findTrades()', () => {
   });
 
   // WHY: season totals are noisy enough that a handful of points is not a
-  //      reason to trade, and a shortlist padded with them stops being one.
+  //      reason to trade. The weaker tiers loosen how good the deal has to be
+  //      for the *other* manager, never whether it moves my lineup at all.
   it('ignores gains too small to be worth proposing', () => {
     // A marginal upgrade: 5 points on a 1320-point lineup, and nothing else on
     // offer that either side can use.
@@ -214,10 +215,61 @@ describe('findTrades()', () => {
     expect(findTrades(deepAtRb(), [marginal], SLOTS)).toEqual([]);
   });
 
+  // WHY: with no stats every player prices at zero, every trade scores as
+  //      perfectly fair and none of them means anything. Returning nothing is
+  //      correct here — and the route reports it as a stats gap rather than as
+  //      an absence of trades.
+  it('returns nothing when no player has any points', () => {
+    const blank = (id: string) => buildRosterShape(id, entries([
+      ['qb-' + id, 'QB', 0], ['rb-' + id, 'RB', 0], ['wr-' + id, 'WR', 0],
+    ]), SLOTS);
+    expect(findTrades(blank('a'), [blank('a'), blank('b')], SLOTS)).toEqual([]);
+  });
+
+
   it('returns nothing when there is no partner to trade with', () => {
     expect(findTrades(deepAtRb(), [], SLOTS)).toEqual([]);
     // A roster does not trade with itself, however lopsided it is.
     expect(findTrades(deepAtRb(), [deepAtRb()], SLOTS)).toEqual([]);
+  });
+
+  // WHY: the reason the panel went blank on real leagues. The strict tier is
+  //      the right first answer and a bad only answer — when no deal clears it,
+  //      a labelled weaker one beats an empty list. Every tier still requires
+  //      the deal to improve my own lineup.
+  it('falls back to weaker tiers rather than returning nothing', () => {
+    // A partner whose only useful piece is a TE worth slightly less than the
+    // back it would cost — good for me, nothing much in it for them.
+    const grudging = buildRosterShape('grudging', entries([
+      ['qb-g', 'QB', 300],
+      ['te-g', 'TE', 240], ['te-h', 'TE', 150],
+      ['rb-g', 'RB', 235], ['rb-h', 'RB', 200],
+      ['wr-g', 'WR', 260], ['wr-h', 'WR', 250],
+    ]), SLOTS);
+
+    const found = findTrades(deepAtRb(), [grudging], SLOTS);
+    expect(found.length).toBeGreaterThan(0);
+    for (const c of found) {
+      expect(c.myGain).toBeGreaterThan(0);
+      expect(['mutual', 'slim', 'ask']).toContain(c.acceptance);
+    }
+  });
+
+  // WHY: a long shot must never outrank a deal both managers want, or the
+  //      labels are decoration.
+  it('ranks the tiers it is confident in first', () => {
+    const found = findTrades(deepAtRb(), partners, SLOTS);
+    const rank  = { mutual: 0, slim: 1, ask: 2 };
+    const seen  = found.map((c) => rank[c.acceptance]);
+    expect([...seen].sort((a, b) => a - b)).toEqual(seen);
+  });
+
+  // WHY: a four-team league has three partners, and two proposals each cannot
+  //      fill a list of five. The per-team cap exists to stop one partner
+  //      dominating, which is not possible when there are barely any.
+  it('fills the list in a small league rather than capping at two a partner', () => {
+    const found = findTrades(deepAtRb(), partners, SLOTS, 5);
+    expect(found.length).toBe(5);
   });
 
   it('honours the requested limit', () => {
@@ -237,5 +289,27 @@ describe('describeTrade()', () => {
     const line = describeTrade(found[0]);
     expect(line).toMatch(/(QB|RB|WR|TE|K)[1-9]/);
     expect(line).toMatch(/\+\d+ pts to your starters/);
+  });
+});
+
+describe('countUpgrades()', () => {
+  // WHY: the difference between "nothing came together" and "there is nothing
+  //      out there to want" — opposite advice, and the panel says which.
+  it('counts the players who would improve my starting lineup', () => {
+    const me = buildRosterShape('me', entries([
+      ['qb-1', 'QB', 300], ['rb-1', 'RB', 280], ['rb-2', 'RB', 260],
+      ['wr-1', 'WR', 270], ['wr-2', 'WR', 250], ['te-1', 'TE', 200],
+    ]), SLOTS);
+
+    const better = buildRosterShape('better', entries([
+      ['qb-x', 'QB', 400], ['te-x', 'TE', 300], ['rb-x', 'RB', 100],
+    ]), SLOTS);
+    expect(countUpgrades(me, [me, better], SLOTS)).toBe(2);
+
+    // The roster that already fields the best starter everywhere it starts one.
+    const worse = buildRosterShape('worse', entries([
+      ['qb-w', 'QB', 100], ['rb-w', 'RB', 90], ['te-w', 'TE', 80],
+    ]), SLOTS);
+    expect(countUpgrades(me, [me, worse], SLOTS)).toBe(0);
   });
 });

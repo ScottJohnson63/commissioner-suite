@@ -1,4 +1,5 @@
 import type { PlayerContext } from '@/lib/matchupContext';
+import type { Acceptance } from '@/lib/tradeFinder';
 
 /**
  * The exact weeks a form number covers.
@@ -173,6 +174,15 @@ export interface TradeProposal {
   lineupGain:      number;
   /** The same figure for the other roster — why they would accept. */
   theirLineupGain: number;
+  /**
+   * How likely the other manager is to say yes — see src/lib/tradeFinder.ts.
+   *
+   * Carried so the panel can show the weaker deals as weaker rather than
+   * either hiding them or presenting them as sure things. A list that goes
+   * empty whenever the ideal trade does not exist is not more honest than one
+   * that says "this one needs a pitch"; it is just less useful.
+   */
+  acceptance:      Acceptance;
   summary:        string;
 }
 
@@ -185,6 +195,25 @@ export interface TradeSuggestionsResponse {
    */
   starterSlots:    Record<string, number>;
   proposals:       TradeProposal[];
+  /**
+   * Rostered players in the league with any points in `statsSeason`.
+   *
+   * Zero means the stat table had nothing for these rosters — an unsynced
+   * season, a cross-reference that missed — not that the league is talentless.
+   * Every trade here is priced on season points, so with none there is nothing
+   * to price and the panel says so instead of "no fair trades found".
+   */
+  scoredPlayers:   number;
+  /**
+   * Players on other rosters who would improve my starting lineup at all.
+   *
+   * Zero is the other specific empty case: the roster already fielding the best
+   * starter in the league everywhere it starts one. Nothing is wrong, and no
+   * amount of looking again will help.
+   */
+  upgradesAvailable: number;
+  /** Why `proposals` is empty, when it is. Absent when it is not. */
+  noTradesReason?: 'no-stats' | 'no-upgrades' | 'no-fit';
   /** Season the underlying stats came from — see src/lib/statsSeason.ts. */
   statsSeason?:   number;
   /** True when statsSeason is not the season being played (pre-kickoff, sync lag). */

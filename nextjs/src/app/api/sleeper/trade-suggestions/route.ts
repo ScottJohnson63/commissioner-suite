@@ -25,7 +25,7 @@ import type { SleeperRoster, SleeperUser } from '@/lib/sleeper/types';
 import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import {
   TRADE_POSITIONS, isTradePos, buildRosterShape, findTrades, describeTrade,
-  positionStrength,
+  positionStrength, countUpgrades,
 } from '@/lib/tradeFinder';
 import type { DepthPlayer, RosterEntry, RosterShape } from '@/lib/tradeFinder';
 import type { TradePlayer, TradeProposal, TradeSuggestionsResponse } from '@/types/suggestions';
@@ -210,13 +210,31 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         fairnessScore:  c.fairnessScore,
         lineupGain:     Math.round(c.myGain * 10) / 10,
         theirLineupGain: Math.round(c.theirGain * 10) / 10,
+        acceptance:     c.acceptance,
         summary:        describeTrade(c),
       }));
+
+    // ── Why an empty list is empty ─────────────────────────────────────────────
+    // Three different situations produce no proposals and only one of them is
+    // about trades. Reported separately because the panel's one message — "no
+    // fair trades found, try again after more games" — is wrong advice for two
+    // of them: it reads as a quiet failure when the stat table is empty, and as
+    // false hope when the roster is already the best in the league everywhere.
+    const scoredPlayers     = [...seasonPtsMap.values()].filter((pts) => pts > 0).length;
+    const upgradesAvailable = countUpgrades(myShape, shapes, starterSlots);
+    const noTradesReason: TradeSuggestionsResponse['noTradesReason'] =
+      proposals.length > 0    ? undefined
+      : scoredPlayers === 0   ? 'no-stats'
+      : upgradesAvailable === 0 ? 'no-upgrades'
+      :                         'no-fit';
 
     const result: TradeSuggestionsResponse = {
       myPositionRanks,
       starterSlots,
       proposals,
+      scoredPlayers,
+      upgradesAvailable,
+      noTradesReason,
       statsSeason,
       statsFallback,
     };

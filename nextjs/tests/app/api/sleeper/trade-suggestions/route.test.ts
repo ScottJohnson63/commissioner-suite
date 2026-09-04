@@ -462,6 +462,7 @@ const deepStatRows = deepPlayers.map(([id, , position, pts]) =>
 
 interface ProposalJson {
   targetOwnerId:   string;
+  acceptance:      string;
   give:            { playerId: string; position: string; depthRank: number; starter: boolean }[];
   receive:         { playerId: string; position: string; depthRank: number; starter: boolean }[];
   fairnessScore:   number;
@@ -574,6 +575,9 @@ describe('GET /api/sleeper/trade-suggestions — roster shape', () => {
       expect(p.lineupGain).toBeGreaterThan(0);
       expect(p.theirLineupGain).toBeGreaterThan(0);
       expect(p.fairnessScore).toBeGreaterThanOrEqual(60);
+      // On this fixture every proposal is a deal both managers want, and each
+      // one says so — the panel colours the weaker tiers differently.
+      expect(p.acceptance).toBe('mutual');
     }
   });
 
@@ -624,5 +628,110 @@ describe('GET /api/sleeper/trade-suggestions — roster shape', () => {
     expect(json.myPositionRanks).not.toHaveProperty('K');
     // The slots come back so the panel can say what "RB3" was measured against.
     expect(json.starterSlots).toEqual({ QB: 1, RB: 2, WR: 2, TE: 1, K: 1 });
+  });
+});
+
+// ── Why an empty list is empty ────────────────────────────────────────────────
+//
+// Three situations produce no proposals and only one of them is about trades.
+// The panel used to print the same sentence for all three — "no fair trades
+// found, try again after more games" — which is a quiet failure report when the
+// stat table is empty and false hope when the roster is already the league's
+// best everywhere.
+
+describe('GET /api/sleeper/trade-suggestions — empty results', () => {
+  beforeEach(() => {
+    mockSleeperGet.mockReset();
+    mockGetPlayerMap.mockReset();
+    mockGroupBy.mockReset();
+    mockFindMany.mockReset();
+    mockAggregate.mockReset();
+    mockGetPlayerMap.mockResolvedValue(new Map() as never);
+    mockGroupBy.mockResolvedValue([] as never);
+    mockAggregate.mockResolvedValue({ _max: { week: 18 } } as never);
+    clearStatsSeasonCache();
+    clearGsisXrefCache();
+  });
+
+  async function run(
+    leagueRosters: unknown, map: unknown, rows: unknown,
+  ): Promise<{ proposals: unknown[]; noTradesReason?: string;
+               scoredPlayers: number; upgradesAvailable: number }> {
+    const { leagueId, userId } = freshIds();
+    mockSleeperGet
+      .mockResolvedValueOnce(leagueRosters as never)
+      .mockResolvedValueOnce(deepUsers     as never);
+    mockGetPlayerMap.mockResolvedValueOnce(map as never);
+    mockFindMany.mockResolvedValue(rows as never);
+
+    const res = await GET(makeReq(leagueId, userId));
+    expect(res.status).toBe(200);
+    return res.json() as Promise<{ proposals: unknown[]; noTradesReason?: string;
+                                   scoredPlayers: number; upgradesAvailable: number }>;
+  }
+
+  // WHY: with no rows every player prices at zero, every trade scores as
+  //      perfectly fair, and the finder correctly returns none. Reported as a
+  //      stats gap, because "try again after more games" is the wrong advice for
+  //      a season that has already been played.
+  it('reports a stats gap rather than an absence of trades', async () => {
+    const json = await run(deepRosters, deepPlayerMap, []);
+
+    expect(json.proposals).toEqual([]);
+    expect(json.scoredPlayers).toBe(0);
+    expect(json.noTradesReason).toBe('no-stats');
+  });
+
+  // WHY: the roster that already starts the best player at every position it
+  //      starts. Nothing is broken and no amount of waiting will help, so the
+  //      panel should say that instead of promising more games will fix it.
+  it('reports when nobody in the league would upgrade the lineup', async () => {
+    // uid-1 takes the best of everything; the others keep the leftovers.
+    const lopsided = [
+      { roster_id: 1, owner_id: 'uid-1',
+        players: ['qb-1', 'rb-1', 'rb-2', 'wr-1', 'wr-2', 'te-4', 'rb-3'],
+        settings: { wins: 8, losses: 0, fpts: 0, fpts_decimal: 0 } },
+      { roster_id: 2, owner_id: 'uid-2',
+        players: ['qb-4', 'rb-7', 'wr-8', 'te-5'],
+        settings: { wins: 0, losses: 8, fpts: 0, fpts_decimal: 0 } },
+    ];
+
+    const json = await run(lopsided, deepPlayerMap, deepStatRows);
+
+    expect(json.proposals).toEqual([]);
+    expect(json.scoredPlayers).toBeGreaterThan(0);
+    expect(json.upgradesAvailable).toBe(0);
+    expect(json.noTradesReason).toBe('no-upgrades');
+  });
+
+  // WHY: the only one of the three that is really about trades — there are
+  //      upgrades out there, nothing balanced enough came together.
+  it('separates "no fit" from the other two', async () => {
+    // One partner holding a single elite arm and nothing else. He would upgrade
+    // uid-1's lineup, but uid-1 cannot pay for him without emptying a slot.
+    const oneStar = [
+      { roster_id: 1, owner_id: 'uid-1',
+        players: ['qb-2', 'rb-1', 'rb-2', 'wr-1', 'wr-2', 'te-5'],
+        settings: { wins: 4, losses: 4, fpts: 0, fpts_decimal: 0 } },
+      { roster_id: 2, owner_id: 'uid-2',
+        players: ['te-4'],
+        settings: { wins: 4, losses: 4, fpts: 0, fpts_decimal: 0 } },
+    ];
+
+    const json = await run(oneStar, deepPlayerMap, deepStatRows);
+
+    expect(json.proposals).toEqual([]);
+    expect(json.upgradesAvailable).toBeGreaterThan(0);
+    expect(json.noTradesReason).toBe('no-fit');
+  });
+
+  // WHY: the flag is what the panel keys its message off. Setting it on a
+  //      successful run would caption a working list with an excuse.
+  it('leaves the reason unset when there are proposals', async () => {
+    const json = await run(deepRosters, deepPlayerMap, deepStatRows);
+
+    expect(json.proposals.length).toBeGreaterThan(0);
+    expect(json.noTradesReason).toBeUndefined();
+    expect(json.scoredPlayers).toBeGreaterThan(0);
   });
 });
