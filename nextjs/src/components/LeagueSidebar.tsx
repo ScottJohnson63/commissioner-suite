@@ -2,10 +2,11 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { signOut, useSession } from 'next-auth/react';
 import type { Route } from 'next';
 import { requestDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
+import { AboutDialog } from '@/components/AboutDialog';
 import { useSidebarForceCollapseListener } from '@/components/useSidebarForceCollapse';
 
 // ─── Nav definition ───────────────────────────────────────────────────────────
@@ -51,6 +52,7 @@ export function LeagueSidebar() {
   // difference between one card fitting the row and not. Kept separate from
   // `expanded` so the member's own preference is untouched underneath it.
   const [forcedCollapse, setForcedCollapse] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   useSidebarForceCollapseListener(setForcedCollapse);
   const visible = forcedCollapse ? false : expanded;
 
@@ -101,6 +103,10 @@ export function LeagueSidebar() {
     }
   }, [visible]);
 
+  // Stable so the dialog's Escape-key listener is not torn down and rebuilt on
+  // every sidebar render.
+  const closeAbout = useCallback(() => setAboutOpen(false), []);
+
   function toggle() {
     setExpanded((prev) => {
       const next = !prev;
@@ -110,6 +116,7 @@ export function LeagueSidebar() {
   }
 
   return (
+    <>
     <aside
       className="isolate flex flex-col shrink-0 border-r transition-[width] duration-200"
       style={{
@@ -177,10 +184,28 @@ export function LeagueSidebar() {
         })}
       </nav>
 
-      {/* ── Footer / sign out ── */}
-      {/* Signed-out visitors sign in from the dashboard header instead. */}
-      {isAuthed && (
-      <div className="p-1.5 border-t" style={{ borderColor: '#1e1e20' }}>
+      {/* ── Footer / about + sign out ── */}
+      <div className="p-1.5 border-t flex flex-col gap-0.5" style={{ borderColor: '#1e1e20' }}>
+        {/* Version and where to get help — useful to a signed-out visitor too,
+            so this sits outside the signed-in-only sign out below. */}
+        <div className="relative group">
+          <button
+            onClick={() => setAboutOpen(true)}
+            className="flex items-center gap-3 w-full rounded px-2 py-2 text-sm transition-colors"
+            style={{ color: '#555', minHeight: 36 }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = '#e8e6df')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = '#555')}
+          >
+            <span className="w-5 h-5 flex items-center justify-center shrink-0">
+              <InfoIcon />
+            </span>
+            {visible && <span className="truncate">About</span>}
+          </button>
+          {!visible && <NavTooltip label="About" />}
+        </div>
+
+        {/* Signed-out visitors sign in from the dashboard header instead. */}
+        {isAuthed && (
         <div className="relative group">
           {/* Signing out lands on the public dashboard, not the login page —
               Statistics and News are still readable without an account. */}
@@ -198,9 +223,14 @@ export function LeagueSidebar() {
           </button>
           {!visible && <NavTooltip label="Sign out" />}
         </div>
+        )}
       </div>
-      )}
     </aside>
+
+    {/* Rendered outside the aside: the aside is its own stacking context, so a
+        dialog nested inside it could be painted under the page content. */}
+    <AboutDialog open={aboutOpen} onClose={closeAbout} />
+    </>
   );
 }
 
@@ -268,6 +298,16 @@ function SignOutIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
       <path d="M6 2.5H3a1 1 0 00-1 1v8a1 1 0 001 1h3M10 11l3-3.5L10 4M13 7.5H6" />
+    </svg>
+  );
+}
+
+function InfoIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <circle cx="7.5" cy="7.5" r="6" />
+      <path d="M7.5 6.8v4" strokeLinecap="round" />
+      <circle cx="7.5" cy="4.6" r="0.75" fill="currentColor" stroke="none" />
     </svg>
   );
 }
