@@ -128,6 +128,30 @@ empty-handed answers rather than an error.
 
 ## The Sleeper player map is downloaded once a day, app-wide
 
+Sleeper asks callers to hit `/players/nfl` at most once a day and warns that
+exceeding it risks being blocked. `src/lib/sleeper/playerCache.ts` is the only
+code in the app that requests it, and the budget is enforced in five layers:
+
+| Layer | Stops |
+| --- | --- |
+| In-memory map | Repeat calls inside one process. |
+| Single-flight promise | Concurrent callers on a cold process each starting their own download. |
+| `nfl_players` DB row | A cold process downloading what another already has. |
+| `nfl_players_fetch_attempt` claim, taken **before** the download | Failures buying a retry: an outage, a timeout, a 429, a failed write-back. |
+| Compare-and-set on that claim | Two instances both winning the slot at the day boundary. |
+
+Past the claim there is no path back to the network. A refused claim serves the
+stored map however old it is, and if there is nothing stored, callers get an
+empty map (`getPlayerMapSafe`) until tomorrow. That is deliberate: names are
+cosmetic, the rate limit is not.
+
+`tests/unit/lib/sleeper/playerCacheBudget.test.ts` asserts the budget against a
+simulated shared database — 25 concurrent callers, 20 cold processes, failing
+downloads, 429s, a failed write-back, and the day boundary — counting the calls
+that actually reach the network.
+
+### Original duplicate-download bug
+
 `/players/nfl` is ~10 MB and Sleeper asks callers to hit it at most once per
 day. `src/lib/sleeper/playerCache.ts` is the **only** place in the app that
 calls it, and it enforces the limit on four levels: an in-memory cache, a

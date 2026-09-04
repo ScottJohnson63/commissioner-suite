@@ -12,6 +12,8 @@ jest.mock('@/lib/prisma', () => ({
     sleeperCache: {
       findUnique: jest.fn(),
       upsert:     jest.fn(),
+      updateMany: jest.fn(),
+      create:     jest.fn(),
     },
   },
 }));
@@ -23,6 +25,8 @@ describe('getPlayerMap()', () => {
   let getPlayerMap:   () => Promise<Map<string, unknown>>;
   let mockFindUnique: jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
   let mockUpsert:     jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+  let mockUpdateMany: jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+  let mockCreate:     jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
 
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -50,8 +54,16 @@ describe('getPlayerMap()', () => {
     const { prisma } = await import('@/lib/prisma');
     mockFindUnique = prisma.sleeperCache.findUnique as jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
     mockUpsert     = prisma.sleeperCache.upsert     as jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+    mockUpdateMany = prisma.sleeperCache.updateMany as jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+    mockCreate     = prisma.sleeperCache.create     as jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
     mockFindUnique.mockReset();
     mockUpsert.mockReset();
+    mockUpdateMany.mockReset();
+    mockCreate.mockReset();
+
+    // Default: no attempt row exists yet, so the claim is won by creating one.
+    mockUpdateMany.mockResolvedValue({ count: 0 });
+    mockCreate.mockResolvedValue({} as never);
   });
 
   afterEach(() => {
@@ -168,8 +180,8 @@ describe('getPlayerMap()', () => {
     mockUpsert.mockResolvedValue({} as never);
     let claimedBeforeFetch = false;
     mockFetch.mockImplementationOnce(async () => {
-      claimedBeforeFetch = mockUpsert.mock.calls.some(
-        ([arg]) => (arg as { where: { key: string } }).where.key === 'nfl_players_fetch_attempt',
+      claimedBeforeFetch = mockCreate.mock.calls.some(
+        ([arg]) => (arg as { data: { key: string } }).data.key === 'nfl_players_fetch_attempt',
       );
       return new Response(playerJson, { status: 200 });
     });
@@ -177,6 +189,48 @@ describe('getPlayerMap()', () => {
     await getPlayerMap();
 
     expect(claimedBeforeFetch).toBe(true);
+  });
+
+  // WHY: Read-then-write is not a claim. Two instances waking at the day
+  //      boundary would both read "stale", both write, and both download. The
+  //      claim is a compare-and-set, and the loser must not reach the network.
+  it('stands down when another instance wins the compare-and-set', async () => {
+    const staleDbEntry = {
+      key:       'nfl_players',
+      data:      playerJson,
+      fetchedAt: new Date(Date.now() - (ONE_DAY_MS + 5000)),
+    };
+    mockFindUnique.mockImplementation(async (args: unknown) => {
+      const key = (args as { where: { key: string } }).where.key;
+      if (key === 'nfl_players') return staleDbEntry;
+      // The winner stamped the attempt row a minute ago.
+      return { key, data: '', fetchedAt: new Date(Date.now() - 60_000) };
+    });
+    // No row matched the stale predicate, and the row already exists.
+    mockUpdateMany.mockResolvedValue({ count: 0 });
+    mockCreate.mockRejectedValue(new Error('UNIQUE constraint failed: SleeperCache.key'));
+
+    const result = await getPlayerMap();
+
+    expect(result.get('4046')).toEqual(expect.objectContaining({ name: 'Tom Brady' }));
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  // WHY: Without the DB there is no fleet-wide claim at all, so an unclaimed
+  //      call is only justified when there is nothing whatsoever to serve.
+  it('serves stale data rather than an unclaimed download when the DB is down', async () => {
+    const staleDbEntry = {
+      key:       'nfl_players',
+      data:      playerJson,
+      fetchedAt: new Date(Date.now() - (ONE_DAY_MS + 5000)),
+    };
+    mockFindUnique.mockResolvedValue(staleDbEntry);
+    mockUpdateMany.mockRejectedValue(new Error('DB connection lost'));
+
+    const result = await getPlayerMap();
+
+    expect(result.size).toBeGreaterThan(0);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   // WHY: The failure paths are how this endpoint actually gets hammered — an
@@ -204,6 +258,8 @@ describe('getPlayerMap()', () => {
       // Today's slot was already claimed by another instance an hour ago.
       return { key, data: '', fetchedAt: new Date(Date.now() - 60 * 60 * 1000) };
     });
+    mockUpdateMany.mockResolvedValue({ count: 0 });
+    mockCreate.mockRejectedValue(new Error('UNIQUE constraint failed: SleeperCache.key'));
 
     const result = await getPlayerMap();
 
