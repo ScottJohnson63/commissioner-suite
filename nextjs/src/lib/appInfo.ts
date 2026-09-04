@@ -9,6 +9,13 @@
  * The running app version, taken from package.json at build time. The fallback
  * only shows up outside a Next build (unit tests, a stray script), where there
  * is no version to report.
+ *
+ * The scheme is `1.0.0-alpha.<commits>`, where the suffix is the number of
+ * commits the history held when the version was last set
+ * (`git rev-list --count HEAD`). That makes a reported version point at a
+ * place in the log, which is what you want from a bug report while the suite
+ * is pre-1.0. Bump it with `npm version --no-git-tag-version` so package.json
+ * and the lockfile stay in step — `npm ci` fails if they drift.
  */
 export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
 
