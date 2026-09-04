@@ -1,7 +1,13 @@
 import type { NextConfig } from "next";
 
+import pkg from "./package.json";
+
 const nextConfig: NextConfig = {
   typedRoutes: true,
+  // The About dialog reports the running version. Reading it from package.json
+  // here keeps the number in one place; NEXT_PUBLIC_ is what makes it readable
+  // from the client component that renders the dialog.
+  env: { NEXT_PUBLIC_APP_VERSION: pkg.version },
   images: {
     remotePatterns: [
       new URL('https://sleepercdn.com/**'),
