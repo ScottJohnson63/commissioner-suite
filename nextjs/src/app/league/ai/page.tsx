@@ -54,8 +54,8 @@ function SessionAlert({ onDismiss }: { onDismiss: () => void }) {
         You are limited to <strong style={{ color: '#e8e6df' }}>{HOURLY_LIMIT} prompts per hour</strong>.
         This agent is shared — please use it sparingly so everyone can access it.
         The agent uses <strong style={{ color: '#e8e6df' }}>Groq Llama 3.1</strong> by default and
-        automatically switches to <strong style={{ color: '#e8e6df' }}>Gemini 2.5 Flash</strong> if the
-        Groq rate limit is reached.
+        automatically switches to <strong style={{ color: '#e8e6df' }}>Gemini 2.5 Flash</strong> if
+        Groq is rate-limited or unavailable.
       </p>
     </div>
   );
@@ -69,7 +69,9 @@ function FallbackToast({ reason, onDismiss }: { reason: string; onDismiss: () =>
 
   const message = reason === 'groq_rate_limit'
     ? 'Groq rate limit reached — switched to'
-    : 'Groq error — switched to';
+    : reason === 'groq_unavailable'
+      ? 'Groq is not configured — using'
+      : 'Groq error — switched to';
 
   return (
     <div
@@ -137,6 +139,26 @@ function ModelBadge({ model }: { model: ModelUsed }) {
       {label}
     </span>
   );
+}
+
+/**
+ * Pulls a human-readable reason out of a failed /api/agent response.
+ *
+ * The route answers errors as `{ error: string }`, so the user gets the real
+ * cause — an unconfigured key, an upstream provider outage, an expired session —
+ * instead of a blanket "Agent failed to respond" that hides all three. Falls
+ * back to the status code when the body is not JSON (e.g. a proxy error page).
+ */
+async function readErrorMessage(res: Response): Promise<string> {
+  try {
+    const data = (await res.json()) as { error?: string };
+    if (data?.error) return data.error;
+  } catch {
+    // Body was empty or not JSON — fall through to the status-based message.
+  }
+  if (res.status === 401) return 'Your session has expired. Please sign in again.';
+  if (res.status === 503) return 'The AI service is not configured on the server.';
+  return `The assistant is unavailable right now (HTTP ${res.status}).`;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -223,8 +245,11 @@ export default function AIPage() {
         return;
       }
 
-      if (!res.ok || !res.body) {
-        throw new Error('Agent failed to respond');
+      if (!res.ok) {
+        throw new Error(await readErrorMessage(res));
+      }
+      if (!res.body) {
+        throw new Error('The assistant returned an empty response. Please try again.');
       }
 
       // ── Parse usage headers ────────────────────────────────────────────────
@@ -237,7 +262,7 @@ export default function AIPage() {
       setHourlyUsed(HOURLY_LIMIT - remaining);
       setDailyUsed(daily);
 
-      if (fallbackReason === 'groq_rate_limit') {
+      if (fallbackReason) {
         setShowFallbackToast(fallbackReason);
       }
 
@@ -265,9 +290,12 @@ export default function AIPage() {
       const message = err instanceof Error ? err.message : 'Something went wrong';
       setMessages((prev) => {
         const updated = [...prev];
+        // Preserve any text that already streamed in — a failure partway
+        // through should not wipe out the answer the user was reading.
+        const partial = (updated[updated.length - 1]?.content as string) ?? '';
         updated[updated.length - 1] = {
           role: 'assistant',
-          content: `Error: ${message}`,
+          content: partial ? `${partial}\n\nError: ${message}` : `Error: ${message}`,
           loading: false,
         };
         return updated;

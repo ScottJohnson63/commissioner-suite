@@ -34,10 +34,14 @@
 //   countdown to the user when they approach the cap.
 //
 // ── Model fallback ────────────────────────────────────────────────────────────
-//   Groq is the primary model. If Groq returns a 429 rate-limit error and a
-//   GEMINI_API_KEY is configured, the request is automatically retried on
-//   Gemini 2.5 Flash. The X-Model-Used and X-Fallback-Reason response headers
-//   record which path was taken.
+//   Groq is the primary model. If Groq fails for ANY reason — rate limit, bad
+//   or revoked key, retired model ID, outage — and a GEMINI_API_KEY is
+//   configured, the request is retried on Gemini 2.5 Flash. If GROQ_API_KEY is
+//   absent entirely, Gemini serves the request directly. The X-Model-Used and
+//   X-Fallback-Reason (groq_rate_limit | groq_error | groq_unavailable) response
+//   headers record which path was taken. Only when every configured provider
+//   fails does the route return 502, and the body carries each provider's error
+//   so the browser can show what actually went wrong.
 //
 // ── League context (Phase 2) ─────────────────────────────────────────────────
 //   If the client includes `sleeperLeagueId` in the request body AND the
@@ -48,8 +52,12 @@
 //   the model is told to prompt the user to connect their account.
 //
 // ── Environment variables ─────────────────────────────────────────────────────
-//   GROQ_API_KEY    — required for Pass 1 (always) and Pass 2 (primary).
-//   GEMINI_API_KEY  — optional; enables the Gemini fallback for Pass 2.
+//   GROQ_API_KEY    — primary provider for Pass 1 and Pass 2. Optional if
+//                     GEMINI_API_KEY is set; at least one of the two is required.
+//   GEMINI_API_KEY  — fallback provider for Pass 1 and Pass 2. Optional if
+//                     GROQ_API_KEY is set.
+//   GROQ_MODEL      — optional model ID override (default llama-3.1-8b-instant).
+//   GEMINI_MODEL    — optional model ID override (default gemini-2.5-flash).
 //   NFL_SEASON      — current NFL season year (e.g. 2025); defaults to the
 //                     current calendar year. Set this explicitly — stale values
 //                     are the most common cause of wrong season data.
@@ -69,9 +77,37 @@ import type { TrendingPlayer, LeagueContext } from '@/lib/agentContext';
 import { err } from '@/lib/api';
 
 // ── Clients ───────────────────────────────────────────────────────────────────
+//
+// Both clients are built lazily, on first use, and only when their key is set.
+// `new Groq({ apiKey: undefined })` THROWS, so constructing it at module scope
+// crashed the whole module whenever GROQ_API_KEY was missing — every request
+// then 500'd before reaching the route's own "no AI API keys are configured"
+// guard, and the browser could only report "Agent failed to respond".
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '');
+let groqClient:   { key: string; client: Groq } | null = null;
+let geminiClient: { key: string; client: GoogleGenerativeAI } | null = null;
+
+/** Returns a Groq client, or null when GROQ_API_KEY is not configured. */
+function getGroq(): Groq | null {
+    const key = process.env.GROQ_API_KEY?.trim();
+    if (!key) return null;
+    if (groqClient?.key !== key) groqClient = { key, client: new Groq({ apiKey: key }) };
+    return groqClient.client;
+}
+
+/** Returns a Gemini client, or null when GEMINI_API_KEY is not configured. */
+function getGemini(): GoogleGenerativeAI | null {
+    const key = process.env.GEMINI_API_KEY?.trim();
+    if (!key) return null;
+    if (geminiClient?.key !== key) geminiClient = { key, client: new GoogleGenerativeAI(key) };
+    return geminiClient.client;
+}
+
+// Model IDs are overridable via env so a decommissioned model can be swapped
+// without a redeploy of code — a dead model ID is otherwise indistinguishable
+// from an outage from the user's side.
+const GROQ_MODEL   = process.env.GROQ_MODEL?.trim()   || 'llama-3.1-8b-instant';
+const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
 
 // NFL_SEASON must be set to the most recently completed season (e.g. 2025).
 // "Last year" queries resolve to PREV_SEASON. Missing or stale env var is the
@@ -478,9 +514,50 @@ Intent rules:
 
 IMPORTANT: If the question mentions "our league", "my league", "the league", "first place", "last place", or "standings", always use standings, roster_scan, or playoff_schedule — never general.`;
 
+/** Pass 1 on Groq. Returns the raw model text, or null if Groq is unusable. */
+async function planWithGroq(userMessage: string): Promise<string | null> {
+    const client = getGroq();
+    if (!client) return null;
+    try {
+        const response = await client.chat.completions.create({
+            model: GROQ_MODEL,
+            messages: [
+                { role: 'system', content: PLANNER_SYSTEM_PROMPT },
+                { role: 'user', content: userMessage },
+            ],
+            stream: false,
+            temperature: 0,
+            max_tokens: 150,
+        });
+        return response.choices[0]?.message?.content ?? '';
+    } catch (err) {
+        console.error('[pass-1] groq planner error:', err);
+        return null;
+    }
+}
+
+/** Pass 1 on Gemini — used when Groq is not configured or is failing. */
+async function planWithGemini(userMessage: string): Promise<string | null> {
+    const client = getGemini();
+    if (!client) return null;
+    try {
+        const model = client.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: PLANNER_SYSTEM_PROMPT });
+        const result = await model.generateContent(userMessage);
+        return result.response.text();
+    } catch (err) {
+        console.error('[pass-1] gemini planner error:', err);
+        return null;
+    }
+}
+
 /**
- * Pass 1 — uses the lightweight Groq llama-3.1-8b model (temp=0) to classify
- * the user's message into a structured QueryPlan.
+ * Pass 1 — classifies the user's message into a structured QueryPlan using a
+ * lightweight, temp=0 model call.
+ *
+ * Groq is tried first; if it is unconfigured or failing, Gemini classifies
+ * instead, so a single dead provider does not silently downgrade every question
+ * to the `general` intent (which would strip league-aware answers of their
+ * standings and roster data).
  *
  * The model is given a strict JSON output schema via the PLANNER_SYSTEM_PROMPT.
  * The result is validated before use: unknown intent values fall back to
@@ -491,18 +568,12 @@ IMPORTANT: If the question mentions "our league", "my league", "the league", "fi
  */
 async function classifyIntent(userMessage: string): Promise<QueryPlan> {
     const fallback: QueryPlan = { intent: 'general', players: [], position: null, opponent: null, season: null, weeksBack: null };
+    const raw = (await planWithGroq(userMessage)) ?? (await planWithGemini(userMessage));
+    if (raw === null) {
+        console.error('[pass-1] no planner provider available — defaulting to general intent');
+        return fallback;
+    }
     try {
-        const response = await groq.chat.completions.create({
-            model: 'llama-3.1-8b-instant',
-            messages: [
-                { role: 'system', content: PLANNER_SYSTEM_PROMPT },
-                { role: 'user', content: userMessage },
-            ],
-            stream: false,
-            temperature: 0,
-            max_tokens: 150,
-        });
-        const raw = response.choices[0]?.message?.content ?? '';
         console.log('[pass-1] raw planner output:', raw);
         const clean = raw.replace(/```json|```/g, '').trim();
         const parsed = JSON.parse(clean) as QueryPlan;
@@ -718,9 +789,53 @@ function isGroqRateLimitError(err: unknown): boolean {
         ('status' in err && (err as { status: number }).status === 429);
 }
 
+/** Shown when a provider completes without emitting a single token. */
+const EMPTY_ANSWER_NOTE =
+    'The model returned an empty response. Please try rephrasing your question.';
+
+/**
+ * Wraps an async iterable of text chunks in a ReadableStream of UTF-8 bytes.
+ *
+ * Response headers are already flushed by the time the first chunk is pulled,
+ * so a mid-stream provider failure can no longer become an HTTP error status.
+ * It is written into the stream as readable text instead — erroring the stream
+ * gives the browser nothing but a generic failure, and discards whatever the
+ * model had already produced.
+ *
+ * A provider that finishes without emitting anything gets the same treatment,
+ * so the user never sees a silent, empty assistant bubble.
+ */
+function toReadableStream(chunks: AsyncIterable<string>): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder();
+    return new ReadableStream<Uint8Array>({
+        async start(controller) {
+            let sent = false;
+            const push = (text: string): void => {
+                // The client may have navigated away, which closes the stream
+                // from under us — that is not an error worth propagating.
+                try { controller.enqueue(encoder.encode(text)); sent = true; } catch { /* consumer gone */ }
+            };
+            try {
+                for await (const text of chunks) {
+                    if (text) push(text);
+                }
+                if (!sent) push(EMPTY_ANSWER_NOTE);
+            } catch (streamErr) {
+                console.error('[pass-2] stream error:', streamErr);
+                const message = streamErr instanceof Error ? streamErr.message : 'unknown error';
+                push(sent
+                    ? `\n\n⚠ Response interrupted: ${message}`
+                    : `⚠ The AI service dropped the response: ${message}`);
+            } finally {
+                try { controller.close(); } catch { /* already closed */ }
+            }
+        },
+    });
+}
+
 /**
  * Streams a Gemini response using the Google Generative AI SDK.
- * Used as a fallback when Groq returns a 429 rate-limit error.
+ * Used whenever Groq is unavailable or fails.
  *
  * The conversation history is passed as a chat session (multi-turn) with the
  * last message sent via `sendMessageStream` for streaming output.
@@ -728,7 +843,9 @@ function isGroqRateLimitError(err: unknown): boolean {
  * @returns  A ReadableStream of UTF-8 encoded text chunks.
  */
 async function streamGemini(systemPrompt: string, messages: { role: string; content: string }[]): Promise<ReadableStream<Uint8Array>> {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', systemInstruction: systemPrompt });
+    const client = getGemini();
+    if (!client) throw new Error('GEMINI_API_KEY is not configured');
+    const model = client.getGenerativeModel({ model: GEMINI_MODEL, systemInstruction: systemPrompt });
     const history = messages.slice(0, -1).map((m) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
@@ -736,23 +853,15 @@ async function streamGemini(systemPrompt: string, messages: { role: string; cont
     const lastMessage = messages[messages.length - 1];
     const chat = model.startChat({ history });
     const result = await chat.sendMessageStream(lastMessage.content);
-    const encoder = new TextEncoder();
-    return new ReadableStream<Uint8Array>({
-        async start(controller) {
-            try {
-                for await (const chunk of result.stream) {
-                    const text = chunk.text();
-                    if (text) controller.enqueue(encoder.encode(text));
-                }
-            } catch (err) { controller.error(err); }
-            finally { controller.close(); }
-        },
-    });
+    return toReadableStream((async function* () {
+        for await (const chunk of result.stream) {
+            yield chunk.text();
+        }
+    })());
 }
 
 /**
- * Streams a Groq response (llama-3.1-8b-instant) for Pass 2.
- * This is the primary answer-generation path.
+ * Streams a Groq response for Pass 2 — the primary answer-generation path.
  *
  * Only the last 6 messages from the conversation are passed (sliding window)
  * to keep the prompt within token limits while preserving short-term context.
@@ -760,8 +869,10 @@ async function streamGemini(systemPrompt: string, messages: { role: string; cont
  * @returns  A ReadableStream of UTF-8 encoded text chunks.
  */
 async function streamGroq(systemPrompt: string, messages: { role: string; content: string }[]): Promise<ReadableStream<Uint8Array>> {
-    const stream = await groq.chat.completions.create({
-        model: 'llama-3.1-8b-instant',
+    const client = getGroq();
+    if (!client) throw new Error('GROQ_API_KEY is not configured');
+    const stream = await client.chat.completions.create({
+        model: GROQ_MODEL,
         messages: [
             { role: 'system', content: systemPrompt },
             ...messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
@@ -770,30 +881,63 @@ async function streamGroq(systemPrompt: string, messages: { role: string; conten
         temperature: 0.3,
         max_tokens: 512,
     });
-    const encoder = new TextEncoder();
-    return new ReadableStream<Uint8Array>({
-        async start(controller) {
-            try {
-                for await (const chunk of stream) {
-                    const text = chunk.choices[0]?.delta?.content ?? '';
-                    if (text) controller.enqueue(encoder.encode(text));
-                }
-            } catch (err) { controller.error(err); }
-            finally { controller.close(); }
-        },
-    });
+    return toReadableStream((async function* () {
+        for await (const chunk of stream) {
+            yield chunk.choices[0]?.delta?.content ?? '';
+        }
+    })());
 }
 
 // ── Route handler ─────────────────────────────────────────────────────────────
 
-export async function POST(req: NextRequest): Promise<Response> {
+/**
+ * GET /api/agent — configuration probe.
+ *
+ * Reports which AI providers this deployment can actually reach and which model
+ * IDs it will use. Exposes booleans and model names only, never key material.
+ * Exists because a missing or invalid key looks exactly like an outage from the
+ * browser, and production has no other way to tell the two apart.
+ */
+export async function GET(): Promise<Response> {
     const session = await auth();
     if (!session) return err('Unauthorized', 401);
 
-    const body = (await req.json()) as {
+    const groqReady   = getGroq()   !== null;
+    const geminiReady = getGemini() !== null;
+    return NextResponse.json({
+        ready:     groqReady || geminiReady,
+        providers: { groq: groqReady, gemini: geminiReady },
+        models:    { groq: GROQ_MODEL, gemini: GEMINI_MODEL },
+        season:    CURRENT_SEASON,
+    });
+}
+
+export async function POST(req: NextRequest): Promise<Response> {
+    try {
+        return await handlePost(req);
+    } catch (routeErr) {
+        // Anything unhandled below would otherwise escape as a framework 500
+        // with an HTML body, which the client can only report as a generic
+        // "Agent failed to respond".
+        console.error('[agent] unhandled route error:', routeErr);
+        const message = routeErr instanceof Error ? routeErr.message : 'Unexpected server error';
+        return err(`The assistant could not complete this request: ${message}`, 500);
+    }
+}
+
+async function handlePost(req: NextRequest): Promise<Response> {
+    const session = await auth();
+    if (!session) return err('Your session has expired. Please sign in again.', 401);
+
+    let body: {
         messages?: { role: string; content: string }[];
         sleeperLeagueId?: string;  // Phase 2: Sleeper league ID from client
     };
+    try {
+        body = (await req.json()) as typeof body;
+    } catch {
+        return err('Request body must be valid JSON', 400);
+    }
 
     if (!Array.isArray(body.messages) || body.messages.length === 0) {
         return err('messages array is required', 400);
@@ -808,8 +952,10 @@ export async function POST(req: NextRequest): Promise<Response> {
         );
     }
 
-    if (!process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) {
-        return err('No AI API keys are configured');
+    const groqReady   = getGroq()   !== null;
+    const geminiReady = getGemini() !== null;
+    if (!groqReady && !geminiReady) {
+        return err('No AI provider is configured — set GROQ_API_KEY or GEMINI_API_KEY on the server.', 503);
     }
 
     const messages = body.messages.slice(-6);
@@ -841,34 +987,51 @@ export async function POST(req: NextRequest): Promise<Response> {
     incrementDaily();
     const dailyCount = getDailyCount();
 
-    // Pass 2 — stream the answer
-    let readable: ReadableStream<Uint8Array>;
+    // Pass 2 — stream the answer.
+    //
+    // Groq is primary; Gemini takes over on ANY Groq failure, not just a 429.
+    // A revoked key, a retired model ID, or a Groq outage used to take the whole
+    // assistant down even with a healthy Gemini key sitting right there.
+    let readable: ReadableStream<Uint8Array> | null = null;
     let modelUsed: ModelUsed = 'groq';
     let fallbackReason: string | null = null;
+    const failures: string[] = [];
 
-    try {
-        if (!process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY not set');
-        readable = await streamGroq(systemPrompt, messages);
-    } catch (groqErr) {
-        const isRateLimit = isGroqRateLimitError(groqErr);
-        if (!isRateLimit || !process.env.GEMINI_API_KEY) {
+    if (groqReady) {
+        try {
+            readable = await streamGroq(systemPrompt, messages);
+        } catch (groqErr) {
             const message = groqErr instanceof Error ? groqErr.message : 'Groq API error';
-            return err(message, 502);
+            console.error('[pass-2] groq error:', groqErr);
+            failures.push(`Groq: ${message}`);
+            fallbackReason = isGroqRateLimitError(groqErr) ? 'groq_rate_limit' : 'groq_error';
         }
-        fallbackReason = 'groq_rate_limit';
+    } else {
+        fallbackReason = 'groq_unavailable';
+    }
+
+    if (!readable) {
+        if (!geminiReady) {
+            return err(failures.length
+                ? `The AI service is unavailable — ${failures.join('; ')}`
+                : 'The AI service is unavailable — GROQ_API_KEY is not configured and there is no fallback provider.', 502);
+        }
         try {
             readable = await streamGemini(systemPrompt, messages);
             modelUsed = 'gemini';
         } catch (geminiErr) {
             const message = geminiErr instanceof Error ? geminiErr.message : 'Gemini API error';
-            return err(message, 502);
+            console.error('[pass-2] gemini error:', geminiErr);
+            failures.push(`Gemini: ${message}`);
+            return err(`Every AI provider failed — ${failures.join('; ')}`, 502);
         }
     }
 
     const headers: Record<string, string> = {
         'Content-Type': 'text/plain; charset=utf-8',
-        'Transfer-Encoding': 'chunked',
+        'Cache-Control': 'no-store, no-transform',
         'X-Content-Type-Options': 'nosniff',
+        'X-Accel-Buffering': 'no',        // don't let a proxy buffer the stream
         'X-Model-Used': modelUsed,
         'X-RateLimit-Limit': String(HOURLY_LIMIT),
         'X-RateLimit-Remaining': String(remaining),
