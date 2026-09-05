@@ -264,7 +264,7 @@ jobs:
           path: nextjs/coverage/
           retention-days: 14
 
-  # ── 6. Deploy to Vercel ────────────────────────────────────────────────────
+  # ── 6. Deploy to Vercel — production ───────────────────────────────────────
   deploy:
     name: Deploy to Vercel
     runs-on: ubuntu-latest
@@ -282,3 +282,106 @@ jobs:
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+  # ── 7. Deploy to Vercel — development ──────────────────────────────────────
+  #
+  # Everything landing on the beta branch, and every push to a PR that targets
+  # it, is built as a Vercel preview and the development domain is then pointed
+  # at that build. One shared URL, last build wins — so an open PR takes the
+  # domain from the branch until the branch (or another PR) builds again.
+  #
+  # The domain is dev-commissioner-suite.vercel.app unless the repository
+  # variable DEV_DOMAIN says otherwise (Settings → Secrets and variables →
+  # Actions → Variables) — moving the dev environment to a different host is
+  # then a settings change rather than a commit. Whichever it resolves to must
+  # already be attached to the Vercel project: `vercel alias set` assigns a
+  # domain the account owns, it does not register a new one.
+  deploy-dev:
+    name: Deploy to Vercel (development)
+    runs-on: ubuntu-latest
+    needs: [code-count, project-check, dependency-check, semgrep-sast, test]
+    # A fork's PR has no access to the repository's secrets, so the deploy could
+    # only fail — the checks above still run on it, this does not.
+    if: >-
+      success()
+      && ((github.event_name == 'push' && github.ref == 'refs/heads/1.0.0-beta.01')
+      || (github.event_name == 'pull_request' && github.base_ref == '1.0.0-beta.01'
+      && github.event.pull_request.head.repo.full_name == github.repository))
+    # One domain means one deploy at a time, and the newest push is the one that
+    # should end up holding it — an older build finishing late must not claim it
+    # back.
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: true
+    env:
+      DEV_DOMAIN: ${{ vars.DEV_DOMAIN || 'dev-commissioner-suite.vercel.app' }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # The variable goes through the environment rather than being pasted into
+      # the script — an expression expands before the shell parses the line, so
+      # a stray quote in a setting would otherwise rewrite the command.
+      - name: Report the development domain
+        run: |
+          echo "Deploying to https://$DEV_DOMAIN"
+          if [ -z "$DEV_DOMAIN_VAR" ]; then
+            echo "(the built-in default — set the DEV_DOMAIN variable to override)"
+          else
+            echo "(from the DEV_DOMAIN repository variable)"
+          fi
+        env:
+          DEV_DOMAIN_VAR: ${{ vars.DEV_DOMAIN }}
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      # A preview build rather than --prod: production belongs to the deploy job
+      # above. Preview builds read the Preview environment's variables in the
+      # Vercel project, which is where the dev database and NEXTAUTH_URL live.
+      - name: Build a preview deployment
+        id: deploy
+        run: |
+          # The CLI puts progress on stderr and the deployment URL on stdout,
+          # but takes the last line rather than the whole of it: a notice about
+          # a newer CLI version arriving on stdout would otherwise be spliced
+          # into the URL handed to `alias set` below.
+          url=$(vercel deploy --yes --token="$VERCEL_TOKEN" | tail -n 1)
+
+          case "$url" in
+            https://*)
+              ;;
+            *)
+              echo "::error::Expected a deployment URL from vercel deploy, got: ${url:-nothing}"
+              exit 1
+              ;;
+          esac
+
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Built $url"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Point the development domain at this build
+        run: vercel alias set "$DEPLOYMENT_URL" "$DEV_DOMAIN" --token="$VERCEL_TOKEN"
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Summarise the deployment
+        if: always()
+        run: |
+          {
+            echo "## Development Deployment"
+            echo ""
+            echo "| | |"
+            echo "|--|--|"
+            echo "| Domain | https://$DEV_DOMAIN |"
+            echo "| Build | ${DEPLOYMENT_URL:-not built} |"
+            echo "| Source | ${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || '1.0.0-beta.01' }} |"
+            echo "| Commit | ${{ github.event.pull_request.head.sha || github.sha }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
