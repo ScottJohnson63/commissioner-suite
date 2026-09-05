@@ -91,26 +91,51 @@ export default function LeagueDashboardPage() {
   // back to the first visible tab means no separate default per auth state, and
   // it also catches a member who signs out while sitting on Lottery.
   const activeTab: Tab = allTabs.some((t) => t.id === tab) ? tab : PUBLIC_TABS[0];
-  const currentTabLabel = allTabs.find((t) => t.id === activeTab)?.label ?? '';
 
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  // The mobile bar carries every tab a member has, which is more than a phone
+  // fits, so it scrolls sideways. Two things stop that hiding the tabs off the
+  // right-hand end, which is the failing of a plain scrolling bar: the fade
+  // below shows while there is more to reach, and the active tab is pulled into
+  // view whenever it changes.
+  const tabRowRef = useRef<HTMLDivElement>(null);
+  const [tabsScrollable, setTabsScrollable] = useState(false);
 
   useEffect(() => {
-    function onClickOutside(e: MouseEvent) {
-      if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
-        setMobileMenuOpen(false);
-      }
-    }
-    if (mobileMenuOpen) document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [mobileMenuOpen]);
+    const row = tabRowRef.current;
+    if (!row) return undefined;
 
+    const measure = () =>
+      setTabsScrollable(row.scrollWidth - row.clientWidth - row.scrollLeft > 1);
+
+    measure();
+    row.addEventListener('scroll', measure, { passive: true });
+    window.addEventListener('resize', measure);
+    return () => {
+      row.removeEventListener('scroll', measure);
+      window.removeEventListener('resize', measure);
+    };
+    // Signing in or out changes how many tabs there are, and so whether the row
+    // overflows at all.
+  }, [allTabs.length]);
+
+  useEffect(() => {
+    tabRowRef.current
+      ?.querySelector<HTMLElement>('[data-active="true"]')
+      // `nearest` on both axes: the row is inside a sticky bar, and anything
+      // but nearest scrolls the page itself to centre a tab that is already
+      // perfectly visible.
+      ?.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' });
+  }, [activeTab]);
+
+  // One definition for both bars, so the phone's tabs cannot drift from the
+  // desktop's. `shrink-0` is what keeps them their own width in the scrolling
+  // row rather than squeezing to fit.
   function TabBtn({ id, label }: { id: Tab; label: string }) {
     return (
       <button
         onClick={() => setTab(id)}
-        className="px-4 py-2.5 text-sm font-medium transition-colors"
+        data-active={activeTab === id}
+        className="px-4 py-2.5 text-sm font-medium transition-colors shrink-0 whitespace-nowrap"
         style={{
           color: activeTab === id ? '#e8e6df' : '#555',
           borderBottom: `2px solid ${activeTab === id ? '#80ff49' : 'transparent'}`,
@@ -125,55 +150,44 @@ export default function LeagueDashboardPage() {
   return (
     <div className="min-h-full" style={{ color: '#e8e6df' }}>
 
-      {/* ── Tab picker — mobile ──
+      {/* ── Tab bar — mobile ──
           The tabs are the thing you come here to switch, so on a phone they sit
           at the very top of the screen rather than under the title, and stay
-          there as the page scrolls. A dropdown rather than a row: a bar that
-          scrolls sideways hides the right-hand tabs, which are the ones hardest
-          to guess at. */}
+          there as the page scrolls. Same tabs and same styling as the desktop
+          bar below; the row scrolls where they do not fit. */}
       <div
-        ref={mobileMenuRef}
-        className="sm:hidden sticky top-0 z-30 border-b px-5 py-2.5"
+        className="sm:hidden sticky top-0 z-30 border-b"
         style={{ borderColor: '#1e1e20', background: 'rgba(14,14,15,0.95)', backdropFilter: 'blur(8px)' }}
       >
-        <button
-          onClick={() => setMobileMenuOpen((o) => !o)}
-          aria-expanded={mobileMenuOpen}
-          aria-haspopup="menu"
-          className="flex items-center gap-2 py-1 text-sm font-medium transition-colors"
-          style={{ color: '#e8e6df' }}
+        <div
+          ref={tabRowRef}
+          className="flex items-stretch overflow-x-auto px-1 [&::-webkit-scrollbar]:hidden"
+          style={{ scrollbarWidth: 'none' }}
         >
-          <span>{currentTabLabel}</span>
-          <svg width="10" height="6" viewBox="0 0 10 6" fill="none"
-            style={{ transform: mobileMenuOpen ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }}>
-            <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5"
-              strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
+          {LEFT_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
+          {isMember && (
+            <>
+              {/* The same break the desktop bar makes between what anyone may
+                  read and what running the league needs. */}
+              <div className="w-px my-2 mx-1 shrink-0" style={{ background: '#1e1e20' }} />
+              {MEMBER_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
+            </>
+          )}
+        </div>
 
-        {mobileMenuOpen && (
+        {tabsScrollable && (
           <div
-            role="menu"
-            className="absolute top-full left-5 z-50 min-w-[170px] rounded-lg overflow-hidden shadow-lg mt-1"
-            style={{ background: '#141415', border: '1px solid #2a2a2c' }}
-          >
-            {allTabs.map(({ id, label }) => (
-              <button
-                key={id}
-                role="menuitem"
-                onClick={() => { setTab(id); setMobileMenuOpen(false); }}
-                className="w-full text-left px-4 py-2.5 text-sm transition-colors"
-                style={{
-                  color: activeTab === id ? '#80ff49' : '#888',
-                  background: activeTab === id ? 'rgba(128,255,73,0.08)' : 'transparent',
-                }}
-                onMouseEnter={(e) => { if (activeTab !== id) e.currentTarget.style.color = '#e8e6df'; }}
-                onMouseLeave={(e) => { if (activeTab !== id) e.currentTarget.style.color = '#888'; }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 w-14"
+            style={{
+              // Reaching the page's own background rather than stopping at the
+              // bar's 95%: a gentler fade over a label that is already dim on a
+              // dark ground reads as nothing at all, and the point of it is that
+              // the last tab visibly dissolves rather than looking clipped.
+              background:
+                'linear-gradient(to right, rgba(14,14,15,0) 0%, rgba(14,14,15,0.85) 55%, #0e0e0f 100%)',
+            }}
+          />
         )}
       </div>
 
