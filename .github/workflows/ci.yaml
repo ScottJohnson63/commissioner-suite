@@ -304,8 +304,8 @@ jobs:
     # only fail — the checks above still run on it, this does not.
     if: >-
       success()
-      && ((github.event_name == 'push' && github.ref == 'refs/heads/1.0.0-beta.01')
-      || (github.event_name == 'pull_request' && github.base_ref == '1.0.0-beta.01'
+      && ((github.event_name == 'push' && github.ref == 'refs/heads/1.0.0-beta.XX')
+      || (github.event_name == 'pull_request' && github.base_ref == '1.0.0-beta.XX'
       && github.event.pull_request.head.repo.full_name == github.repository))
     # One domain means one deploy at a time, and the newest push is the one that
     # should end up holding it — an older build finishing late must not claim it
@@ -380,7 +380,7 @@ jobs:
             echo "|--|--|"
             echo "| Domain | https://$DEV_DOMAIN |"
             echo "| Build | ${DEPLOYMENT_URL:-not built} |"
-            echo "| Source | ${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || '1.0.0-beta.01' }} |"
+            echo "| Source | ${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || '1.0.0-beta.XX' }} |"
             echo "| Commit | ${{ github.event.pull_request.head.sha || github.sha }} |"
           } >> "$GITHUB_STEP_SUMMARY"
         env:
