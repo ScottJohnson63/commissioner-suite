@@ -7,10 +7,11 @@
 //
 // It replaces the left rail below `md` rather than sitting alongside it — the
 // rail costs 52px of an already narrow screen, and its toggle sits in the one
-// corner a thumb cannot reach. The button floats over the page instead of
-// docking to the bottom edge so the content behind it still reads as a full
-// page; the layout leaves room underneath the scroll area so the button never
-// covers the last row of anything.
+// corner a thumb cannot reach. The bottom right corner is the one it reaches
+// most easily instead. The button floats over the page rather than docking to
+// the edge so the content behind it still reads as a full page; the layout
+// leaves room underneath the scroll area so it never covers the last row of
+// anything.
 //
 // Everything it lists comes from leagueNav, the same source the rail reads, so
 // the two cannot disagree about who may see what.
@@ -84,16 +85,22 @@ export function MobileNav() {
         )}
 
         {/* ── Sheet ──
-            Sits directly above the button and grows upward. Capped at the
-            viewport so a commissioner's longer nav scrolls rather than running
-            off the top of a small screen. */}
+            Sits directly above the button, sharing its right edge, and grows up
+            and to the left from there — anchored to what was tapped rather than
+            spanning a width that has nothing to do with it. Capped at the
+            viewport in both directions, so a commissioner's longer nav scrolls
+            rather than running off the top of a small screen and a long label
+            cannot push it off the left of one. */}
         {open && (
           <nav
             id="mobile-nav-menu"
-            className="fixed left-4 right-4 z-50 rounded-2xl overflow-y-auto p-1.5
+            className="fixed z-50 rounded-2xl overflow-y-auto p-1.5
                        flex flex-col gap-0.5 transition-all duration-200"
             style={{
+              right: 'calc(env(safe-area-inset-right, 0px) + 16px)',
               bottom: 'calc(env(safe-area-inset-bottom, 0px) + 80px)',
+              minWidth: 220,
+              maxWidth: 'calc(100vw - env(safe-area-inset-right, 0px) - 32px)',
               maxHeight: 'calc(100dvh - env(safe-area-inset-bottom, 0px) - 120px)',
               background: 'rgba(14,14,15,0.92)',
               backdropFilter: 'blur(12px)',
@@ -165,9 +172,9 @@ export function MobileNav() {
           aria-label={open ? 'Close menu' : 'Open menu'}
           aria-expanded={open}
           aria-controls="mobile-nav-menu"
-          className="fixed left-1/2 -translate-x-1/2 z-50 flex items-center justify-center
-                     rounded-full transition-colors"
+          className="fixed z-50 flex items-center justify-center rounded-full transition-colors"
           style={{
+            right: 'calc(env(safe-area-inset-right, 0px) + 16px)',
             bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
             width: 52,
             height: 52,
