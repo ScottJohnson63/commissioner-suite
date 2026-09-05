@@ -290,11 +290,12 @@ jobs:
   # at that build. One shared URL, last build wins — so an open PR takes the
   # domain from the branch until the branch (or another PR) builds again.
   #
-  # The domain itself is the repository variable DEV_DOMAIN (Settings → Secrets
-  # and variables → Actions → Variables), not a literal here, so moving the dev
-  # environment to a different host is a settings change rather than a commit.
-  # It must also already be attached to the Vercel project — `vercel alias set`
-  # assigns an existing domain, it does not register a new one.
+  # The domain is dev-commissioner-suite.vercel.app unless the repository
+  # variable DEV_DOMAIN says otherwise (Settings → Secrets and variables →
+  # Actions → Variables) — moving the dev environment to a different host is
+  # then a settings change rather than a commit. Whichever it resolves to must
+  # already be attached to the Vercel project: `vercel alias set` assigns a
+  # domain the account owns, it does not register a new one.
   deploy-dev:
     name: Deploy to Vercel (development)
     runs-on: ubuntu-latest
@@ -313,23 +314,26 @@ jobs:
       group: deploy-dev
       cancel-in-progress: true
     env:
-      DEV_DOMAIN: ${{ vars.DEV_DOMAIN }}
+      DEV_DOMAIN: ${{ vars.DEV_DOMAIN || 'dev-commissioner-suite.vercel.app' }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Failing here costs seconds; failing after a full Vercel build costs
-      # minutes and leaves an orphan deployment behind.
-      - name: Check the development domain is configured
+      # The variable goes through the environment rather than being pasted into
+      # the script — an expression expands before the shell parses the line, so
+      # a stray quote in a setting would otherwise rewrite the command.
+      - name: Report the development domain
         run: |
-          if [ -z "$DEV_DOMAIN" ]; then
-            echo "::error::Repository variable DEV_DOMAIN is not set — add it under" \
-                 "Settings → Secrets and variables → Actions → Variables."
-            exit 1
+          echo "Deploying to https://$DEV_DOMAIN"
+          if [ -z "$DEV_DOMAIN_VAR" ]; then
+            echo "(the built-in default — set the DEV_DOMAIN variable to override)"
+          else
+            echo "(from the DEV_DOMAIN repository variable)"
           fi
-          echo "Development domain: $DEV_DOMAIN"
+        env:
+          DEV_DOMAIN_VAR: ${{ vars.DEV_DOMAIN }}
 
       - name: Install Vercel CLI
         run: npm install -g vercel@latest
