@@ -99,13 +99,20 @@ export default function LeagueDashboardPage() {
   // view whenever it changes.
   const tabRowRef = useRef<HTMLDivElement>(null);
   const [tabsScrollable, setTabsScrollable] = useState(false);
+  // Whether the row overflows at all, as against `tabsScrollable`, which is
+  // only about whether there is more still to the right. It decides the touch
+  // handling below, which should not apply to a row that has nowhere to go.
+  const [tabsOverflow, setTabsOverflow] = useState(false);
 
   useEffect(() => {
     const row = tabRowRef.current;
     if (!row) return undefined;
 
-    const measure = () =>
-      setTabsScrollable(row.scrollWidth - row.clientWidth - row.scrollLeft > 1);
+    const measure = () => {
+      const overflow = row.scrollWidth - row.clientWidth;
+      setTabsOverflow(overflow > 1);
+      setTabsScrollable(overflow - row.scrollLeft > 1);
+    };
 
     measure();
     row.addEventListener('scroll', measure, { passive: true });
@@ -154,7 +161,11 @@ export default function LeagueDashboardPage() {
           The tabs are the thing you come here to switch, so on a phone they sit
           at the very top of the screen rather than under the title, and stay
           there as the page scrolls. Same tabs and same styling as the desktop
-          bar below; the row scrolls where they do not fit. */}
+          bar below; the row scrolls where they do not fit.
+
+          It pins to the top of `main`, which is the pane that scrolls — see the
+          note in league/layout.tsx for why the shell around it has to be sized
+          in `dvh` for that to hold still on a phone. */}
       <div
         className="sm:hidden sticky top-0 z-30 border-b"
         style={{ borderColor: '#1e1e20', background: 'rgba(14,14,15,0.95)', backdropFilter: 'blur(8px)' }}
@@ -162,7 +173,17 @@ export default function LeagueDashboardPage() {
         <div
           ref={tabRowRef}
           className="flex items-stretch overflow-x-auto px-1 [&::-webkit-scrollbar]:hidden"
-          style={{ scrollbarWidth: 'none' }}
+          style={{
+            scrollbarWidth: 'none',
+            // A drag that starts on a row with somewhere to go is that row's:
+            // `pan-x` keeps the phone from reading it as a page scroll and
+            // swallowing it, and `contain` stops a flick past either end from
+            // chaining out to the page (or, on iOS, into the back-swipe). A row
+            // that fits keeps the default, so a thumb landing on it can still
+            // scroll the page.
+            touchAction: tabsOverflow ? 'pan-x' : undefined,
+            overscrollBehaviorX: 'contain',
+          }}
         >
           {LEFT_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
           {isMember && (
