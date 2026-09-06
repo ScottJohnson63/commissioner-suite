@@ -20,7 +20,7 @@ import { IntroCarousel, IntroList, IntroTerm, type IntroSlide } from './IntroCar
 import { CardsArt, TierArt, DeckTabsArt } from './IntroArt';
 import { requestIntro, useIntro } from './useIntro';
 import {
-  CARDS_PER_PACK, DECK_POINTS, TIER_MAX_RANK, WILDCARD_PULL_CHANCE,
+  CARDS_PER_PACK, TIER_MAX_RANK, WILDCARD_PULL_CHANCE,
 } from '@/lib/cards/tiers';
 import { ROSTER_SIZE } from '@/lib/cards/roster';
 import { MAX_GAME_WEEK } from '@/lib/cards/weeklyGame';
@@ -87,15 +87,17 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
           <IntroList
             items={[
               <><IntroTerm>Hall of Fame</IntroTerm> — top {TIER_MAX_RANK.HALL_OF_FAME} at
-                the position, worth {DECK_POINTS.HALL_OF_FAME} deck points.</>,
-              <><IntroTerm>Gold</IntroTerm> — through
-                rank {TIER_MAX_RANK.GOLD}, {DECK_POINTS.GOLD} points.</>,
-              <><IntroTerm>Silver</IntroTerm> — through
-                rank {TIER_MAX_RANK.SILVER}, {DECK_POINTS.SILVER} points.</>,
-              <><IntroTerm>Bronze</IntroTerm> — everybody
-                else, {DECK_POINTS.BRONZE} points.</>,
+                the position that season.</>,
+              <><IntroTerm>Gold</IntroTerm> — through rank {TIER_MAX_RANK.GOLD}.</>,
+              <><IntroTerm>Silver</IntroTerm> — through rank {TIER_MAX_RANK.SILVER}.</>,
+              <><IntroTerm>Bronze</IntroTerm> — everybody else.</>,
             ]}
           />
+          <p className="mt-3">
+            A tier is not itself worth points. It tells you how rare a card is and how
+            good that player&apos;s season was — what it scores is the points per game on
+            its face, in the week you field it.
+          </p>
           <p className="mt-3">
             Quarterbacks, running backs, receivers and tight ends only — kickers and team
             defenses do not get cards.

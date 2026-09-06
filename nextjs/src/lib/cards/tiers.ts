@@ -199,26 +199,6 @@ export const PACK_DROP_WEIGHT: Record<CardTier, number> = {
   BRONZE: 40,
 };
 
-/**
- * What a card of each tier is worth to a deck's score.
- *
- * Ownership is exclusive, so the game is a race for the scarce top of the pool
- * rather than a completion challenge — which means members need a single number
- * to be ranked on, and it has to reward rarity over volume. These weights are
- * roughly the scarcity ratio, compressed: there are about nineteen Bronze cards
- * for every Hall of Fame one, and a Hall of Fame card is worth twenty-five
- * Bronze. Compressing it that way keeps a deep Bronze deck worth something
- * without ever letting it out-score a genuinely rare one.
- *
- * Four Hall of Fame cards beat a hundred Bronze. That is the intended shape.
- */
-export const DECK_POINTS: Record<CardTier, number> = {
-  HALL_OF_FAME: 100,
-  GOLD: 40,
-  SILVER: 15,
-  BRONZE: 4,
-};
-
 /** Display copy for each tier, used by the pack-opening UI and the collection. */
 export const TIER_LABEL: Record<CardTier, string> = {
   HALL_OF_FAME: 'Hall of Fame',
@@ -226,19 +206,6 @@ export const TIER_LABEL: Record<CardTier, string> = {
   SILVER: 'Silver',
   BRONZE: 'Bronze',
 };
-
-/**
- * Total deck score for a set of owned cards, grouped by tier.
- *
- * Takes counts rather than cards so the leaderboard can score every member from
- * one grouped query instead of loading everybody's collection.
- */
-export function deckScore(countsByTier: Partial<Record<CardTier, number>>): number {
-  return TIER_ORDER.reduce(
-    (total, tier) => total + (countsByTier[tier] ?? 0) * DECK_POINTS[tier],
-    0,
-  );
-}
 
 /**
  * Tier assignment for a season finish.

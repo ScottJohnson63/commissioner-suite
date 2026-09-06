@@ -8,12 +8,18 @@
 // can ever hold the full 1,832 — so "45 of 1,832" would be a progress bar
 // towards something unreachable, and would make a good deck look like a failure.
 // What matters instead is rarity: how many of the scarce cards you got before
-// anybody else did, expressed as a score and a count per tier.
+// anybody else did, expressed as a count per tier.
+//
+// The tiles used to carry a per-card point value beside each count, from a
+// deck-score ranking that no longer exists — the season is scored on the points
+// a lineup puts up week to week, not on what a deck is worth sitting still. A
+// tier is now what it says on the card: how good that player's season was, and
+// therefore how much a card is likely to score in the week you spend it.
 
 import { useMemo, useState } from 'react';
 import { PlayerCard } from '@/components/cards/PlayerCard';
 import { TIER_STYLE } from '@/components/cards/tierStyles';
-import { DECK_POINTS, TIER_LABEL, TIER_ORDER } from '@/lib/cards/tiers';
+import { TIER_LABEL, TIER_ORDER } from '@/lib/cards/tiers';
 import type { CardTier, DeckStatsDto, OwnedCardDto } from '@/types/cards';
 
 const POSITIONS = ['QB', 'RB', 'WR', 'TE'] as const;
@@ -99,9 +105,6 @@ export function DeckGrid({
               </div>
               <div className="text-lg font-bold" style={{ color: '#e8e6df' }}>
                 {held}
-                <span className="text-[10px] font-normal ml-1.5" style={{ color: '#555' }}>
-                  × {DECK_POINTS[t]} pts
-                </span>
               </div>
               <div
                 className="mt-1.5 h-0.5 rounded"

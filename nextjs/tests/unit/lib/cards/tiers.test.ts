@@ -9,8 +9,8 @@
 
 import { describe, it, expect } from '@jest/globals';
 import {
-  tierForRank, lowerTiers, deckScore,
-  TIER_ORDER, PACK_GUARANTEE, CARDS_PER_PACK, DECK_POINTS,
+  tierForRank, lowerTiers,
+  TIER_ORDER, PACK_GUARANTEE, CARDS_PER_PACK,
   PACK_DROP_WEIGHT, FILLER_TIER_WEIGHT,
 } from '@/lib/cards/tiers';
 import type { CardTier } from '@prisma/client';
@@ -156,30 +156,3 @@ describe('pack balance', () => {
   });
 });
 
-describe('deckScore()', () => {
-  // WHY: the whole competitive premise. Ownership is exclusive, so members are
-  //      ranked on rarity rather than volume — and this is the assertion that
-  //      says a small rare deck beats a big common one.
-  it('values four Hall of Fame cards above a hundred Bronze', () => {
-    expect(deckScore({ HALL_OF_FAME: 4 })).toBeGreaterThan(deckScore({ BRONZE: 99 }));
-  });
-
-  it('sums every tier', () => {
-    expect(deckScore({ HALL_OF_FAME: 1, GOLD: 1, SILVER: 1, BRONZE: 1 })).toBe(
-      DECK_POINTS.HALL_OF_FAME + DECK_POINTS.GOLD + DECK_POINTS.SILVER + DECK_POINTS.BRONZE,
-    );
-  });
-
-  it('scores an empty deck at zero', () => {
-    expect(deckScore({})).toBe(0);
-  });
-
-  // WHY: the weights must stay strictly ordered by rarity. Any inversion would
-  //      make a common card worth more than a rare one and invert the game.
-  it('weights every tier above the one below it', () => {
-    expect(DECK_POINTS.HALL_OF_FAME).toBeGreaterThan(DECK_POINTS.GOLD);
-    expect(DECK_POINTS.GOLD).toBeGreaterThan(DECK_POINTS.SILVER);
-    expect(DECK_POINTS.SILVER).toBeGreaterThan(DECK_POINTS.BRONZE);
-    expect(DECK_POINTS.BRONZE).toBeGreaterThan(0);
-  });
-});
