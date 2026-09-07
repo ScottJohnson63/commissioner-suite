@@ -1,100 +1,96 @@
 // tests/components/CardsLeftPanel.test.tsx
 //
-// Covers what the Cards left tile opens.
+// Covers what the "Cards left" tile hands off to.
 //
-// The tile is a bare number now, so everything that number means lives in this
-// panel: what it is out of, and whose decks the rest of the pool went into.
-// Two things are worth pinning — that the pool line reads as a fraction rather
-// than a lone count, and that the per-member list runs most cards to least. A
-// list in the standings' own order looks sorted and is not, which is the bug
-// nobody would spot by eye.
+// Two rules are worth pinning. The headline has to say the count *out of* the
+// pool, because the tile itself now shows the bare number and this is the only
+// place the denominator appears. And the per-member list has to be ranked by
+// cards held, not by the season points the standings arrive sorted by — it is
+// the same rows under a different sort, which is exactly the kind of thing a
+// later refactor drops on the floor.
 
 import { describe, it, expect } from '@jest/globals';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 
 import { CardsLeftPanel } from '@/components/cards/CardsLeftPanel';
-import type { AllowanceDto, LeaderboardEntryDto } from '@/types/cards';
-
-function allowance(over: Partial<AllowanceDto> = {}): AllowanceDto {
-  return {
-    gameSeason: 2025, week: 3, granted: 2, opened: 1, remaining: 1,
-    poolSize: 2000, claimed: 800, remainingCards: 1200, members: 3,
-    perWeek: 2, rationStartsWeek: 2, pendingWildcards: [], nextPackTier: 'GOLD',
-    bonusRemaining: 0, starterRemaining: 0, nextPackKind: 'RATION',
-    nextPackIsBonus: false,
-    ...over,
-  };
-}
-
-const EMPTY_TIERS = { HALL_OF_FAME: 0, GOLD: 0, SILVER: 0, BRONZE: 0 };
+import type { LeaderboardEntryDto } from '@/types/cards';
 
 function entry(over: Partial<LeaderboardEntryDto> = {}): LeaderboardEntryDto {
   return {
-    userId: 'u1', name: 'Scott', rank: 1, cards: 10, rosterPpg: 0, deckAvgPpg: 0,
-    started: 0, seasonPoints: 0, weeksPlayed: 0, byTier: EMPTY_TIERS, isYou: false,
+    userId: 'u1', name: 'Ada', rank: 1, cards: 0, rosterPpg: 0, deckAvgPpg: 0,
+    started: 0, seasonPoints: 0, weeksPlayed: 0, isYou: false,
+    byTier: { HALL_OF_FAME: 0, GOLD: 0, SILVER: 0, BRONZE: 0 },
     ...over,
   };
 }
 
+// Ranked by season points, which is the order the page holds them in — and
+// deliberately the reverse of the card counts, so a panel that just rendered
+// the array as given would fail.
+const ENTRIES = [
+  entry({ userId: 'u1', name: 'Ada', seasonPoints: 90, cards: 4 }),
+  entry({ userId: 'u2', name: 'Grace', seasonPoints: 60, cards: 11, isYou: true }),
+  entry({ userId: 'u3', name: 'Linus', seasonPoints: 30, cards: 7 }),
+];
+
+function renderPanel(over: Partial<React.ComponentProps<typeof CardsLeftPanel>> = {}) {
+  return render(
+    <CardsLeftPanel
+      remainingCards={78}
+      poolSize={100}
+      claimed={22}
+      members={3}
+      entries={ENTRIES}
+      {...over}
+    />,
+  );
+}
+
 describe('CardsLeftPanel', () => {
-  // WHY: the count on its own says nothing about how close the pool is to dry,
-  //      and the pool running dry is the game's end state.
-  it('reads the count against the pool it came out of', () => {
-    render(<CardsLeftPanel allowance={allowance()} standings={[entry()]} />);
-
-    expect(screen.getByText('1,200')).toBeInTheDocument();
-    expect(screen.getByText(/of 2,000 cards still unclaimed/)).toBeInTheDocument();
-    expect(screen.getByText(/800 claimed · 40% of the pool/)).toBeInTheDocument();
+  it('states the cards left out of the whole pool', () => {
+    renderPanel();
+    expect(screen.getByText('78')).toBeInTheDocument();
+    expect(screen.getByText('of 100 cards left')).toBeInTheDocument();
   });
 
-  // WHY: the whole point of the list. The standings arrive ranked on season
-  //      points, which is a different order — sorting has to happen here.
-  it('lists players by cards held, most to least', () => {
-    render(
-      <CardsLeftPanel
-        allowance={allowance()}
-        standings={[
-          entry({ userId: 'u1', name: 'Scott', rank: 1, cards: 4 }),
-          entry({ userId: 'u2', name: 'Dana', rank: 2, cards: 31, isYou: true }),
-          entry({ userId: 'u3', name: 'Ray', rank: 3, cards: 12 }),
-        ]}
-      />,
-    );
-
-    const rows = screen.getAllByRole('listitem').map((li) => li.textContent);
-    expect(rows).toEqual(['Dana31', 'Ray12', 'Scott4']);
+  it('says how much has been claimed and how many are playing', () => {
+    renderPanel();
+    expect(screen.getByText(/22 claimed/)).toBeInTheDocument();
+    expect(screen.getByText(/3 members playing/)).toBeInTheDocument();
   });
 
-  // WHY: a member who has never opened a pack is still in the league, and the
-  //      standings include them on zero. Dropping them would make the list
-  //      disagree with the standings on who is playing.
-  it('keeps players on zero, in name order behind the rest', () => {
-    render(
-      <CardsLeftPanel
-        allowance={allowance()}
-        standings={[
-          entry({ userId: 'u1', name: 'Zoe', cards: 0 }),
-          entry({ userId: 'u2', name: 'Dana', cards: 0 }),
-          entry({ userId: 'u3', name: 'Ray', cards: 3 }),
-        ]}
-      />,
-    );
-
-    const rows = screen.getAllByRole('listitem').map((li) => li.textContent);
-    expect(rows).toEqual(['Ray3', 'Dana0', 'Zoe0']);
+  it('lists every member by cards held, most first', () => {
+    renderPanel();
+    const rows = screen.getAllByRole('listitem');
+    expect(rows.map((row) => within(row).getByText(/Ada|Grace|Linus/).textContent))
+      .toEqual(['Graceyou', 'Linus', 'Ada']);
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining('11'),
+      expect.stringContaining('7'),
+      expect.stringContaining('4'),
+    ]);
   });
 
-  // WHY: an empty pool is a real state — a league whose commissioner has not
-  //      built the cards yet — and the claimed share is a divide.
-  it('survives an empty pool', () => {
-    render(
-      <CardsLeftPanel
-        allowance={allowance({ poolSize: 0, claimed: 0, remainingCards: 0 })}
-        standings={[]}
-      />,
-    );
+  it('holds a stable order when nobody has opened anything', () => {
+    renderPanel({
+      remainingCards: 100, claimed: 0,
+      entries: [
+        entry({ userId: 'u3', name: 'Linus' }),
+        entry({ userId: 'u1', name: 'Ada' }),
+        entry({ userId: 'u2', name: 'Grace' }),
+      ],
+    });
+    expect(screen.getAllByRole('listitem').map((row) => row.textContent?.replace(/\d/g, '').trim()))
+      .toEqual(['Ada', 'Grace', 'Linus']);
+  });
 
-    expect(screen.getByText(/0 claimed · 0% of the pool/)).toBeInTheDocument();
-    expect(screen.getByText('Nobody is playing yet.')).toBeInTheDocument();
+  it('says so rather than showing an empty table with no members', () => {
+    renderPanel({ entries: [] });
+    expect(screen.getByText('Nobody is in the league yet.')).toBeInTheDocument();
+  });
+
+  it('survives an empty pool without dividing by zero', () => {
+    renderPanel({ remainingCards: 0, poolSize: 0, claimed: 0, entries: [] });
+    expect(screen.getByText('of 0 cards left')).toBeInTheDocument();
   });
 });

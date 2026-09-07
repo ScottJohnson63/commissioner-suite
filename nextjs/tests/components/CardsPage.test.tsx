@@ -147,17 +147,19 @@ describe('Draft Deck packs tiles', () => {
     expect(screen.queryByText('Sleeper bonus')).not.toBeInTheDocument();
   });
 
-  // WHY: sub-issue #28 — the tile is the count alone, and everything it used
-  //      to say in small print is behind a tap.
+  // WHY: sub-issue #28 — the tile is the count alone, and what it used to say
+  //      in an 8px hint line is behind a tap. The panel's own contents have
+  //      their own suite; what is pinned here is the tile opening it.
   it('opens the pool behind the Cards left tile', async () => {
     await renderPage();
 
+    // The hint line the tile carried: the pool size and the member count.
     expect(screen.getByText('Cards left')).toBeInTheDocument();
-    expect(screen.queryByText(/3 playing/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/of 2,000 · 3 members/)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: /Cards left/ }));
 
-    expect(screen.getByText(/of 2,000 cards still unclaimed/)).toBeInTheDocument();
+    expect(screen.getByText(/of 2,000 cards left/)).toBeInTheDocument();
     expect(screen.getByText('Cards per player')).toBeInTheDocument();
   });
 });

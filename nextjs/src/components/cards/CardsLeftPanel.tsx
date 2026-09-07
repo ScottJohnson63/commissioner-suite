@@ -2,121 +2,137 @@
 
 // src/components/cards/CardsLeftPanel.tsx
 //
-// What is left in the pool, and who took the rest.
+// What is left of the pool, and who is holding the rest.
 //
-// Cards are owned exclusively, so "cards left" is the game's clock: every pack
-// opened takes cards out of a pool nobody refills until a commissioner
-// backfills another season. The tile on the Packs page reports the number; this
-// is what the number is made of — how much of the pool has gone, and into whose
-// deck.
+// The "Cards left" tile is one number and nothing else — the pool size, the
+// claimed count and the member count used to be crammed into a hint line under
+// it that nobody could read at 8px on a phone. They are the answer to the
+// question the tile prompts ("left out of what?"), so they live here, behind a
+// tap, with room to be legible.
 //
-// The per-member counts come off the standings the collection read already
-// computes, rather than a second endpoint: ranking a member means counting
-// everybody's cards, so the numbers are already in hand and cannot drift from
-// the deck they were read with.
+// Cards are owned exclusively, so "claimed" is not an abstraction: every card
+// missing from the pool is in somebody's deck. That makes the per-member split
+// the second half of the same answer rather than a separate leaderboard — it is
+// the pool's remainder, itemised, biggest holder first.
+//
+// The rows are derived from the standings that the page already has in hand,
+// not fetched: the leaderboard carries every eligible member with their card
+// count, which is exactly this list under a different sort.
 
-import type { AllowanceDto, LeaderboardEntryDto } from '@/types/cards';
+import type { LeaderboardEntryDto } from '@/types/cards';
 
 export function CardsLeftPanel({
-  allowance, standings,
+  remainingCards, poolSize, claimed, members, entries,
 }: {
-  allowance: AllowanceDto;
-  /** Every eligible member, including anyone who has not opened a pack. */
-  standings: LeaderboardEntryDto[];
+  /** Cards still unowned — the number the tile shows. */
+  remainingCards: number;
+  /** Cards in the pool in total. */
+  poolSize: number;
+  /** Cards already claimed by someone, league-wide. */
+  claimed: number;
+  /** Accounts sharing the pool. */
+  members: number;
+  /** The standings rows, in whatever order the page holds them. */
+  entries: LeaderboardEntryDto[];
 }) {
-  const { remainingCards, poolSize, claimed } = allowance;
-  // Guarded because an empty pool is a real state — a league whose commissioner
-  // has not built the cards yet — and 0/0 is a divide, not a bar at 100%.
-  const claimedPct = poolSize > 0 ? Math.round((claimed / poolSize) * 100) : 0;
-
-  // Most to least, then by name so a league where nobody has opened anything
-  // is in a stable order rather than the standings' points order.
-  const owners = [...standings].sort(
+  // Sorted here rather than relying on the page's order: the standings arrive
+  // ranked by season points, and this list is ranked by cards held. Name breaks
+  // ties so a table of zeroes has a stable order instead of a random one.
+  const holders = [...entries].sort(
     (a, b) => b.cards - a.cards || a.name.localeCompare(b.name),
   );
-  // The widest deck sets the bar's full width, so the rows compare with each
-  // other rather than with a pool that dwarfs all of them.
-  const widest = owners[0]?.cards ?? 0;
+  const most = holders[0]?.cards ?? 0;
+  const pct = poolSize ? Math.round((remainingCards / poolSize) * 100) : 0;
 
   return (
     <div>
-      {/* ── The pool ──
-          The count first and at size, because it is the number the tile was
-          tapped from; the total under it, because "1,204" only means something
-          against what it started as. */}
-      <div className="rounded p-4 mb-5 text-center" style={{ background: '#0e0e0f', border: '1px solid #1e1e20' }}>
-        <div className="text-3xl font-bold" style={{ color: '#80ff49' }}>
+      {/* ── The count, out of the pool it comes from ── */}
+      <div className="text-center mb-1">
+        <span className="text-3xl font-bold tabular-nums" style={{ color: '#80ff49' }}>
           {remainingCards.toLocaleString()}
-        </div>
-        <div className="text-xs mt-1" style={{ color: '#888' }}>
-          of {poolSize.toLocaleString()} cards still unclaimed
-        </div>
-
-        <div className="mt-3 h-1.5 rounded overflow-hidden" style={{ background: '#1e1e20' }}>
-          <div
-            className="h-full"
-            style={{ width: `${claimedPct}%`, background: '#80ff49', opacity: 0.75 }}
-          />
-        </div>
-        <div className="text-[10px] mt-1.5 uppercase" style={{ letterSpacing: '0.1em', color: '#444' }}>
-          {claimed.toLocaleString()} claimed · {claimedPct}% of the pool
-        </div>
+        </span>
+        <span className="text-sm tabular-nums ml-2" style={{ color: '#555' }}>
+          of {poolSize.toLocaleString()} cards left
+        </span>
       </div>
 
-      {/* ── Where they went ── */}
-      <div className="text-[10px] uppercase mb-2" style={{ letterSpacing: '0.12em', color: '#444' }}>
+      <div className="text-center text-[10px] mb-4" style={{ color: '#444' }}>
+        {claimed.toLocaleString()} claimed · {members.toLocaleString()}{' '}
+        {members === 1 ? 'member' : 'members'} playing
+      </div>
+
+      {/* How much of the pool is still out there, at a glance. */}
+      <div
+        className="h-1.5 rounded overflow-hidden mb-6"
+        style={{ background: '#1e1e20' }}
+        role="presentation"
+      >
+        <div style={{ width: `${pct}%`, height: '100%', background: '#80ff49' }} />
+      </div>
+
+      {/* ── Who is holding the rest ── */}
+      <div
+        className="text-[10px] uppercase font-bold mb-2"
+        style={{ letterSpacing: '0.16em', color: '#444' }}
+      >
         Cards per player
       </div>
 
-      {owners.length === 0 ? (
-        <p className="text-xs py-6 text-center" style={{ color: '#555' }}>
-          Nobody is playing yet.
+      {holders.length === 0 ? (
+        <p className="text-xs py-4 text-center" style={{ color: '#555' }}>
+          Nobody is in the league yet.
         </p>
       ) : (
-        <ul className="flex flex-col gap-1.5">
-          {owners.map((entry) => (
+        <ol className="rounded overflow-hidden" style={{ border: '1px solid #1e1e20' }}>
+          {holders.map((entry, index) => (
             <li
               key={entry.userId}
-              className="flex items-center gap-3 rounded px-3 py-2"
+              className="flex items-center gap-3 px-3 py-2"
               style={{
-                background: entry.isYou ? 'rgba(128,255,73,0.07)' : '#0e0e0f',
-                border: `1px solid ${entry.isYou ? 'rgba(128,255,73,0.28)' : '#1e1e20'}`,
+                background: entry.isYou ? 'rgba(128,255,73,0.06)' : '#141415',
+                borderTop: index === 0 ? undefined : '1px solid #1e1e20',
               }}
             >
               <span
-                className="text-xs truncate flex-1 min-w-0"
+                className="text-xs font-bold tabular-nums shrink-0"
+                style={{ width: 20, color: index === 0 && most > 0 ? '#80ff49' : '#555' }}
+              >
+                {index + 1}
+              </span>
+
+              <span
+                className="text-xs truncate"
                 style={{ color: entry.isYou ? '#80ff49' : '#e8e6df' }}
               >
                 {entry.name}
+                {entry.isYou && (
+                  <span className="ml-1 text-[9px]" style={{ color: '#555' }}>you</span>
+                )}
               </span>
 
-              {/* A bar beside the figure rather than instead of it: the count is
-                  what was asked for, the bar is what makes a list of a dozen
-                  numbers readable at a glance. Hidden on the narrowest phones,
-                  where the name deserves the room. */}
-              <span
-                aria-hidden
-                className="hidden sm:block h-1.5 rounded w-24 shrink-0"
+              {/* Held cards, relative to the biggest deck in the league. */}
+              <div
+                className="flex-1 h-1 rounded overflow-hidden mx-1 min-w-[24px]"
                 style={{ background: '#1e1e20' }}
               >
-                <span
-                  className="block h-full rounded"
+                <div
                   style={{
-                    width: widest > 0 ? `${(entry.cards / widest) * 100}%` : '0%',
-                    background: entry.isYou ? '#80ff49' : '#3a3a3a',
+                    width: `${most ? Math.round((entry.cards / most) * 100) : 0}%`,
+                    height: '100%',
+                    background: entry.isYou ? '#80ff49' : '#3a3a44',
                   }}
                 />
-              </span>
+              </div>
 
               <span
                 className="text-xs font-bold tabular-nums shrink-0 text-right"
-                style={{ width: 44, color: entry.isYou ? '#80ff49' : '#e8e6df' }}
+                style={{ width: 44, color: '#e8e6df' }}
               >
                 {entry.cards.toLocaleString()}
               </span>
             </li>
           ))}
-        </ul>
+        </ol>
       )}
     </div>
   );
