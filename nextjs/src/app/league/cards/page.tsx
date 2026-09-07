@@ -531,6 +531,11 @@ export default function CardsPage() {
           onClose={() => setSelectedId(null)}
           title="Draft Deck · Card"
           widthClassName="sm:max-w-2xl"
+          // The one dialog whose child sizes itself to the phone, so the one
+          // that holds still instead of scrolling. A card is a fixed set of
+          // controls — a name, a picture, the lineup — not a list that can
+          // grow past the pane.
+          fitViewport
         >
           <CardDetail
             // Remounts on a change of selection, which is what resets the

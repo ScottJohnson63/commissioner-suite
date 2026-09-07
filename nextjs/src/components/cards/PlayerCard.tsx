@@ -145,8 +145,14 @@ export function PlayerCard({
   card, width = 180, showTierName = false, className = '', style: outerStyle,
 }: {
   card: PlayerCardData;
-  /** Card width in px. Everything else scales from this. */
-  width?: number;
+  /**
+   * Card width. Everything else scales from this.
+   *
+   * A number is px. A string is any CSS length, which is what lets a caller
+   * size a card against the viewport — `min(40vw, 26dvh)` on a phone — without
+   * measuring anything in JavaScript first.
+   */
+  width?: number | string;
   /** Print the tier's name along the bottom edge. Used in the reveal. */
   showTierName?: boolean;
   className?: string;
@@ -161,8 +167,10 @@ export function PlayerCard({
   const portrait = card.customImage || card.headshot;
 
   // One em is a twelfth of the card's width, which keeps every rule below
-  // resolution-independent — see the note at the top of the file.
-  const em = width / 12;
+  // resolution-independent — see the note at the top of the file. A CSS-length
+  // width hands the same division to the browser, so a card sized in viewport
+  // units scales its type with itself.
+  const em = typeof width === 'number' ? width / 12 : `calc(${width} / 12)`;
   const hasImage = Boolean(portrait) && !imageFailed;
 
   return (

@@ -10,8 +10,9 @@
 // there was nowhere on the page that was about one card.
 //
 // So this is that place. It holds the selection, and the grid below it becomes
-// a picker. The card renders at 260px because the portrait is the point: an
-// upload is worth making at a size where you can see it.
+// a picker. The card renders at 260px on a laptop because the portrait is the
+// point: an upload is worth making at a size where you can see it. On a phone
+// it takes a share of the viewport instead — see the layout note below.
 //
 // Nickname and image are one form with one save, matching the route behind it
 // — the reward is paid when a card has both, and two separate saves would let
@@ -167,13 +168,39 @@ export function CardDetail({
     pending !== null || (nickname.trim() || null) !== (card.nickname ?? null);
 
   return (
+    // Side by side on a phone too, not stacked.
+    //
+    // Stacked, this was a 390px card with a form under it: past the bottom of
+    // every phone screen before the lineup buttons even started, which is what
+    // made the dialog a scroller. Beside the form the card is the tallest thing
+    // in the row rather than the first half of a column, and the whole panel
+    // fits the one pane the dialog now holds still.
+    //
+    // A grid rather than a row because the lineup wants different neighbours at
+    // each width: under the form on a laptop, where it inherits that column's
+    // width anyway, but across both columns on a phone. Squeezed into a ~150px
+    // column beside the card, one "FLEX · replaces Green" button is a line of
+    // its own and four slots are four rows; across the full pane they sit two
+    // and three to a row, which is most of what buys the single pane back.
+    //
+    // The second row is `1fr` so that the card — which spans both rows from
+    // `sm`, being taller there than the form and the lineup together — grows
+    // that row rather than the one above it. The lineup goes on sitting
+    // directly under the form, as it did when the two were one column.
     <div
-      className="rounded p-5 flex flex-col sm:flex-row gap-6"
+      className="rounded p-3 sm:p-5 grid grid-cols-[auto_1fr] grid-rows-[auto_1fr] items-start gap-3 sm:gap-x-6 sm:gap-y-4"
       style={{ background: '#0e0e0f', border: `1px solid ${tier.edge}44` }}
     >
-      {/* ── The card, big ── */}
-      <div className="flex flex-col items-center gap-3 shrink-0 mx-auto sm:mx-0">
-        <PlayerCard card={previewCard} width={260} showTierName />
+      {/* ── The card, as big as the pane allows ──
+          Sized against the viewport on a phone — the narrower of 36% of the
+          width and 24% of the visible height, so a small screen gets a small
+          card instead of a clipped one — and back to a flat 260px from `sm`,
+          where there is room for the portrait to be the point again. The 110px
+          floor is for a phone turned sideways, where a quarter of the height is
+          a thumbnail: that pane scrolls rather than fits, so the card is worth
+          more than the millimetre it costs. */}
+      <div className="flex flex-col items-center gap-2 sm:gap-3 sm:row-span-2 [--card-w:min(36vw,max(24dvh,110px))] sm:[--card-w:260px]">
+        <PlayerCard card={previewCard} width="var(--card-w)" showTierName />
         <div className="text-[10px] text-center" style={{ color: '#555' }}>
           {/* The real name lives here once a nickname has replaced it on the
               face, so renaming a card never loses track of who it is. */}
@@ -182,8 +209,8 @@ export function CardDetail({
         </div>
       </div>
 
-      {/* ── Actions ── */}
-      <div className="flex-1 flex flex-col gap-4 min-w-0">
+      {/* ── The form ── */}
+      <div className="flex flex-col gap-3 sm:gap-4 min-w-0">
         <div>
           <label
             htmlFor="card-nickname"
@@ -220,8 +247,12 @@ export function CardDetail({
             className="w-full text-[11px]"
             style={{ color: '#888' }}
           />
+          {/* The format is the part a member needs before tapping; the rest is
+              reassurance, and reassurance is what a phone pane can afford to
+              drop to stay one pane. */}
           <p className="text-[10px] mt-1" style={{ color: '#444' }}>
-            Resized in your browser before it is sent. JPEG, PNG or WebP.
+            <span className="hidden sm:inline">Resized in your browser before it is sent. </span>
+            JPEG, PNG or WebP.
             {canEarn && ' This card has no photo, so yours is kept permanently.'}
           </p>
         </div>
@@ -267,74 +298,78 @@ export function CardDetail({
 
         {message && <p className="text-[11px]" style={{ color: '#80ff49' }}>{message}</p>}
         {error && <p className="text-[11px]" style={{ color: '#ff6b6b' }}>{error}</p>}
+      </div>
 
-        {/* ── Lineup ── */}
-        <div className="pt-3 mt-1" style={{ borderTop: '1px solid #1e1e20' }}>
-          <div
-            className="text-[10px] uppercase mb-2"
-            style={{ letterSpacing: '0.14em', color: '#666' }}
-          >
-            Lineup
-          </div>
-          {card.retiredWeek !== null ? (
-            // Retired. A card plays one week a season, so there is nothing to
-            // offer here — what it did is more use than a row of dead buttons.
-            <p className="text-[11px]" style={{ color: '#8a8a92' }}>
-              Played week {card.retiredWeek} for{' '}
-              <strong style={{ color: '#e8e6df' }}>{card.retiredPoints.toFixed(1)}</strong>{' '}
-              points. Retired for the season.
-            </p>
-          ) : startedIn ? (
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-[11px]" style={{ color: '#80ff49' }}>
-                Starting at {startedIn.label}
-              </span>
-              <button
-                onClick={() => void onAssign(startedIn.id, null)}
-                disabled={busySlot === startedIn.id}
-                className="text-[11px] underline"
-                style={{ color: '#666' }}
-              >
-                Bench
-              </button>
-            </div>
-          ) : eligible.length === 0 ? (
-            <p className="text-[11px]" style={{ color: '#555' }}>
-              No slot in the lineup takes a {card.position}.
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {eligible.map((slot) => (
-                <button
-                  key={slot.id}
-                  onClick={() => void onAssign(slot.id, card.id)}
-                  disabled={busySlot === slot.id}
-                  className="px-2.5 py-1.5 text-[11px] rounded transition-colors"
-                  style={{
-                    background: '#141416',
-                    border: '1px solid #1e1e20',
-                    color: busySlot === slot.id ? '#444' : '#bdbcb4',
-                  }}
-                >
-                  {/* Naming what is there makes the swap explicit rather than
-                      something the member discovers after the fact. And naming
-                      it the way its owner does: a member who renamed a card
-                      knows it by that name, so "replaces Bus" and not
-                      "replaces Lewis". A surname is the fallback because a
-                      real name has a spare half to drop; a nickname does
-                      not. */}
-                  {slot.label}
-                  {slot.card && (
-                    <span style={{ color: '#555' }}>
-                      {' '}· replaces{' '}
-                      {slot.card.nickname || slot.card.playerName.split(' ').slice(-1)[0]}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
+      {/* ── Lineup ──
+          Both columns on a phone, the form's column from `sm` up. */}
+      <div
+        className="col-span-2 sm:col-span-1 sm:col-start-2 sm:row-start-2 min-w-0 pt-2 sm:pt-3"
+        style={{ borderTop: '1px solid #1e1e20' }}
+      >
+        <div
+          className="text-[10px] uppercase mb-2"
+          style={{ letterSpacing: '0.14em', color: '#666' }}
+        >
+          Lineup
         </div>
+        {card.retiredWeek !== null ? (
+          // Retired. A card plays one week a season, so there is nothing to
+          // offer here — what it did is more use than a row of dead buttons.
+          <p className="text-[11px]" style={{ color: '#8a8a92' }}>
+            Played week {card.retiredWeek} for{' '}
+            <strong style={{ color: '#e8e6df' }}>{card.retiredPoints.toFixed(1)}</strong>{' '}
+            points. Retired for the season.
+          </p>
+        ) : startedIn ? (
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-[11px]" style={{ color: '#80ff49' }}>
+              Starting at {startedIn.label}
+            </span>
+            <button
+              onClick={() => void onAssign(startedIn.id, null)}
+              disabled={busySlot === startedIn.id}
+              className="text-[11px] underline"
+              style={{ color: '#666' }}
+            >
+              Bench
+            </button>
+          </div>
+        ) : eligible.length === 0 ? (
+          <p className="text-[11px]" style={{ color: '#555' }}>
+            No slot in the lineup takes a {card.position}.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {eligible.map((slot) => (
+              <button
+                key={slot.id}
+                onClick={() => void onAssign(slot.id, card.id)}
+                disabled={busySlot === slot.id}
+                className="px-2.5 py-1.5 text-[11px] rounded transition-colors"
+                style={{
+                  background: '#141416',
+                  border: '1px solid #1e1e20',
+                  color: busySlot === slot.id ? '#444' : '#bdbcb4',
+                }}
+              >
+                {/* Naming what is there makes the swap explicit rather than
+                    something the member discovers after the fact. And naming
+                    it the way its owner does: a member who renamed a card
+                    knows it by that name, so "replaces Bus" and not
+                    "replaces Lewis". A surname is the fallback because a
+                    real name has a spare half to drop; a nickname does
+                    not. */}
+                {slot.label}
+                {slot.card && (
+                  <span style={{ color: '#555' }}>
+                    {' '}· replaces{' '}
+                    {slot.card.nickname || slot.card.playerName.split(' ').slice(-1)[0]}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
