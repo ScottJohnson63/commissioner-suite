@@ -1,11 +1,14 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
 import Image from 'next/image';
 import type { TrendingPlayer } from '@/types/trending';
 import { SLEEPER_THUMB } from './shared';
 
 type TickerItem = TrendingPlayer & { rank: number };
+
+/** How many players we lay out at once; the fit measurement hides any that overflow. */
+const WINDOW = 6;
 
 export function TrendingTicker({
   adds,
@@ -26,24 +29,62 @@ export function TrendingTicker({
     return out;
   }, [adds, drops]);
 
-  const PAGE_SIZE = 5;
-  const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
-  const [page, setPage]       = useState(0);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [start, setStart]     = useState(0);
   const [visible, setVisible] = useState(true);
+  // Players that fit end-to-end inside the row. Starts at 1 so the first paint
+  // can never show a sliver of a second player.
+  const [fit, setFit]         = useState(1);
+
+  const slice = useMemo<TickerItem[]>(() => {
+    if (items.length === 0) return [];
+    const count = Math.min(WINDOW, items.length);
+    // start is wrapped here, so a shrinking list can never strand the window.
+    return Array.from({ length: count }, (_, k) => items[(start + k) % items.length]);
+  }, [items, start]);
+
+  /** Count the leading players whose right edge lands inside the row. */
+  const measure = useCallback(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    const rowRight = el.getBoundingClientRect().right;
+    let n = 0;
+    for (const kid of Array.from(el.children) as HTMLElement[]) {
+      // Sub-pixel layout rounding: half a pixel of slack, never a whole player.
+      if (kid.getBoundingClientRect().right > rowRight + 0.5) break;
+      n++;
+    }
+    setFit(Math.max(1, n));
+  }, []);
+
+  useLayoutEffect(() => {
+    measure();
+  }, [measure, slice]);
 
   useEffect(() => {
-    if (items.length <= PAGE_SIZE) return;
+    const el = rowRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measure, loading]);
+
+  // Web fonts land after first paint and change how wide the names are.
+  useEffect(() => {
+    document.fonts?.ready.then(measure).catch(() => {});
+  }, [measure]);
+
+  useEffect(() => {
+    if (items.length <= fit) return;
     const id = setInterval(() => {
       setVisible(false);
       setTimeout(() => {
-        setPage((p) => (p + 1) % pageCount);
+        setStart((s) => (s + fit) % items.length);
         setVisible(true);
       }, 350);
     }, 10000);
     return () => clearInterval(id);
-  }, [items.length, pageCount]);
-
-  const slice = items.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+  }, [items.length, fit]);
 
   return (
     <div
@@ -64,14 +105,16 @@ export function TrendingTicker({
       <div className="w-px h-3.5 shrink-0" style={{ background: '#2a2a2c' }} />
 
       {loading ? (
-        <div className="flex gap-4 flex-1">
+        <div className="flex gap-4 flex-1 min-w-0 overflow-hidden">
           {[80, 96, 72, 88, 64].map((w, i) => (
-            <div key={i} className="h-3.5 rounded animate-pulse"
-              style={{ background: '#1e1e20', width: w }} />
+            <div key={i} className="h-3.5 rounded animate-pulse min-w-0"
+              style={{ background: '#1e1e20', flex: `0 1 ${w}px`, maxWidth: w }} />
           ))}
         </div>
       ) : (
         <div
+          ref={rowRef}
+          data-ticker-row
           className="flex items-center gap-4 flex-1 min-w-0 overflow-hidden"
           style={{ opacity: visible ? 1 : 0, transition: 'opacity 0.35s ease-in-out' }}
         >
@@ -79,8 +122,13 @@ export function TrendingTicker({
             const isAdd = p.type === 'add';
             const accent = isAdd ? '#80ff49' : '#ff6d49';
             return (
-              <div key={`${p.type}-${p.player_id}`}
-                className={`flex items-center gap-1.5 min-w-0 shrink-0${idx >= 3 ? ' hidden sm:flex' : ''}`}>
+              <div key={`${idx}-${p.type}-${p.player_id}`}
+                className="flex items-center gap-1.5 min-w-0 max-w-full shrink-0"
+                // Overflowing players keep their box (so the measurement stays
+                // stable) but are never drawn half-visible.
+                style={{ visibility: idx < fit ? 'visible' : 'hidden' }}
+                aria-hidden={idx < fit ? undefined : true}
+              >
                 <span className="text-[11px] shrink-0 font-bold" style={{ color: accent }}>
                   {isAdd ? '▲' : '▼'}
                 </span>
