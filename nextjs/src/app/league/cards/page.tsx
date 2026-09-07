@@ -86,6 +86,9 @@ export default function CardsPage() {
   // see the Packs tab below. Kept separate from `pack` state inside PackOpener
   // itself, which is why closing this never discards a reveal in progress.
   const [packDialogOpen, setPackDialogOpen] = useState(false);
+  // The week's results behind the "Season" stat, the same idea one tile over:
+  // the number is the button for the thing it summarises.
+  const [seasonDialogOpen, setSeasonDialogOpen] = useState(false);
   // Published results, fetched per week rather than with the collection — see
   // the note at the top. `null` week means "whatever the latest one is", which
   // is what the route answers an absent ?week= with.
@@ -172,14 +175,20 @@ export default function CardsPage() {
     }
   }, []);
 
-  // Fetched the first time the lineup tab is opened, and re-fetched when a new
-  // week is published — `revealedWeeks` growing is what says that has happened.
+  // Fetched the first time the lineup tab is opened or the Season dialog is
+  // and re-fetched when a new week is published — `revealedWeeks` growing is
+  // what says that has happened.
+  //
+  // Opening the dialog re-reads with a null week, which is what makes it open
+  // on the current week however deep into the season's back catalogue the last
+  // visit wandered.
   const revealed = data?.weekly.revealedWeeks.length ?? 0;
+  const wantsResults = tab === 'lineup' || seasonDialogOpen;
   useEffect(() => {
     // Same shape as the fetch-on-mount above, disabled for the same reason.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (tab === 'lineup' && revealed > 0) void loadResults(null);
-  }, [tab, revealed, loadResults]);
+    if (wantsResults && revealed > 0) void loadResults(null);
+  }, [wantsResults, revealed, loadResults]);
 
   const loading = status === 'loading' || (status === 'authenticated' && !settled);
 
@@ -361,7 +370,7 @@ export default function CardsPage() {
             type="button"
             onClick={() => setPackDialogOpen(true)}
             disabled={poolEmpty}
-            className="text-left disabled:cursor-default"
+            className="text-left h-full disabled:cursor-default"
             aria-haspopup="dialog"
           >
             <Stat label="Packs left" value={String(allowance.remaining)} accent
@@ -380,8 +389,19 @@ export default function CardsPage() {
                     ].filter(Boolean).join(' · ')
                   } />
           </button>
-          <Stat label="Season" value={stats.seasonPoints.toFixed(1)}
-                hint={`${stats.started} of ${ROSTER_SIZE} started · wk ${weekly.week}`} />
+          {/* Same bargain as "Packs left": the tile that reports the season is
+              the way into what the season is made of — every published week's
+              reveal, newest first, in a dialog rather than a trip to the
+              lineup tab. */}
+          <button
+            type="button"
+            onClick={() => setSeasonDialogOpen(true)}
+            className="text-left h-full"
+            aria-haspopup="dialog"
+          >
+            <Stat label="Season" value={stats.seasonPoints.toFixed(1)}
+                  hint={`${stats.started} of ${ROSTER_SIZE} started · wk ${weekly.week}`} />
+          </button>
           <Stat
             label="Cards left"
             value={allowance.remainingCards.toLocaleString()}
@@ -458,6 +478,25 @@ export default function CardsPage() {
             />
           </CardsDialog>
         )}
+
+        {/* ── The week's results, behind the Season tile ──
+            The same panel the lineup tab draws, in its dialog variant. Wide
+            enough for the run of played cards to be more than one per row on a
+            laptop, which is the half of the reveal worth opening for. */}
+        <CardsDialog
+          open={seasonDialogOpen}
+          onClose={() => setSeasonDialogOpen(false)}
+          title="Draft Deck · Results"
+          widthClassName="sm:max-w-2xl"
+        >
+          <WeekResults
+            results={results}
+            week={resultsWeek}
+            onWeek={(w) => void loadResults(w)}
+            loading={resultsLoading}
+            variant="dialog"
+          />
+        </CardsDialog>
       </div>
 
       {/* ── Deck ───────────────────────────────────────────────────────────
@@ -693,7 +732,7 @@ function Stat({
 }: { label: string; value: string; hint?: string; accent?: boolean }) {
   return (
     <div
-      className="rounded p-2 sm:p-3 min-w-0"
+      className="rounded p-2 sm:p-3 min-w-0 h-full"
       style={{ background: '#0e0e0f', border: '1px solid #1e1e20' }}
     >
       <div

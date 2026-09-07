@@ -16,6 +16,13 @@
 // best card of the week in front of the league, which is the reason the game
 // has nicknames and photographs at all. Names and pictures come straight off
 // PlayerCard, so a card looks the same here as it does in its owner's deck.
+//
+// Two variants, one panel. On the lineup tab it is a framed panel with the
+// published weeks laid out as a row of buttons — there are at most eighteen,
+// they are the navigation, and seeing how many weeks have been played is worth
+// the width. Inside the Season dialog on the Packs tab that width does not
+// exist and the dialog's own header already says what this is, so the frame
+// comes off and the weeks collapse into a dropdown.
 
 import { useState } from 'react';
 import { PlayerCard } from '@/components/cards/PlayerCard';
@@ -26,22 +33,28 @@ import type { PlayedCardDto, WeekResultsDto } from '@/types/cards';
 const CARDS_SHOWN = 24;
 
 export function WeekResults({
-  results, week, onWeek, loading,
+  results, week, onWeek, loading, variant = 'panel',
 }: {
   results: WeekResultsDto | null;
   /** The week being shown, so the picker stays controlled by the page. */
   week: number | null;
   onWeek: (week: number) => void;
   loading: boolean;
+  /** `dialog` drops the frame and picks weeks from a dropdown — see the note above. */
+  variant?: 'panel' | 'dialog';
 }) {
   const [showAll, setShowAll] = useState(false);
 
+  const inDialog = variant === 'dialog';
   const weeks = results?.weeks ?? [];
   const cards = results?.cards ?? [];
   const shown = showAll ? cards : cards.slice(0, CARDS_SHOWN);
 
   return (
-    <div className="rounded overflow-hidden" style={{ border: '1px solid #1e1e20' }}>
+    <div
+      className="rounded overflow-hidden"
+      style={{ border: inDialog ? 'none' : '1px solid #1e1e20' }}
+    >
       <div
         className="flex flex-wrap items-center gap-2 px-3 py-2"
         style={{ background: '#0e0e0f', borderBottom: '1px solid #1e1e20' }}
@@ -50,28 +63,51 @@ export function WeekResults({
           className="text-[10px] uppercase font-bold"
           style={{ letterSpacing: '0.16em', color: '#444' }}
         >
-          Results
+          {inDialog ? 'Week' : 'Results'}
         </span>
 
-        {/* One button per published week. There are at most eighteen and they
-            are the navigation, so a row of them beats a dropdown — a member can
-            see how many weeks have been played without opening anything. */}
-        <div className="flex flex-wrap gap-1 ml-auto">
-          {weeks.map((w) => (
-            <button
-              key={w}
-              onClick={() => onWeek(w)}
-              className="text-[10px] px-1.5 py-0.5 rounded tabular-nums transition-colors"
-              style={{
-                color: w === week ? '#80ff49' : '#666',
-                background: w === week ? 'rgba(128,255,73,0.08)' : 'transparent',
-                border: `1px solid ${w === week ? '#80ff4955' : '#1e1e20'}`,
-              }}
+        {inDialog ? (
+          /* A dialog is as wide as a phone and no wider, and the weeks are a
+             filter here rather than the panel's navigation — so one control
+             that costs a line beats a row that grows one every week. Newest
+             first: the week a member came to read is the top option. */
+          weeks.length > 0 && (
+            <select
+              aria-label="Week"
+              value={week ?? ''}
+              onChange={(e) => onWeek(Number(e.target.value))}
+              className="text-[11px] rounded px-2 py-1 ml-auto tabular-nums"
+              style={{ background: '#141415', border: '1px solid #2a2a2c', color: '#e8e6df' }}
             >
-              {w}
-            </button>
-          ))}
-        </div>
+              {/* Nothing is selected while the first read is in flight, and a
+                  value with no matching option is an uncontrolled select. */}
+              {week === null && <option value="">Loading…</option>}
+              {[...weeks].reverse().map((w) => (
+                <option key={w} value={w}>Week {w}</option>
+              ))}
+            </select>
+          )
+        ) : (
+          /* One button per published week. There are at most eighteen and they
+             are the navigation, so a row of them beats a dropdown — a member can
+             see how many weeks have been played without opening anything. */
+          <div className="flex flex-wrap gap-1 ml-auto">
+            {weeks.map((w) => (
+              <button
+                key={w}
+                onClick={() => onWeek(w)}
+                className="text-[10px] px-1.5 py-0.5 rounded tabular-nums transition-colors"
+                style={{
+                  color: w === week ? '#80ff49' : '#666',
+                  background: w === week ? 'rgba(128,255,73,0.08)' : 'transparent',
+                  border: `1px solid ${w === week ? '#80ff4955' : '#1e1e20'}`,
+                }}
+              >
+                {w}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {loading ? (

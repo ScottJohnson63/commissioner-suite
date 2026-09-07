@@ -678,6 +678,18 @@ Names and pictures are read live rather than frozen: a member who renames a card
 after the fact renames it everywhere, which is what a nickname is for. Only the
 score is frozen.
 
+The reveal is drawn twice from one component. On the **lineup** tab it is a
+framed panel under the roster, picking its week from a row of buttons — at most
+eighteen of them, and seeing how many weeks have been played is worth the width.
+On the **packs** tab it is behind the **Season** tile: tapping the number that
+reports your season total opens the same panel in a dialog, which is the bargain
+"Packs left" already makes one tile over — the number is the way into the thing
+it summarises. A dialog is phone-wide, so there the weeks collapse into a
+dropdown, newest first.
+
+Opening that dialog re-reads with no `?week=`, so it always opens on the current
+week however far into the back catalogue the last visit wandered.
+
 ---
 
 ## Season reset
