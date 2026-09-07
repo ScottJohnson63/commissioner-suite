@@ -126,11 +126,10 @@ export function TierArt() {
 }
 
 /** The Draft Deck tab bar, with one tab lit. */
-export function DeckTabsArt({ active, showCommissioner }: {
-  active: 'packs' | 'deck' | 'lineup' | 'commissioner';
-  showCommissioner: boolean;
+export function DeckTabsArt({ active }: {
+  active: 'packs' | 'deck' | 'lineup';
 }) {
-  const left = [
+  const tabs = [
     { id: 'packs'  as const, label: 'Packs',  x: 24,  w: 44 },
     { id: 'deck'   as const, label: 'Deck',   x: 80,  w: 38 },
     { id: 'lineup' as const, label: 'Lineup', x: 130, w: 48 },
@@ -140,22 +139,13 @@ export function DeckTabsArt({ active, showCommissioner }: {
       aria-label={`The ${active} tab of Draft Deck`}>
       <text x="24" y="24" fill={INK} fontSize="12" fontWeight="600">Draft Deck</text>
 
-      {left.map((t) => (
+      {tabs.map((t) => (
         <g key={t.id}>
           <text x={t.x} y="52" fill={t.id === active ? INK : DIM} fontSize="11"
             fontWeight={t.id === active ? 600 : 400}>{t.label}</text>
           {t.id === active && <rect x={t.x - 4} y="60" width={t.w} height="2" rx="1" fill={LIME} />}
         </g>
       ))}
-
-      {showCommissioner && (
-        <g>
-          <rect x="204" y="42" width="1" height="14" fill={FAINT} />
-          <text x="216" y="52" fill={active === 'commissioner' ? INK : DIM} fontSize="11"
-            fontWeight={active === 'commissioner' ? 600 : 400}>Commissioner</text>
-          {active === 'commissioner' && <rect x="212" y="60" width="84" height="2" rx="1" fill={LIME} />}
-        </g>
-      )}
 
       <rect x="24" y="61" width="272" height="1" fill={FAINT} />
       <rect x="24" y="74" width="84" height="24" rx="4" fill="#0a0a0b" stroke={FAINT} />
@@ -164,6 +154,44 @@ export function DeckTabsArt({ active, showCommissioner }: {
       <rect x="32" y="83" width="30" height="6" rx="3" fill={LIME} opacity="0.6" />
       <rect x="126" y="83" width="44" height="6" rx="3" fill={DIM} />
       <rect x="220" y="83" width="38" height="6" rx="3" fill={DIM} />
+    </svg>
+  );
+}
+
+/**
+ * The Commissioner page's tab bar, with one tab lit.
+ *
+ * Its own art rather than a variant of DeckTabsArt: this is a different page
+ * with a different title above the bar, and the point of the slide that uses it
+ * is that the controls are somewhere else now.
+ */
+export function CommissionerTabsArt({ active }: {
+  active: 'schedules' | 'divisions' | 'lottery' | 'draft-deck';
+}) {
+  const tabs = [
+    { id: 'schedules'  as const, label: 'Schedules',  x: 24,  w: 62 },
+    { id: 'divisions'  as const, label: 'Divisions',  x: 98,  w: 60 },
+    { id: 'lottery'    as const, label: 'Lottery',    x: 170, w: 48 },
+    { id: 'draft-deck' as const, label: 'Draft Deck', x: 230, w: 66 },
+  ];
+  return (
+    <svg viewBox="0 0 320 110" width="100%" height="110" role="img"
+      aria-label={`The ${active} tab of the Commissioner page`}>
+      <text x="24" y="24" fill={INK} fontSize="12" fontWeight="600">Commissioner</text>
+
+      {tabs.map((t) => (
+        <g key={t.id}>
+          <text x={t.x} y="52" fill={t.id === active ? INK : DIM} fontSize="11"
+            fontWeight={t.id === active ? 600 : 400}>{t.label}</text>
+          {t.id === active && <rect x={t.x - 4} y="60" width={t.w} height="2" rx="1" fill={LIME} />}
+        </g>
+      ))}
+
+      <rect x="24" y="61" width="272" height="1" fill={FAINT} />
+      <rect x="24" y="74" width="130" height="24" rx="4" fill="#0a0a0b" stroke={FAINT} />
+      <rect x="166" y="74" width="130" height="24" rx="4" fill="#0a0a0b" stroke={FAINT} />
+      <rect x="34" y="83" width="52" height="6" rx="3" fill={LIME} opacity="0.6" />
+      <rect x="176" y="83" width="64" height="6" rx="3" fill={DIM} />
     </svg>
   );
 }

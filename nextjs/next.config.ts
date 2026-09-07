@@ -4,6 +4,22 @@ import pkg from "./package.json";
 
 const nextConfig: NextConfig = {
   typedRoutes: true,
+  /**
+   * League Sync and Stats Sync were pages of their own before they became tabs
+   * of /league/commissioner. Nothing in the app links to them any more —
+   * typedRoutes would fail the build if anything did — so this is purely for
+   * bookmarks and anything a commissioner pasted into the league chat.
+   *
+   * Permanent, because the pages are not coming back. The tabs are React state
+   * rather than routes of their own, so both land on the page's first tab; the
+   * bar is right there, which beats a 404.
+   */
+  async redirects() {
+    return [
+      { source: '/league/league-sync', destination: '/league/commissioner', permanent: true },
+      { source: '/league/stats-sync',  destination: '/league/commissioner', permanent: true },
+    ];
+  },
   // The About dialog reports the running version. Reading it from package.json
   // here keeps the number in one place; NEXT_PUBLIC_ is what makes it readable
   // from the client component that renders the dialog.

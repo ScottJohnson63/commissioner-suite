@@ -6,16 +6,12 @@ import { useSession } from 'next-auth/react';
 import { LeagueSelector } from '@/components/LeagueSelector';
 import { useSleeperData } from '@/hooks/useSleeperData';
 import type { TrendingData } from '@/types/trending';
-import type { DbLeague } from '@/types/schedule';
 import { LeagueTab }      from '@/components/dashboard/LeagueTab';
 import { StatisticsTab }  from '@/components/dashboard/StatisticsTab';
 import { NewsTab }        from '@/components/dashboard/NewsTab';
-import { SchedulesTab }   from '@/components/dashboard/SchedulesTab';
-import { DivisionsTab }   from '@/components/dashboard/DivisionsTab';
-import { LotteryTab }     from '@/components/dashboard/LotteryTab';
 import { openAppIntro }   from '@/components/intro/AppIntro';
 
-type Tab = 'league' | 'statistics' | 'news' | 'schedules' | 'divisions' | 'lottery';
+type Tab = 'league' | 'statistics' | 'news';
 
 // The two tabs a signed-out visitor may browse. Everything behind them
 // (/api/nfl/*, /api/news, /api/trending) is unauthenticated already, so this
@@ -33,15 +29,8 @@ export default function LeagueDashboardPage() {
   const [trendingError, setTrendingError]     = useState<string | null>(null);
 
   const { data: session, status } = useSession();
-  const role           = session?.user?.role;
-  const isCommissioner = role === 'COMMISSIONER';
-  const isMember       = role === 'MEMBER' || role === 'COMMISSIONER';
   const isAuthed       = status === 'authenticated';
   const sessionLoading = status === 'loading';
-
-  const [dbLeagues, setDbLeagues] = useState<DbLeague[]>([]);
-  const activeDbLeagueId =
-    dbLeagues.find((l) => l.sleeperLeagueId === activeLeagueId)?.id ?? null;
 
   const fetchTrending = useCallback(async () => {
     setTrendingLoading(true);
@@ -60,43 +49,28 @@ export default function LeagueDashboardPage() {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchTrending(); }, [fetchTrending]);
 
-  useEffect(() => {
-    // /api/leagues is 401 for signed-out visitors, and its error body is an
-    // object — assigning that straight to dbLeagues would break the .find()
-    // below. Skip the call entirely, and still guard the shape.
-    if (!isAuthed) return;
-    void fetch('/api/leagues')
-      .then((r) => (r.ok ? (r.json() as Promise<DbLeague[]>) : null))
-      .then((data) => { if (Array.isArray(data)) setDbLeagues(data); })
-      .catch(() => { /* non-critical */ });
-  }, [isAuthed]);
-
   // League needs a Sleeper account behind it, so it joins the public two only
   // once there is a session.
-  const LEFT_TABS: { id: Tab; label: string }[] = [
+  //
+  // Schedules, Divisions and Lottery used to sit to the right of these, behind
+  // a divider that said "this is administration, not the thing you came for".
+  // They now have a page that says it outright — see /league/commissioner.
+  const TABS: { id: Tab; label: string }[] = [
     ...(isAuthed ? [{ id: 'league' as Tab, label: 'League' }] : []),
     { id: 'statistics', label: 'Statistics' },
     { id: 'news',       label: 'News'       },
   ];
 
-  const MEMBER_TABS: { id: Tab; label: string }[] = [
-    { id: 'schedules', label: 'Schedules' },
-    { id: 'divisions', label: 'Divisions' },
-    { id: 'lottery',   label: 'Lottery'   },
-  ];
-
-  const allTabs = [...LEFT_TABS, ...(isMember ? MEMBER_TABS : [])];
-
   // `tab` defaults to League, which a signed-out visitor cannot see. Falling
   // back to the first visible tab means no separate default per auth state, and
-  // it also catches a member who signs out while sitting on Lottery.
-  const activeTab: Tab = allTabs.some((t) => t.id === tab) ? tab : PUBLIC_TABS[0];
+  // it also catches a member who signs out while sitting on League.
+  const activeTab: Tab = TABS.some((t) => t.id === tab) ? tab : PUBLIC_TABS[0];
 
-  // The mobile bar carries every tab a member has, which is more than a phone
-  // fits, so it scrolls sideways. Two things stop that hiding the tabs off the
-  // right-hand end, which is the failing of a plain scrolling bar: the fade
-  // below shows while there is more to reach, and the active tab is pulled into
-  // view whenever it changes.
+  // The mobile bar scrolls sideways where its tabs do not fit — three of them
+  // do on most phones and not on the narrowest. Two things stop that hiding a
+  // tab off the right-hand end, which is the failing of a plain scrolling bar:
+  // the fade below shows while there is more to reach, and the active tab is
+  // pulled into view whenever it changes.
   const tabRowRef = useRef<HTMLDivElement>(null);
   const [tabsScrollable, setTabsScrollable] = useState(false);
   // Whether the row overflows at all, as against `tabsScrollable`, which is
@@ -123,7 +97,7 @@ export default function LeagueDashboardPage() {
     };
     // Signing in or out changes how many tabs there are, and so whether the row
     // overflows at all.
-  }, [allTabs.length]);
+  }, [TABS.length]);
 
   useEffect(() => {
     tabRowRef.current
@@ -153,6 +127,46 @@ export default function LeagueDashboardPage() {
       </button>
     );
   }
+
+  // A phone puts these two in the corner of the title row and the selector on
+  // a row of its own; a desktop keeps all three together to the title's right.
+  // Defining each once here is what stops the two arrangements drifting apart —
+  // the same reason TabBtn above is shared by both tab bars. Each is rendered
+  // in both places and hidden in one of them, as the tab bars are.
+
+  // Replays the welcome tour. It opens itself on a first visit, so this is here
+  // for everybody after that — including anyone who ticked "Don't show this
+  // again".
+  const howItWorks = (
+    <button
+      onClick={openAppIntro}
+      className="text-[11px] font-medium px-3 py-1.5 rounded transition-colors shrink-0"
+      style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
+    >
+      How it works
+    </button>
+  );
+
+  const sleeperName = sleeperUser?.displayName ?? session?.user?.username;
+  const whoIsSignedIn = sleeperName ? (
+    // `truncate` so a long Sleeper name gives way rather than pushing the pair
+    // off the edge of a narrow phone.
+    <span className="text-xs truncate" style={{ color: '#80ff49' }}>
+      {sleeperName}
+    </span>
+  ) : null;
+
+  // Links to the app's own login page, which has the OAuth buttons and the
+  // commissioner modal. NextAuth's built-in signIn() page has neither.
+  const signIn = (
+    <Link
+      href="/login"
+      className="text-xs px-3 py-1.5 rounded font-medium transition-opacity hover:opacity-80 shrink-0"
+      style={{ background: '#80ff49', color: '#0e0e0f' }}
+    >
+      Sign in
+    </Link>
+  );
 
   return (
     <div className="min-h-full" style={{ color: '#e8e6df' }}>
@@ -185,15 +199,7 @@ export default function LeagueDashboardPage() {
             overscrollBehaviorX: 'contain',
           }}
         >
-          {LEFT_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-          {isMember && (
-            <>
-              {/* The same break the desktop bar makes between what anyone may
-                  read and what running the league needs. */}
-              <div className="w-px my-2 mx-1 shrink-0" style={{ background: '#1e1e20' }} />
-              {MEMBER_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-            </>
-          )}
+          {TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
         </div>
 
         {tabsScrollable && (
@@ -214,67 +220,67 @@ export default function LeagueDashboardPage() {
 
       <div className="px-5 py-6 sm:px-8">
 
-        {/* ── Header ── */}
-        <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
-          <div>
-            <p className="text-[10px] uppercase tracking-widest mb-1" style={{ color: '#555' }}>
-              League Portal
-            </p>
-            <h1 className="text-xl font-semibold">Dashboard</h1>
+        {/* ── Header ──
+            Two fixed rows on a phone, the wrapping row of before from `sm` up.
+            Wrapping made the controls' place depend on how wide they were, and
+            their width is the league name's: a short name left room beside
+            "Dashboard" and the row stayed whole, a long one did not and the
+            controls dropped below the title. So the selector — and the list it
+            opens under itself — moved about as leagues were switched. Its own
+            row cannot fit or not fit, so it holds still. */}
+        <div className="flex flex-col gap-3 mb-5 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+          {/* The title, and on a phone the corner pair alongside it. From `sm`
+              up the corner is empty and this is the plain title block again. */}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest mb-1" style={{ color: '#555' }}>
+                League Portal
+              </p>
+              <h1 className="text-xl font-semibold">Dashboard</h1>
+            </div>
+
+            {/* ── Top right corner — mobile ──
+                Nothing here until the session resolves — swapping a Sign in
+                button for the Sleeper name a moment later reads as a glitch. */}
+            <div className="flex items-center gap-3 min-w-0 sm:hidden">
+              {howItWorks}
+              {sessionLoading ? null : isAuthed ? whoIsSignedIn : signIn}
+            </div>
           </div>
 
-          {/* Nothing here until the session resolves — swapping a Sign in button
-              for the league selector a moment later reads as a glitch. */}
-          <div className="flex items-center gap-3 mt-1">
-            {/* Replays the welcome tour. It opens itself on a first visit, so this
-                is here for everybody after that — including anyone who ticked
-                "Don't show this again". */}
-            <button
-              onClick={openAppIntro}
-              className="text-[11px] font-medium px-3 py-1.5 rounded transition-colors"
-              style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
-            >
-              How it works
-            </button>
+          {/* ── Selector row ──
+              The whole of the phone's second row, and on a desktop the three
+              controls to the right of the title. Signed out there is no
+              selector, so on a phone the row goes with it — its two copies of
+              the corner pair are hidden and an empty row would be a gap under
+              the title. */}
+          <div className={`${isAuthed ? 'flex' : 'hidden'} items-center gap-3 w-full sm:flex sm:w-auto sm:mt-1`}>
+            <div className="hidden sm:block">{howItWorks}</div>
 
             {sessionLoading ? null : isAuthed ? (
               <>
+                {/* The phone's row is the selector alone, so it takes all of it:
+                    `flex-1` makes the control the same box whatever the league
+                    is called — a long name truncates rather than widening it —
+                    and the list it opens is anchored to the page's own gutter.
+                    From `sm` up it is the plain content-sized control it was. */}
                 <LeagueSelector
+                  className="flex-1 min-w-0 sm:flex-none"
                   sleeperUser={sleeperUser}
                   activeLeagueId={activeLeagueId}
                   onSelect={setActiveLeagueId}
                 />
-                {(sleeperUser?.displayName ?? session?.user?.username) && (
-                  <span className="text-xs" style={{ color: '#80ff49' }}>
-                    {sleeperUser?.displayName ?? session?.user?.username}
-                  </span>
-                )}
+                <div className="hidden sm:block">{whoIsSignedIn}</div>
               </>
             ) : (
-              // Links to the app's own login page, which has the OAuth buttons
-              // and the commissioner modal. NextAuth's built-in signIn() page
-              // has neither.
-              <Link
-                href="/login"
-                className="text-xs px-3 py-1.5 rounded font-medium transition-opacity hover:opacity-80"
-                style={{ background: '#80ff49', color: '#0e0e0f' }}
-              >
-                Sign in
-              </Link>
+              <div className="hidden sm:block">{signIn}</div>
             )}
           </div>
       </div>
 
       {/* ── Tab bar — desktop ── */}
       <div className="hidden sm:flex items-stretch border-b mb-6" style={{ borderColor: '#1e1e20' }}>
-        {LEFT_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-        {isMember && (
-          <>
-            <div className="flex-1" />
-            <div className="w-px my-2" style={{ background: '#1e1e20' }} />
-            {MEMBER_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-          </>
-        )}
+        {TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
       </div>
 
       {/* ── Tab content ── */}
@@ -292,22 +298,6 @@ export default function LeagueDashboardPage() {
       )}
 
       {activeTab === 'news' && <NewsTab />}
-
-      {isMember && (
-        <>
-          {/* Keep SchedulesTab always mounted so fetched data survives tab switches */}
-          <div style={{ display: activeTab === 'schedules' ? undefined : 'none' }}>
-            <SchedulesTab
-              activeLeagueId={activeDbLeagueId}
-              sleeperLeagueId={activeLeagueId}
-              refreshKey={0}
-              isCommissioner={isCommissioner}
-            />
-          </div>
-          {activeTab === 'divisions' && <DivisionsTab activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
-          {activeTab === 'lottery'   && <LotteryTab   activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
-        </>
-      )}
 
       {/* ── Attribution ── */}
       <p className="mt-8 text-center text-[11px]" style={{ color: '#80ff49' }}>
