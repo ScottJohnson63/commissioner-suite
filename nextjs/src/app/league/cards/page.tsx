@@ -36,6 +36,7 @@ import { WeeklyPanel } from '@/components/cards/WeeklyPanel';
 import { WeekResults } from '@/components/cards/WeekResults';
 import { CardDetail } from '@/components/cards/CardDetail';
 import { CardsDialog } from '@/components/cards/CardsDialog';
+import { CardsLeftPanel } from '@/components/cards/CardsLeftPanel';
 import { useForceSidebarCollapsed } from '@/components/useSidebarForceCollapse';
 import { PANEL_BG } from '@/components/dashboard/shared';
 import { DraftDeckIntro, openDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
@@ -88,6 +89,9 @@ export default function CardsPage() {
   // see the Packs tab below. Kept separate from `pack` state inside PackOpener
   // itself, which is why closing this never discards a reveal in progress.
   const [packDialogOpen, setPackDialogOpen] = useState(false);
+  // The "Cards left" tile is one number; what it is a number *of* — the pool,
+  // what has been claimed, and whose decks it went into — is behind this.
+  const [cardsLeftDialogOpen, setCardsLeftDialogOpen] = useState(false);
   // Published results, fetched per week rather than with the collection — see
   // the note at the top. `null` week means "whatever the latest one is", which
   // is what the route answers an absent ?week= with.
@@ -388,12 +392,33 @@ export default function CardsPage() {
           </button>
           <Stat label="Season" value={stats.seasonPoints.toFixed(1)}
                 hint={`${stats.started} of ${ROSTER_SIZE} started · wk ${weekly.week}`} />
-          <Stat
-            label="Cards left"
-            value={allowance.remainingCards.toLocaleString()}
-            hint={`of ${allowance.poolSize.toLocaleString()} · ${allowance.members} playing`}
-          />
+          {/* Just the count. What it is out of, and who has taken the rest,
+              is a tap away rather than an unreadable hint line under it — the
+              tile is the question and the dialog is the answer. */}
+          <button
+            type="button"
+            onClick={() => setCardsLeftDialogOpen(true)}
+            className="text-left"
+            aria-haspopup="dialog"
+          >
+            <Stat label="Cards left" value={allowance.remainingCards.toLocaleString()} />
+          </button>
         </div>
+
+        {/* ── The pool, itemised ── */}
+        <CardsDialog
+          open={cardsLeftDialogOpen}
+          onClose={() => setCardsLeftDialogOpen(false)}
+          title="Draft Deck · Cards Left"
+        >
+          <CardsLeftPanel
+            remainingCards={allowance.remainingCards}
+            poolSize={allowance.poolSize}
+            claimed={allowance.claimed}
+            members={allowance.members}
+            entries={standings}
+          />
+        </CardsDialog>
 
         {/* Wildcards found in an earlier pack and never thrown. The opener
             offers a die at the moment it is pulled; this is the safety net for
