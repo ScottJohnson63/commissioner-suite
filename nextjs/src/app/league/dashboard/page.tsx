@@ -154,6 +154,46 @@ export default function LeagueDashboardPage() {
     );
   }
 
+  // A phone puts these two in the corner of the title row and the selector on
+  // a row of its own; a desktop keeps all three together to the title's right.
+  // Defining each once here is what stops the two arrangements drifting apart —
+  // the same reason TabBtn above is shared by both tab bars. Each is rendered
+  // in both places and hidden in one of them, as the tab bars are.
+
+  // Replays the welcome tour. It opens itself on a first visit, so this is here
+  // for everybody after that — including anyone who ticked "Don't show this
+  // again".
+  const howItWorks = (
+    <button
+      onClick={openAppIntro}
+      className="text-[11px] font-medium px-3 py-1.5 rounded transition-colors shrink-0"
+      style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
+    >
+      How it works
+    </button>
+  );
+
+  const sleeperName = sleeperUser?.displayName ?? session?.user?.username;
+  const whoIsSignedIn = sleeperName ? (
+    // `truncate` so a long Sleeper name gives way rather than pushing the pair
+    // off the edge of a narrow phone.
+    <span className="text-xs truncate" style={{ color: '#80ff49' }}>
+      {sleeperName}
+    </span>
+  ) : null;
+
+  // Links to the app's own login page, which has the OAuth buttons and the
+  // commissioner modal. NextAuth's built-in signIn() page has neither.
+  const signIn = (
+    <Link
+      href="/login"
+      className="text-xs px-3 py-1.5 rounded font-medium transition-opacity hover:opacity-80 shrink-0"
+      style={{ background: '#80ff49', color: '#0e0e0f' }}
+    >
+      Sign in
+    </Link>
+  );
+
   return (
     <div className="min-h-full" style={{ color: '#e8e6df' }}>
 
@@ -214,53 +254,60 @@ export default function LeagueDashboardPage() {
 
       <div className="px-5 py-6 sm:px-8">
 
-        {/* ── Header ── */}
-        <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
-          <div>
-            <p className="text-[10px] uppercase tracking-widest mb-1" style={{ color: '#555' }}>
-              League Portal
-            </p>
-            <h1 className="text-xl font-semibold">Dashboard</h1>
+        {/* ── Header ──
+            Two fixed rows on a phone, the wrapping row of before from `sm` up.
+            Wrapping made the controls' place depend on how wide they were, and
+            their width is the league name's: a short name left room beside
+            "Dashboard" and the row stayed whole, a long one did not and the
+            controls dropped below the title. So the selector — and the list it
+            opens under itself — moved about as leagues were switched. Its own
+            row cannot fit or not fit, so it holds still. */}
+        <div className="flex flex-col gap-3 mb-5 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
+          {/* The title, and on a phone the corner pair alongside it. From `sm`
+              up the corner is empty and this is the plain title block again. */}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest mb-1" style={{ color: '#555' }}>
+                League Portal
+              </p>
+              <h1 className="text-xl font-semibold">Dashboard</h1>
+            </div>
+
+            {/* ── Top right corner — mobile ──
+                Nothing here until the session resolves — swapping a Sign in
+                button for the Sleeper name a moment later reads as a glitch. */}
+            <div className="flex items-center gap-3 min-w-0 sm:hidden">
+              {howItWorks}
+              {sessionLoading ? null : isAuthed ? whoIsSignedIn : signIn}
+            </div>
           </div>
 
-          {/* Nothing here until the session resolves — swapping a Sign in button
-              for the league selector a moment later reads as a glitch. */}
-          <div className="flex items-center gap-3 mt-1">
-            {/* Replays the welcome tour. It opens itself on a first visit, so this
-                is here for everybody after that — including anyone who ticked
-                "Don't show this again". */}
-            <button
-              onClick={openAppIntro}
-              className="text-[11px] font-medium px-3 py-1.5 rounded transition-colors"
-              style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
-            >
-              How it works
-            </button>
+          {/* ── Selector row ──
+              The whole of the phone's second row, and on a desktop the three
+              controls to the right of the title. Signed out there is no
+              selector, so on a phone the row goes with it — its two copies of
+              the corner pair are hidden and an empty row would be a gap under
+              the title. */}
+          <div className={`${isAuthed ? 'flex' : 'hidden'} items-center gap-3 w-full sm:flex sm:w-auto sm:mt-1`}>
+            <div className="hidden sm:block">{howItWorks}</div>
 
             {sessionLoading ? null : isAuthed ? (
               <>
+                {/* The phone's row is the selector alone, so it takes all of it:
+                    `flex-1` makes the control the same box whatever the league
+                    is called — a long name truncates rather than widening it —
+                    and the list it opens is anchored to the page's own gutter.
+                    From `sm` up it is the plain content-sized control it was. */}
                 <LeagueSelector
+                  className="flex-1 min-w-0 sm:flex-none"
                   sleeperUser={sleeperUser}
                   activeLeagueId={activeLeagueId}
                   onSelect={setActiveLeagueId}
                 />
-                {(sleeperUser?.displayName ?? session?.user?.username) && (
-                  <span className="text-xs" style={{ color: '#80ff49' }}>
-                    {sleeperUser?.displayName ?? session?.user?.username}
-                  </span>
-                )}
+                <div className="hidden sm:block">{whoIsSignedIn}</div>
               </>
             ) : (
-              // Links to the app's own login page, which has the OAuth buttons
-              // and the commissioner modal. NextAuth's built-in signIn() page
-              // has neither.
-              <Link
-                href="/login"
-                className="text-xs px-3 py-1.5 rounded font-medium transition-opacity hover:opacity-80"
-                style={{ background: '#80ff49', color: '#0e0e0f' }}
-              >
-                Sign in
-              </Link>
+              <div className="hidden sm:block">{signIn}</div>
             )}
           </div>
       </div>
