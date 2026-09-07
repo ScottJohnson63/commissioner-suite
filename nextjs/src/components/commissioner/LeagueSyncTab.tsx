@@ -1,39 +1,41 @@
 'use client';
 
-// /league/league-sync — the per-league half of the external data.
+// The League Sync tab of /league/commissioner — the per-league half of the
+// external data.
 //
 // Which leagues the app knows about at all, and the Sleeper feeds that act on
-// one of them. The NFL-wide nflverse feeds live at /league/stats-sync.
+// one of them. The NFL-wide nflverse feeds are the Stats Sync tab next door.
 //
 // Nothing about the feeds is shown until a league is picked. Every feed here
-// acts on one league, so a page that opened straight onto them would beg the
+// acts on one league, so a tab that opened straight onto them would beg the
 // question "which league is this about?" — and a mis-aimed sync writes real
 // data. Choosing first makes the answer unambiguous.
 //
-// The choice is deliberately not seeded from the saved league: landing on this
-// page with a league already active would be exactly the ambiguity above.
+// The choice is deliberately not seeded from the saved league: opening this tab
+// with a league already active would be exactly the ambiguity above. That is
+// also why the page hides its own league selector here — a selector in the
+// header reading "this one" would undo the whole point of the picker below.
 // Picking here does update the shared selection, so the dashboard follows.
-//
-// Member-gated to match the sidebar link; a PLAYER who types the URL gets an
-// explanation rather than a panel of 401s, since /api/sync/status would reject
-// them anyway.
 
 import { useState } from 'react';
-import Link from 'next/link';
-import { useSession } from 'next-auth/react';
 import { LeagueManager } from '@/components/LeagueManager';
 import { DataSyncPanel } from '@/components/DataSyncPanel';
-import { useSleeperData } from '@/hooks/useSleeperData';
 import { PANEL_BG, INNER_BG } from '@/components/dashboard/shared';
+import type { SleeperUser } from '@/hooks/useSleeperData';
 
-export default function LeagueSyncPage() {
-  const { data: session, status } = useSession();
-  const role = session?.user?.role;
-  const isCommissioner = role === 'COMMISSIONER';
-  const isMember = role === 'MEMBER' || isCommissioner;
-
-  const { sleeperUser, setActiveLeagueId, refresh } = useSleeperData();
-
+export function LeagueSyncTab({
+  isCommissioner,
+  sleeperUser,
+  onActiveLeague,
+  onLeaguesReload,
+}: {
+  isCommissioner: boolean;
+  sleeperUser: SleeperUser | null;
+  /** Keeps the page's shared league selection in step with the pick made here. */
+  onActiveLeague: (sleeperLeagueId: string) => void;
+  /** Re-reads the registered leagues the page and this tab both draw from. */
+  onLeaguesReload: () => void;
+}) {
   // Starts null on every visit — the feeds stay hidden until a card is clicked.
   const [selected, setSelected] = useState<string | null>(null);
 
@@ -42,92 +44,65 @@ export default function LeagueSyncPage() {
 
   function choose(sleeperLeagueId: string) {
     setSelected(sleeperLeagueId);
-    // Keep the dashboard's dropdown in step with what was picked here.
-    setActiveLeagueId(sleeperLeagueId);
+    onActiveLeague(sleeperLeagueId);
   }
 
   /** Re-reads the allowlist and drops a selection that no longer exists. */
   function onLeaguesChanged(stillPresent: (id: string) => boolean) {
-    refresh();
+    onLeaguesReload();
     setSelected((current) => (current && stillPresent(current) ? current : null));
   }
 
   /**
    * A Sleeper sync stores the league's current name, so a league renamed in
    * Sleeper gets a new name in the database the moment its feed runs. Both
-   * lists on this page were read before that, so re-read them — otherwise the
-   * card and the "Syncing …" line keep the old name until a full reload.
+   * lists here were read before that, so re-read them — otherwise the card and
+   * the "Syncing …" line keep the old name until a full reload.
    */
   function onSynced() {
     setReloadKey((k) => k + 1);
-    refresh();
+    onLeaguesReload();
   }
 
   const selectedName =
     sleeperUser?.leagues.find((l) => l.leagueId === selected)?.name ?? null;
 
   return (
-    <div className="min-h-full px-4 py-8 sm:px-8" style={{ color: '#e8e6df' }}>
-      <div className="max-w-3xl mx-auto">
+    <>
+      <p className="text-xs mb-4" style={{ color: '#555' }}>
+        Sleeper data for one league at a time, pulled on a fixed schedule.
+        NFL-wide player stats are in Stats Sync.
+      </p>
 
-        <div className="mb-8">
-          <Link
-            href="/league/dashboard"
-            className="text-[10px] tracking-widest uppercase mb-2 block transition-colors hover:text-[#e8e6df]"
-            style={{ color: '#555' }}
-          >
-            ← Dashboard
-          </Link>
-          <h1 className="text-lg font-medium mb-1">League Sync</h1>
-          <p className="text-xs" style={{ color: '#555' }}>
-            Sleeper data for one league at a time, pulled on a fixed schedule.
-            NFL-wide player stats live in{' '}
-            <Link href="/league/stats-sync" className="underline underline-offset-2">
-              Stats Sync
-            </Link>
-            .
-          </p>
-        </div>
+      {isCommissioner ? (
+        <LeagueManager
+          selectedId={selected}
+          onSelect={choose}
+          onChange={onLeaguesChanged}
+          reloadKey={reloadKey}
+        />
+      ) : (
+        <MemberLeaguePicker
+          leagues={sleeperUser?.leagues ?? []}
+          selectedId={selected}
+          onSelect={choose}
+        />
+      )}
 
-        {/* Waiting on the session, rather than flashing the no-access copy first. */}
-        {status === 'loading' ? null : !isMember ? (
-          <p className="text-xs" style={{ color: '#888' }}>
-            Sync schedules are visible to league members. Ask your commissioner for access.
-          </p>
-        ) : (
-          <>
-            {isCommissioner ? (
-              <LeagueManager
-                selectedId={selected}
-                onSelect={choose}
-                onChange={onLeaguesChanged}
-                reloadKey={reloadKey}
-              />
-            ) : (
-              <MemberLeaguePicker
-                leagues={sleeperUser?.leagues ?? []}
-                selectedId={selected}
-                onSelect={choose}
-              />
-            )}
-
-            {selected ? (
-              <DataSyncPanel
-                isCommissioner={isCommissioner}
-                scope="league"
-                leagueId={selected}
-                leagueName={selectedName}
-                onSynced={onSynced}
-              />
-            ) : (
-              <p className="text-xs rounded-lg p-4" style={{ ...PANEL_BG, color: '#888' }}>
-                Choose a league above to see its Sleeper feeds.
-              </p>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+      {selected ? (
+        <DataSyncPanel
+          isCommissioner={isCommissioner}
+          scope="league"
+          leagueId={selected}
+          leagueName={selectedName}
+          onSynced={onSynced}
+        />
+      ) : (
+        <p className="text-xs rounded-lg p-4" style={{ ...PANEL_BG, color: '#888' }}>
+          Choose a league above to see its Sleeper feeds.
+        </p>
+      )}
+    </>
   );
 }
 

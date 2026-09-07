@@ -7,10 +7,11 @@
 // a page from somebody entitled to it or advertises one they cannot use.
 //
 // Commissioner is the entry these tests exist for. The schedule, the divisions,
-// the lottery and the card pool used to be tabs on two other pages, gated by
-// role inside those pages; they are one page now, and this link is what decides
-// who is told about it. Member-visible and PLAYER-hidden, matching the read
-// access the tabs themselves have always given a member.
+// the lottery and the card pool used to be tabs on two other pages, and the two
+// sync timetables were sidebar entries of their own; they are one page now, and
+// this link is what decides who is told about it. Member-visible and
+// PLAYER-hidden, matching the read access the tabs themselves have always given
+// a member.
 
 import { describe, it, expect, jest } from '@jest/globals';
 import { renderHook } from '@testing-library/react';
@@ -56,13 +57,25 @@ describe('useLeagueNav', () => {
     expect(isMember).toBe(false);
   });
 
-  // WHY: a member reads the schedule, the divisions and the lottery — those are
-  // the league's own record. Hiding the link would take that away, which is the
-  // one thing moving the tabs onto their own page must not do.
+  // WHY: a member reads the schedule, the divisions, the lottery and the sync
+  // timetable — those are the league's own record. Hiding the link would take
+  // that away, which is the one thing moving the tabs onto their own page must
+  // not do.
   it('gives a MEMBER the Commissioner page', () => {
     const { labels, isMember } = navFor('MEMBER');
     expect(labels).toContain('Commissioner');
     expect(isMember).toBe(true);
+  });
+
+  // WHY: League Sync and Stats Sync were entries here until they became tabs of
+  // the Commissioner page. Two navs read this list, so a leftover entry would be
+  // a link to a route that no longer exists — in both of them.
+  it('lists the sync timetables nowhere but the Commissioner page', () => {
+    const { labels } = navFor('COMMISSIONER');
+    expect(labels).toEqual([
+      'Dashboard', 'AI Assistant', 'Draft Deck',
+      'Commissioner', 'Members', 'Activity Log',
+    ]);
   });
 
   it('gives a COMMISSIONER the same nav as a member', () => {

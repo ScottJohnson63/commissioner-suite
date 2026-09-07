@@ -2,21 +2,24 @@
 
 // /league/commissioner — running the league, on one page.
 //
-// These four tabs were scattered: Schedules, Divisions and Lottery sat on the
-// right of the dashboard behind a divider, and the card pool's controls sat on
-// the right of Draft Deck behind another one. Both were the same apology — a
-// page about one thing with administration bolted to the end of its tab bar —
-// and neither told a commissioner where to go to run the league.
+// This was six things in five places. Schedules, Divisions and Lottery sat on
+// the right of the dashboard behind a divider; the card pool's controls sat on
+// the right of Draft Deck behind another one; and League Sync and Stats Sync
+// were whole pages of their own, in the sidebar between the members list and
+// the activity log. Every one of them was administration wearing something
+// else's chrome, and none of them told a commissioner where to go to run the
+// league.
 //
-// So the administration is the page now, and the two pages it came from are
-// each about their one thing again. The dashboard is what your season looks
-// like; Draft Deck is the game. This is the desk you sit at to run either.
+// So the administration is the page now, and the pages it came from are each
+// about their one thing again. The dashboard is what your season looks like;
+// Draft Deck is the game. This is the desk you sit at to run either.
 //
 // Permissions are unchanged, and they are per-tab rather than per-page:
 //
-//   MEMBER       — reads everything here. The schedule, the divisions and the
-//                  lottery results are the league's own record, and a member is
-//                  entitled to them. Every control that writes is disabled.
+//   MEMBER       — reads everything here. The schedule, the divisions, the
+//                  lottery results and the sync timetable are the league's own
+//                  record, and a member is entitled to them. Every control that
+//                  writes is disabled.
 //   COMMISSIONER — the same tabs, with the buttons live.
 //
 // That is why the nav link is member-visible: gating the page on COMMISSIONER
@@ -33,25 +36,40 @@ import { LeagueSelector } from '@/components/LeagueSelector';
 import { useSleeperData } from '@/hooks/useSleeperData';
 import type { DbLeague } from '@/types/schedule';
 import type { PoolResponse } from '@/types/cards';
-import { SchedulesTab } from '@/components/dashboard/SchedulesTab';
-import { DivisionsTab } from '@/components/dashboard/DivisionsTab';
-import { LotteryTab } from '@/components/dashboard/LotteryTab';
+import { SchedulesTab } from '@/components/commissioner/SchedulesTab';
+import { DivisionsTab } from '@/components/commissioner/DivisionsTab';
+import { LotteryTab } from '@/components/commissioner/LotteryTab';
+import { LeagueSyncTab } from '@/components/commissioner/LeagueSyncTab';
+import { StatsSyncTab } from '@/components/commissioner/StatsSyncTab';
 import { CardAdminPanel } from '@/components/cards/CardAdminPanel';
 
-type Tab = 'schedules' | 'divisions' | 'lottery' | 'draft-deck';
+type Tab = 'schedules' | 'divisions' | 'lottery' | 'league-sync' | 'stats-sync' | 'draft-deck';
 
-// Draft Deck is last, and named for the page it administers rather than for
-// what it does — a commissioner looking for the card pool is looking for the
-// game's name, not for "Cards" or "Pool".
+// In three groups, left to right: what the season is made of, where its data
+// comes from, and the game played on top of it. Draft Deck is last and is named
+// for the page it administers rather than for what it does — a commissioner
+// looking for the card pool is looking for the game's name, not for "Cards".
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'schedules',  label: 'Schedules'  },
-  { id: 'divisions',  label: 'Divisions'  },
-  { id: 'lottery',    label: 'Lottery'    },
-  { id: 'draft-deck', label: 'Draft Deck' },
+  { id: 'schedules',   label: 'Schedules'   },
+  { id: 'divisions',   label: 'Divisions'   },
+  { id: 'lottery',     label: 'Lottery'     },
+  { id: 'league-sync', label: 'League Sync' },
+  { id: 'stats-sync',  label: 'Stats Sync'  },
+  { id: 'draft-deck',  label: 'Draft Deck'  },
 ];
 
+// The tabs the header's league selector belongs on: the ones that are about one
+// league and read the shared selection.
+//
+// Stats Sync has no league dimension at all — the nflverse feeds are identical
+// whichever league you are looking at. League Sync has one, but picks it with
+// its own list and deliberately starts that list unpicked, because a sync aimed
+// at the wrong league writes real data; a header selector already reading "this
+// one" would undo exactly that. Draft Deck's pool is NFL-wide.
+const LEAGUE_TABS: Tab[] = ['schedules', 'divisions', 'lottery'];
+
 export default function CommissionerPage() {
-  const { sleeperUser, activeLeagueId, setActiveLeagueId } = useSleeperData();
+  const { sleeperUser, activeLeagueId, setActiveLeagueId, refresh } = useSleeperData();
   const { data: session, status } = useSession();
 
   const role           = session?.user?.role;
@@ -63,6 +81,9 @@ export default function CommissionerPage() {
   const [dbLeagues, setDbLeagues] = useState<DbLeague[]>([]);
   const activeDbLeagueId =
     dbLeagues.find((l) => l.sleeperLeagueId === activeLeagueId)?.id ?? null;
+  // Bumped when League Sync registers or removes one, so the id the other tabs
+  // are working against is re-read rather than left pointing at a stale row.
+  const [leaguesKey, setLeaguesKey] = useState(0);
 
   // The season the card game is being played in, for the Draft Deck tab's reset
   // confirmation. It comes from /api/cards/pool rather than /api/cards/collection
@@ -81,7 +102,7 @@ export default function CommissionerPage() {
       .then((r) => (r.ok ? (r.json() as Promise<DbLeague[]>) : null))
       .then((data) => { if (Array.isArray(data)) setDbLeagues(data); })
       .catch(() => { /* non-critical */ });
-  }, [isMember]);
+  }, [isMember, leaguesKey]);
 
   useEffect(() => {
     if (!isMember) return;
@@ -128,15 +149,16 @@ export default function CommissionerPage() {
             <h1 className="text-xl font-semibold">Commissioner</h1>
             <p className="text-xs mt-1" style={{ color: '#555' }}>
               {isCommissioner
-                ? 'The schedule, the divisions, the draft lottery and the card pool.'
-                : 'The schedule, the divisions, the draft lottery and the card pool — readable here, editable by your commissioner.'}
+                ? 'The schedule, the divisions, the draft lottery, the data feeds and the card pool.'
+                : 'The schedule, the divisions, the draft lottery, the data feeds and the card pool — readable here, editable by your commissioner.'}
             </p>
           </div>
 
-          {/* Three of the four tabs are about one league, so the selector is
-              page chrome rather than something a tab carries. Nothing until the
-              session resolves — swapping it in a moment later reads as a glitch. */}
-          {status !== 'loading' && isMember && (
+          {/* Page chrome rather than something a tab carries, since three tabs
+              share it — but only shown on those three, for the reasons on
+              LEAGUE_TABS above. Nothing until the session resolves either:
+              swapping it in a moment later reads as a glitch. */}
+          {status !== 'loading' && isMember && LEAGUE_TABS.includes(tab) && (
             <div className="mt-1">
               <LeagueSelector
                 sleeperUser={sleeperUser}
@@ -156,7 +178,7 @@ export default function CommissionerPage() {
         ) : (
           <>
             {/* ── Tab bar ──
-                One row on both sizes, scrolling sideways on a phone where four
+                One row on both sizes, scrolling sideways on a phone where six
                 tabs do not fit. No divider and no right-alignment: on this page
                 every tab is administration, so there is nothing to separate it
                 from. */}
@@ -196,6 +218,20 @@ export default function CommissionerPage() {
                 isCommissioner={isCommissioner}
               />
             )}
+
+            {/* Unmounted on a tab switch, and that is the point: its league
+                picker starts unpicked on every visit so a sync is never aimed by
+                a choice somebody has forgotten making. */}
+            {tab === 'league-sync' && (
+              <LeagueSyncTab
+                isCommissioner={isCommissioner}
+                sleeperUser={sleeperUser}
+                onActiveLeague={setActiveLeagueId}
+                onLeaguesReload={() => { refresh(); setLeaguesKey((k) => k + 1); }}
+              />
+            )}
+
+            {tab === 'stats-sync' && <StatsSyncTab isCommissioner={isCommissioner} />}
 
             {tab === 'draft-deck' && (
               isCommissioner ? (

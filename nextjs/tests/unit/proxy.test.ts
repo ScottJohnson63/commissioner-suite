@@ -39,8 +39,7 @@ describe('proxy', () => {
     // WHY: These are the pages the dashboard's own tab gating does not cover.
     //      If the proxy lets them through, hiding the tabs achieves nothing.
     it.each([
-      '/league/league-sync',
-      '/league/stats-sync',
+      '/league/commissioner',
       '/league/members',
       '/league/log',
       '/league/ai',
@@ -87,7 +86,7 @@ describe('proxy', () => {
       expect(redirectedTo(await proxy(request('/auth/connect-sleeper')))).toBeNull();
     });
 
-    it.each(['/league/dashboard', '/league/league-sync', '/login', '/'])(
+    it.each(['/league/dashboard', '/league/commissioner', '/login', '/'])(
       'redirects %s to the connect page',
       async (path) => {
         expect(redirectedTo(await proxy(request(path)))).toBe('/auth/connect-sleeper');
@@ -106,7 +105,7 @@ describe('proxy', () => {
       expect(redirectedTo(await proxy(request(path)))).toBe('/league/dashboard');
     });
 
-    it.each(['/league/dashboard', '/league/league-sync', '/league/stats-sync', '/league/members'])(
+    it.each(['/league/dashboard', '/league/commissioner', '/league/cards', '/league/members'])(
       'allows %s',
       async (path) => {
         expect(redirectedTo(await proxy(request(path)))).toBeNull();
