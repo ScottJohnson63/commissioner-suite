@@ -3,11 +3,10 @@
 // The tour a member gets the first time they land anywhere in the league
 // portal: what the three dashboard tabs are for, and where the card game is.
 //
-// Scope is deliberate. The Schedules, Divisions and Lottery tabs on the right
-// of the dashboard are commissioner plumbing and are not on the tour — the
-// right-hand side of that bar is administration, and a member who needs it is
-// not the member being introduced to the app. The tour ends by pointing at
-// Draft Deck, which then explains itself — see DraftDeckIntro.
+// Scope is deliberate. Schedules, Divisions and Lottery are commissioner
+// plumbing and are not on the tour — they have their own page now, and a member
+// who needs it is not the member being introduced to the app. The tour ends by
+// pointing at Draft Deck, which then explains itself — see DraftDeckIntro.
 
 'use client';
 

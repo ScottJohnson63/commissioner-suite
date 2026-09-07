@@ -683,8 +683,9 @@ score is frozen.
 ## Season reset
 
 Everything a member owns is scoped to `gameSeason`, which tracks `NFL_SEASON`.
-A commissioner clears a season from the panel at the bottom of `/league/cards`,
-which requires typing the year back before the button enables.
+A commissioner clears a season from the Draft Deck tab of
+`/league/commissioner`, which requires typing the year back before the button
+enables.
 
 The reset clears decks, grants, openings, lineups and submitted weeks — which
 also releases every claimed card back into the pool for the new season, and
@@ -793,7 +794,8 @@ Two ways to run it:
 npx tsx prisma/rebuild-pool.ts
 ```
 
-from `nextjs/`, or the rebuild button on `/league/cards` under Commissioner.
+from `nextjs/`, or the rebuild button on the Draft Deck tab of
+`/league/commissioner`.
 Both call the same `rebuildCardPool`. The CLI form prints the tier counts before
 and after and checks for orphaned ownerships, which is worth having when the
 rebuild follows a band change rather than a routine stat sync.

@@ -2,12 +2,15 @@
 
 // /league/cards — Draft Deck.
 //
-// Four tabs over one fetch: Packs is where cards come from, Deck is what you
-// have, Lineup is the week you are playing, and Commissioner is the pool behind
-// all of it. It was a single scroll — the ration, the opener, the rank card,
-// the lineup, the standings, the grid and an admin panel, in that order — which
-// meant opening a pack and looking something up in your deck were the same
-// page-length journey.
+// Three tabs over one fetch: Packs is where cards come from, Deck is what you
+// have, and Lineup is the week you are playing. It was a single scroll — the
+// ration, the opener, the rank card, the lineup, the standings, the grid and an
+// admin panel, in that order — which meant opening a pack and looking something
+// up in your deck were the same page-length journey.
+//
+// The pool behind all of it was a fourth tab here, right-aligned and
+// commissioner-only. It is now the Draft Deck tab of /league/commissioner,
+// alongside the rest of running the league — this page is the game.
 //
 // The results of a published week are the one thing not on the collection
 // fetch. They are a league-wide read of every lineup rather than a member's own
@@ -30,7 +33,6 @@ import { RosterPanel } from '@/components/cards/RosterPanel';
 import { RankCard } from '@/components/cards/RankCard';
 import { Standings } from '@/components/cards/Standings';
 import { BonusBanner } from '@/components/cards/BonusBanner';
-import { CardAdminPanel } from '@/components/cards/CardAdminPanel';
 import { PendingWildcards } from '@/components/cards/WildcardReveal';
 import { WeeklyPanel } from '@/components/cards/WeeklyPanel';
 import { WeekResults } from '@/components/cards/WeekResults';
@@ -46,8 +48,8 @@ import type {
   RosterUpdateResponse, WeekResultsDto, WildcardResponse,
 } from '@/types/cards';
 
-/** The tabs, in bar order. Commissioner is right-aligned and gated on role. */
-type Tab = 'packs' | 'deck' | 'lineup' | 'commissioner';
+/** The tabs, in bar order. */
+type Tab = 'packs' | 'deck' | 'lineup';
 
 /**
  * Lineup is its own tab rather than a panel inside Deck.
@@ -57,14 +59,10 @@ type Tab = 'packs' | 'deck' | 'lineup' | 'commissioner';
  * scroll meant the thing that decides your standing sat under the thing you
  * only look at, and every lineup change was a scroll past the whole collection.
  */
-const LEFT_TABS: { id: Tab; label: string }[] = [
+const TABS: { id: Tab; label: string }[] = [
   { id: 'packs',  label: 'Packs' },
   { id: 'deck',   label: 'Deck' },
   { id: 'lineup', label: 'Lineup' },
-];
-
-const RIGHT_TABS: { id: Tab; label: string }[] = [
-  { id: 'commissioner', label: 'Commissioner' },
 ];
 
 export default function CardsPage() {
@@ -78,7 +76,7 @@ export default function CardsPage() {
   // from inside the effect — a synchronous setState that cascades a re-render.
   // Deriving it below keeps the effect to just the fetch.
   const [settled, setSettled] = useState(false);
-  const [rawTab, setRawTab] = useState<Tab>('packs');
+  const [tab, setTabState] = useState<Tab>('packs');
   // The card open in the detail panel, by id rather than by value: the deck is
   // re-read after every save, so holding the object would pin a stale copy.
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -100,16 +98,12 @@ export default function CardsPage() {
   // estate that row wants before any of that starts truncating. Only takes
   // effect on a narrow viewport; a member with the sidebar pinned open on a
   // wide screen keeps it.
-  useForceSidebarCollapsed(rawTab === 'lineup');
+  useForceSidebarCollapsed(tab === 'lineup');
 
-  // Derived rather than stored, so a member who loses the commissioner role
-  // mid-session falls back to Packs instead of staring at a tab that is no
-  // longer in the bar. Guarding only on setRawTab would leave the old value in
-  // place and render nothing.
-  const tab: Tab = rawTab === 'commissioner' && !isCommissioner ? 'packs' : rawTab;
-
+  // Wrapped rather than passed straight to the bar: every tab change also
+  // closes the phone's tab menu.
   const setTab = useCallback((next: Tab) => {
-    setRawTab(next);
+    setTabState(next);
     setMenuOpen(false);
   }, []);
 
@@ -344,7 +338,7 @@ export default function CardsPage() {
     <Shell
       tab={tab}
       onTab={setTab}
-      showCommissioner={isCommissioner}
+      isCommissioner={isCommissioner}
       menuOpen={menuOpen}
       onMenu={setMenuOpen}
       menuRef={menuRef}
@@ -556,11 +550,6 @@ export default function CardsPage() {
           {standings.length > 1 && <Standings entries={standings} />}
         </>
       )}
-
-      {/* ── Commissioner ── */}
-      {tab === 'commissioner' && isCommissioner && (
-        <CardAdminPanel gameSeason={allowance.gameSeason} onChanged={() => void load()} />
-      )}
     </Shell>
   );
 }
@@ -569,11 +558,7 @@ export default function CardsPage() {
  * Page chrome and the tab bar.
  *
  * The bar copies the league dashboard's: same button metrics, same 2px active
- * underline sitting on the container's own border, and Commissioner pushed to
- * the right by a flex spacer and a hairline divider. Right-alignment is the
- * dashboard's convention for "this is administration, not the thing you came
- * for", and repeating it here means it reads as the same idea rather than a
- * fourth thing to learn.
+ * underline sitting on the container's own border.
  *
  * Every state of the page renders inside this — loading, signed out, error —
  * so the header does not appear and disappear as the fetch settles. The bar
@@ -581,18 +566,18 @@ export default function CardsPage() {
  * rather than read from a context.
  */
 function Shell({
-  children, tab, onTab, showCommissioner, menuOpen, onMenu, menuRef,
+  children, tab, onTab, isCommissioner, menuOpen, onMenu, menuRef,
 }: {
   children: React.ReactNode;
   tab?: Tab;
   onTab?: (t: Tab) => void;
-  showCommissioner?: boolean;
+  /** Only the tour reads this now — see the extra slide in DraftDeckIntro. */
+  isCommissioner?: boolean;
   menuOpen?: boolean;
   onMenu?: (open: boolean) => void;
   menuRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   const tabbed = tab !== undefined && onTab !== undefined;
-  const visible = [...LEFT_TABS, ...(showCommissioner ? RIGHT_TABS : [])];
 
   const TabBtn = ({ id, label }: { id: Tab; label: string }) => (
     <button
@@ -645,19 +630,12 @@ function Shell({
               className="hidden sm:flex items-stretch border-b mb-6"
               style={{ borderColor: '#1e1e20' }}
             >
-              {LEFT_TABS.map((t) => <TabBtn key={t.id} {...t} />)}
-              {showCommissioner && (
-                <>
-                  <div className="flex-1" />
-                  <div className="w-px my-2" style={{ background: '#1e1e20' }} />
-                  {RIGHT_TABS.map((t) => <TabBtn key={t.id} {...t} />)}
-                </>
-              )}
+              {TABS.map((t) => <TabBtn key={t.id} {...t} />)}
             </div>
 
             {/* ── Tab bar — mobile ──
-                A bar that scrolls sideways hides the right-hand tab, which is
-                the one that is hardest to guess at. A menu shows all of them. */}
+                A menu rather than a row, so no tab can end up off the right of
+                a narrow screen where nobody would think to look for it. */}
             <div
               ref={menuRef}
               className="flex sm:hidden relative border-b mb-6"
@@ -670,7 +648,7 @@ function Shell({
                 className="px-4 py-2.5 text-sm font-medium flex items-center gap-2"
                 style={{ color: '#e8e6df' }}
               >
-                {visible.find((t) => t.id === tab)?.label ?? 'Packs'}
+                {TABS.find((t) => t.id === tab)?.label ?? 'Packs'}
                 <span style={{ color: '#555', fontSize: 10 }}>▾</span>
               </button>
 
@@ -680,7 +658,7 @@ function Shell({
                   className="absolute top-full left-0 z-50 min-w-[160px] rounded-lg overflow-hidden shadow-lg mt-1"
                   style={{ background: '#141415', border: '1px solid #1e1e20' }}
                 >
-                  {visible.map(({ id, label }) => (
+                  {TABS.map(({ id, label }) => (
                     <button
                       key={id}
                       role="menuitem"
@@ -705,7 +683,7 @@ function Shell({
 
       {/* Rendered from the shell so the tour is available in every state of the
           page — loading, signed out and errored included. */}
-      <DraftDeckIntro isCommissioner={showCommissioner ?? false} />
+      <DraftDeckIntro isCommissioner={isCommissioner ?? false} />
     </div>
   );
 }
