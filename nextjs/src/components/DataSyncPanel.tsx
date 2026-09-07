@@ -3,8 +3,8 @@
 // Shows every external data feed: what it pulls, when it last ran, and when it
 // runs next. Commissioners also get a per-feed "Sync now" button.
 //
-// The pages at /league/league-sync and /league/stats-sync own the heading and
-// the explanatory copy, so this component renders only the feed list.
+// The League Sync and Stats Sync tabs of /league/commissioner own the heading
+// and the explanatory copy, so this component renders only the feed list.
 
 import { useState, useEffect, useCallback } from 'react';
 import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton } from '@/components/dashboard/shared';

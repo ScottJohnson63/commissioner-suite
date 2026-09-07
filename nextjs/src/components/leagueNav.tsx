@@ -33,13 +33,22 @@ const AUTHED_NAV: NavItem[] = [
   { label: 'Draft Deck', href: '/league/cards', icon: <CardsIcon /> },
 ];
 
-// League Sync, Stats Sync, Members and Activity Log are member-only; a PLAYER
-// sees just the base nav.
+// Commissioner, Members and Activity Log are member-only; a PLAYER sees just
+// the base nav.
+//
+// Commissioner is the page the league is actually run from — the schedule, the
+// divisions, the draft lottery, both sync timetables and the card pool. It is
+// member-visible rather than commissioner-only because every one of those tabs
+// is readable by a member and executable only by a commissioner; hiding the
+// link would hide the standings a member is entitled to read.
+//
+// League Sync and Stats Sync were entries of their own here. They are tabs of
+// that page now — running the league is one job, and it had been split across
+// three sidebar entries and two other pages' tab bars.
 const MEMBER_NAV: NavItem[] = [
-  { label: 'League Sync',  href: '/league/league-sync', icon: <SyncIcon />   },
-  { label: 'Stats Sync',   href: '/league/stats-sync',  icon: <StatsIcon />  },
-  { label: 'Members',      href: '/league/members',     icon: <PeopleIcon /> },
-  { label: 'Activity Log', href: '/league/log',         icon: <LogIcon />    },
+  { label: 'Commissioner', href: '/league/commissioner', icon: <GavelIcon />  },
+  { label: 'Members',      href: '/league/members',      icon: <PeopleIcon /> },
+  { label: 'Activity Log', href: '/league/log',          icon: <LogIcon />    },
 ];
 
 /**
@@ -93,19 +102,13 @@ export function CardsIcon() {
   );
 }
 
-export function StatsIcon() {
+export function GavelIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
-      <path d="M2 13V9M6 13V4M10 13V7M14 13V2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-export function SyncIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
-      <path d="M13 7.5a5.5 5.5 0 01-9.4 3.9M2 7.5a5.5 5.5 0 019.4-3.9" />
-      <path d="M11.5 1v3h-3M3.5 14v-3h3" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.5 6.5l4-4M4.5 8.5l4-4" strokeLinecap="round" />
+      <rect x="5.4" y="1.6" width="5.6" height="3.2" rx="1" transform="rotate(45 8.2 3.2)" />
+      <path d="M6.5 7.5L11 12a1.4 1.4 0 002-2L8.5 5.5" strokeLinejoin="round" />
+      <path d="M1 13.5h6" strokeLinecap="round" />
     </svg>
   );
 }

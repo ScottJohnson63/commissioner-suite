@@ -17,7 +17,7 @@
 'use client';
 
 import { IntroCarousel, IntroList, IntroTerm, type IntroSlide } from './IntroCarousel';
-import { CardsArt, TierArt, DeckTabsArt } from './IntroArt';
+import { CardsArt, TierArt, DeckTabsArt, CommissionerTabsArt } from './IntroArt';
 import { requestIntro, useIntro } from './useIntro';
 import {
   CARDS_PER_PACK, TIER_MAX_RANK, WILDCARD_PULL_CHANCE,
@@ -109,7 +109,7 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
       key: 'packs',
       eyebrow: 'Draft Deck · Tab 1',
       title: 'Packs',
-      art: <DeckTabsArt active="packs" showCommissioner={isCommissioner} />,
+      art: <DeckTabsArt active="packs" />,
       body: (
         <>
           <p>
@@ -140,7 +140,7 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
       key: 'deck',
       eyebrow: 'Draft Deck · Tab 2',
       title: 'Deck',
-      art: <DeckTabsArt active="deck" showCommissioner={isCommissioner} />,
+      art: <DeckTabsArt active="deck" />,
       body: (
         <>
           <p>Everything you own, and the decisions you make with it.</p>
@@ -164,7 +164,7 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
       key: 'lineup',
       eyebrow: 'Draft Deck · Tab 3',
       title: 'Lineup — the week',
-      art: <DeckTabsArt active="lineup" showCommissioner={isCommissioner} />,
+      art: <DeckTabsArt active="lineup" />,
       body: (
         <>
           <p>
@@ -193,15 +193,17 @@ export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) 
     ...(isCommissioner
       ? [{
           key: 'commissioner',
-          eyebrow: 'Draft Deck · Tab 4',
+          eyebrow: 'Commissioner · Draft Deck',
           title: 'Commissioner',
-          art: <DeckTabsArt active="commissioner" showCommissioner />,
+          art: <CommissionerTabsArt active="draft-deck" />,
           body: (
             <>
               <p>
-                Yours only, and right-aligned in the bar for the same reason the
-                dashboard&apos;s member tabs are: this is administration, not the thing
-                you came for.
+                The pool everybody draws from is not run from here. It is the
+                <IntroTerm> Draft Deck</IntroTerm> tab of the
+                <IntroTerm> Commissioner</IntroTerm> page, in the sidebar with the
+                schedule, the divisions and the lottery — running the league is one
+                job in one place, and this page is the game.
               </p>
               <IntroList
                 items={[

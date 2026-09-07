@@ -6,16 +6,12 @@ import { useSession } from 'next-auth/react';
 import { LeagueSelector } from '@/components/LeagueSelector';
 import { useSleeperData } from '@/hooks/useSleeperData';
 import type { TrendingData } from '@/types/trending';
-import type { DbLeague } from '@/types/schedule';
 import { LeagueTab }      from '@/components/dashboard/LeagueTab';
 import { StatisticsTab }  from '@/components/dashboard/StatisticsTab';
 import { NewsTab }        from '@/components/dashboard/NewsTab';
-import { SchedulesTab }   from '@/components/dashboard/SchedulesTab';
-import { DivisionsTab }   from '@/components/dashboard/DivisionsTab';
-import { LotteryTab }     from '@/components/dashboard/LotteryTab';
 import { openAppIntro }   from '@/components/intro/AppIntro';
 
-type Tab = 'league' | 'statistics' | 'news' | 'schedules' | 'divisions' | 'lottery';
+type Tab = 'league' | 'statistics' | 'news';
 
 // The two tabs a signed-out visitor may browse. Everything behind them
 // (/api/nfl/*, /api/news, /api/trending) is unauthenticated already, so this
@@ -33,15 +29,8 @@ export default function LeagueDashboardPage() {
   const [trendingError, setTrendingError]     = useState<string | null>(null);
 
   const { data: session, status } = useSession();
-  const role           = session?.user?.role;
-  const isCommissioner = role === 'COMMISSIONER';
-  const isMember       = role === 'MEMBER' || role === 'COMMISSIONER';
   const isAuthed       = status === 'authenticated';
   const sessionLoading = status === 'loading';
-
-  const [dbLeagues, setDbLeagues] = useState<DbLeague[]>([]);
-  const activeDbLeagueId =
-    dbLeagues.find((l) => l.sleeperLeagueId === activeLeagueId)?.id ?? null;
 
   const fetchTrending = useCallback(async () => {
     setTrendingLoading(true);
@@ -60,43 +49,28 @@ export default function LeagueDashboardPage() {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchTrending(); }, [fetchTrending]);
 
-  useEffect(() => {
-    // /api/leagues is 401 for signed-out visitors, and its error body is an
-    // object — assigning that straight to dbLeagues would break the .find()
-    // below. Skip the call entirely, and still guard the shape.
-    if (!isAuthed) return;
-    void fetch('/api/leagues')
-      .then((r) => (r.ok ? (r.json() as Promise<DbLeague[]>) : null))
-      .then((data) => { if (Array.isArray(data)) setDbLeagues(data); })
-      .catch(() => { /* non-critical */ });
-  }, [isAuthed]);
-
   // League needs a Sleeper account behind it, so it joins the public two only
   // once there is a session.
-  const LEFT_TABS: { id: Tab; label: string }[] = [
+  //
+  // Schedules, Divisions and Lottery used to sit to the right of these, behind
+  // a divider that said "this is administration, not the thing you came for".
+  // They now have a page that says it outright — see /league/commissioner.
+  const TABS: { id: Tab; label: string }[] = [
     ...(isAuthed ? [{ id: 'league' as Tab, label: 'League' }] : []),
     { id: 'statistics', label: 'Statistics' },
     { id: 'news',       label: 'News'       },
   ];
 
-  const MEMBER_TABS: { id: Tab; label: string }[] = [
-    { id: 'schedules', label: 'Schedules' },
-    { id: 'divisions', label: 'Divisions' },
-    { id: 'lottery',   label: 'Lottery'   },
-  ];
-
-  const allTabs = [...LEFT_TABS, ...(isMember ? MEMBER_TABS : [])];
-
   // `tab` defaults to League, which a signed-out visitor cannot see. Falling
   // back to the first visible tab means no separate default per auth state, and
-  // it also catches a member who signs out while sitting on Lottery.
-  const activeTab: Tab = allTabs.some((t) => t.id === tab) ? tab : PUBLIC_TABS[0];
+  // it also catches a member who signs out while sitting on League.
+  const activeTab: Tab = TABS.some((t) => t.id === tab) ? tab : PUBLIC_TABS[0];
 
-  // The mobile bar carries every tab a member has, which is more than a phone
-  // fits, so it scrolls sideways. Two things stop that hiding the tabs off the
-  // right-hand end, which is the failing of a plain scrolling bar: the fade
-  // below shows while there is more to reach, and the active tab is pulled into
-  // view whenever it changes.
+  // The mobile bar scrolls sideways where its tabs do not fit — three of them
+  // do on most phones and not on the narrowest. Two things stop that hiding a
+  // tab off the right-hand end, which is the failing of a plain scrolling bar:
+  // the fade below shows while there is more to reach, and the active tab is
+  // pulled into view whenever it changes.
   const tabRowRef = useRef<HTMLDivElement>(null);
   const [tabsScrollable, setTabsScrollable] = useState(false);
   // Whether the row overflows at all, as against `tabsScrollable`, which is
@@ -123,7 +97,7 @@ export default function LeagueDashboardPage() {
     };
     // Signing in or out changes how many tabs there are, and so whether the row
     // overflows at all.
-  }, [allTabs.length]);
+  }, [TABS.length]);
 
   useEffect(() => {
     tabRowRef.current
@@ -225,15 +199,7 @@ export default function LeagueDashboardPage() {
             overscrollBehaviorX: 'contain',
           }}
         >
-          {LEFT_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-          {isMember && (
-            <>
-              {/* The same break the desktop bar makes between what anyone may
-                  read and what running the league needs. */}
-              <div className="w-px my-2 mx-1 shrink-0" style={{ background: '#1e1e20' }} />
-              {MEMBER_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-            </>
-          )}
+          {TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
         </div>
 
         {tabsScrollable && (
@@ -314,14 +280,7 @@ export default function LeagueDashboardPage() {
 
       {/* ── Tab bar — desktop ── */}
       <div className="hidden sm:flex items-stretch border-b mb-6" style={{ borderColor: '#1e1e20' }}>
-        {LEFT_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-        {isMember && (
-          <>
-            <div className="flex-1" />
-            <div className="w-px my-2" style={{ background: '#1e1e20' }} />
-            {MEMBER_TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
-          </>
-        )}
+        {TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
       </div>
 
       {/* ── Tab content ── */}
@@ -339,22 +298,6 @@ export default function LeagueDashboardPage() {
       )}
 
       {activeTab === 'news' && <NewsTab />}
-
-      {isMember && (
-        <>
-          {/* Keep SchedulesTab always mounted so fetched data survives tab switches */}
-          <div style={{ display: activeTab === 'schedules' ? undefined : 'none' }}>
-            <SchedulesTab
-              activeLeagueId={activeDbLeagueId}
-              sleeperLeagueId={activeLeagueId}
-              refreshKey={0}
-              isCommissioner={isCommissioner}
-            />
-          </div>
-          {activeTab === 'divisions' && <DivisionsTab activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
-          {activeTab === 'lottery'   && <LotteryTab   activeLeagueId={activeDbLeagueId} sleeperLeagueId={activeLeagueId} isCommissioner={isCommissioner} />}
-        </>
-      )}
 
       {/* ── Attribution ── */}
       <p className="mt-8 text-center text-[11px]" style={{ color: '#80ff49' }}>

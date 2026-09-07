@@ -16,7 +16,7 @@ import { requireCommissioner, requireUser } from '@/lib/apiAuth';
 import { writeAuditLog } from '@/lib/audit';
 import { prisma } from '@/lib/prisma';
 import { availableSeasons, rebuildCardPool } from '@/lib/cards/pool';
-import { currentAllowance } from '@/lib/cards/allowance';
+import { currentAllowance, gameSeason } from '@/lib/cards/allowance';
 import { invalidatePoolCache } from '@/lib/cards/service';
 
 export async function GET(): Promise<NextResponse> {
@@ -31,6 +31,10 @@ export async function GET(): Promise<NextResponse> {
     ]);
 
     return ok({
+      // The season the game is being played in. The commissioner page reads it
+      // from here rather than paying for a whole collection fetch just to put
+      // a year in the reset confirmation.
+      gameSeason: gameSeason(),
       poolSize,
       perWeek,
       seasons,
