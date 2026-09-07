@@ -214,8 +214,15 @@ export default function LeagueDashboardPage() {
 
       <div className="px-5 py-6 sm:px-8">
 
-        {/* ── Header ── */}
-        <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
+        {/* ── Header ──
+            Two fixed rows on a phone, the wrapping row of before from `sm` up.
+            Wrapping made the controls' place depend on how wide they were, and
+            their width is the league name's: a short name left room beside
+            "Dashboard" and the row stayed whole, a long one did not and the
+            controls dropped below the title. So the selector — and the list it
+            opens under itself — moved about as leagues were switched. Its own
+            row cannot fit or not fit, so it holds still. */}
+        <div className="flex flex-col gap-3 mb-5 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
           <div>
             <p className="text-[10px] uppercase tracking-widest mb-1" style={{ color: '#555' }}>
               League Portal
@@ -225,13 +232,13 @@ export default function LeagueDashboardPage() {
 
           {/* Nothing here until the session resolves — swapping a Sign in button
               for the league selector a moment later reads as a glitch. */}
-          <div className="flex items-center gap-3 mt-1">
+          <div className="flex items-center gap-3 w-full sm:w-auto sm:mt-1">
             {/* Replays the welcome tour. It opens itself on a first visit, so this
                 is here for everybody after that — including anyone who ticked
                 "Don't show this again". */}
             <button
               onClick={openAppIntro}
-              className="text-[11px] font-medium px-3 py-1.5 rounded transition-colors"
+              className="text-[11px] font-medium px-3 py-1.5 rounded transition-colors shrink-0"
               style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
             >
               How it works
@@ -239,13 +246,19 @@ export default function LeagueDashboardPage() {
 
             {sessionLoading ? null : isAuthed ? (
               <>
+                {/* Leftmost on a phone, so the list it drops opens from the
+                    page's own gutter and has the whole width to sit in, and
+                    `flex-1` so the control is the same box whatever the league
+                    is called — a long name truncates rather than widening it.
+                    From `sm` up it is the plain content-sized control it was. */}
                 <LeagueSelector
+                  className="order-first flex-1 min-w-0 sm:order-none sm:flex-none"
                   sleeperUser={sleeperUser}
                   activeLeagueId={activeLeagueId}
                   onSelect={setActiveLeagueId}
                 />
                 {(sleeperUser?.displayName ?? session?.user?.username) && (
-                  <span className="text-xs" style={{ color: '#80ff49' }}>
+                  <span className="text-xs truncate" style={{ color: '#80ff49' }}>
                     {sleeperUser?.displayName ?? session?.user?.username}
                   </span>
                 )}

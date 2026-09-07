@@ -14,9 +14,15 @@ interface Props {
   sleeperUser:    SleeperUser | null;
   activeLeagueId: string | null;
   onSelect:       (id: string) => void;
+  /**
+   * Extra classes for the control's root. The dashboard's phone header uses it
+   * to give the control a place and a width of its own in that row; left off,
+   * the control is sized by its contents as it always was.
+   */
+  className?:     string;
 }
 
-export function LeagueSelector({ sleeperUser, activeLeagueId, onSelect }: Props) {
+export function LeagueSelector({ sleeperUser, activeLeagueId, onSelect, className }: Props) {
   const [open, setOpen] = useState(false);
 
   const active = sleeperUser?.leagues.find((l) => l.leagueId === activeLeagueId)
@@ -31,10 +37,10 @@ export function LeagueSelector({ sleeperUser, activeLeagueId, onSelect }: Props)
   }
 
   return (
-    <div className="relative">
+    <div className={className ? `relative ${className}` : 'relative'}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 text-xs px-2.5 py-1.5 rounded border transition-colors"
+        className="flex items-center gap-2 w-full text-xs px-2.5 py-1.5 rounded border transition-colors"
         style={{
           background:   '#141415',
           borderColor:  active ? '#2a2a2c' : '#2a2a2c',
@@ -50,7 +56,11 @@ export function LeagueSelector({ sleeperUser, activeLeagueId, onSelect }: Props)
         <span className="truncate max-w-[160px]">
           {active ? active.name : (sleeperUser ? 'No leagues' : 'Loading…')}
         </span>
-        <svg width="8" height="5" viewBox="0 0 8 5" fill="none" className="shrink-0">
+        {/* `ml-auto` only bites where the button has been given a width of
+            its own — the dashboard's phone row — and there it keeps the
+            chevron on the right edge instead of trailing a short league name.
+            A button sized by its contents has no free space for it to take. */}
+        <svg width="8" height="5" viewBox="0 0 8 5" fill="none" className="shrink-0 ml-auto">
           <path
             d={open ? 'M1 4l3-3 3 3' : 'M1 1l3 3 3-3'}
             stroke="currentColor"
@@ -63,7 +73,10 @@ export function LeagueSelector({ sleeperUser, activeLeagueId, onSelect }: Props)
 
       {open && (
         <div
-          className="absolute left-0 top-9 z-50 rounded-xl shadow-xl flex flex-col overflow-hidden"
+          // The list is as wide as the longest league name in it, which on a
+          // phone is wider than the screen. The cap is the page's own gutters,
+          // and the names truncate inside it rather than running off the edge.
+          className="absolute left-0 top-9 z-50 rounded-xl shadow-xl flex flex-col overflow-hidden max-w-[calc(100vw-2.5rem)]"
           style={{
             background:  '#141415',
             border:      '1px solid #2a2a2c',
