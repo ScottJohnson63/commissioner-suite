@@ -24,7 +24,7 @@
 // person, so there is no public view to degrade to — a signed-out visitor gets
 // an explanation rather than an empty grid.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { PackOpener } from '@/components/cards/PackOpener';
@@ -32,13 +32,12 @@ import { DeckGrid } from '@/components/cards/DeckGrid';
 import { RosterPanel } from '@/components/cards/RosterPanel';
 import { RankCard } from '@/components/cards/RankCard';
 import { Standings } from '@/components/cards/Standings';
-import { BonusBanner } from '@/components/cards/BonusBanner';
 import { PendingWildcards } from '@/components/cards/WildcardReveal';
 import { WeeklyPanel } from '@/components/cards/WeeklyPanel';
 import { WeekResults } from '@/components/cards/WeekResults';
+import { CardsLeftPanel } from '@/components/cards/CardsLeftPanel';
 import { CardDetail } from '@/components/cards/CardDetail';
 import { CardsDialog } from '@/components/cards/CardsDialog';
-import { CardsLeftPanel } from '@/components/cards/CardsLeftPanel';
 import { useForceSidebarCollapsed } from '@/components/useSidebarForceCollapse';
 import { PANEL_BG } from '@/components/dashboard/shared';
 import { DraftDeckIntro, openDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
@@ -77,12 +76,10 @@ export default function CardsPage() {
   // from inside the effect — a synchronous setState that cascades a re-render.
   // Deriving it below keeps the effect to just the fetch.
   const [settled, setSettled] = useState(false);
-  const [tab, setTabState] = useState<Tab>('packs');
+  const [tab, setTab] = useState<Tab>('packs');
   // The card open in the detail panel, by id rather than by value: the deck is
   // re-read after every save, so holding the object would pin a stale copy.
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
   // The pack opener lives behind a dialog opened from the "Packs left" stat —
   // see the Packs tab below. Kept separate from `pack` state inside PackOpener
   // itself, which is why closing this never discards a reveal in progress.
@@ -107,23 +104,6 @@ export default function CardsPage() {
   // effect on a narrow viewport; a member with the sidebar pinned open on a
   // wide screen keeps it.
   useForceSidebarCollapsed(tab === 'lineup');
-
-  // Wrapped rather than passed straight to the bar: every tab change also
-  // closes the phone's tab menu.
-  const setTab = useCallback((next: Tab) => {
-    setTabState(next);
-    setMenuOpen(false);
-  }, []);
-
-  // Close the mobile menu on any click outside it.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [menuOpen]);
 
   /**
    * One request, not two.
@@ -336,7 +316,7 @@ export default function CardsPage() {
     );
   }
 
-  const { allowance, stats, cards, roster, standings, bonus, weekly, seasons } = data;
+  const { allowance, stats, cards, roster, standings, weekly, seasons } = data;
   const poolEmpty = allowance.poolSize === 0;
 
   // Resolved from the freshly-read deck rather than stored, so the panel shows
@@ -349,25 +329,22 @@ export default function CardsPage() {
   const rewardsRemaining = Math.max(0, MAX_CUSTOMIZATION_PACKS - finished);
 
   return (
-    <Shell
-      tab={tab}
-      onTab={setTab}
-      isCommissioner={isCommissioner}
-      menuOpen={menuOpen}
-      onMenu={setMenuOpen}
-      menuRef={menuRef}
-    >
+    <Shell tab={tab} onTab={setTab} isCommissioner={isCommissioner}>
       {/* ── Packs ──────────────────────────────────────────────────────────
           Kept mounted rather than unmounted on a tab switch: the opener holds
           a torn pack and a half-turned reveal in local state, and looking
           something up in the deck mid-pack should not throw the pack away. */}
       <div style={{ display: tab === 'packs' ? undefined : 'none' }}>
         {/* ── This week's ration ──
-            Three tiles in one row even on the smallest current iPhone: the
-            grid is a fixed three columns rather than auto-fit, so it never
-            wraps, and Stat shrinks its own type at the sm breakpoint instead
-            of the tiles reflowing. */}
-        <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-6">
+            Draft Packs on a row of its own, above the pair.
+
+            The three were one row of equal tiles, which said they were three
+            statistics. They are not: two report the season and the pool, and
+            the third is how you play — the sealed pack is behind it. It now
+            gets the width and the size that says so, and the row under it is
+            the two readouts, side by side on the smallest current iPhone
+            without wrapping. */}
+        <div className="flex justify-center mb-2 sm:mb-3">
           {/* The pack itself stays off-screen until this is tapped — see the
               dialog below. The card doubles as that button, so opening a pack
               starts from the same number that says how many you have. */}
@@ -375,26 +352,24 @@ export default function CardsPage() {
             type="button"
             onClick={() => setPackDialogOpen(true)}
             disabled={poolEmpty}
-            className="text-left h-full disabled:cursor-default"
+            className="w-full max-w-[15rem] disabled:cursor-default"
             aria-haspopup="dialog"
           >
-            <Stat label="Packs left" value={String(allowance.remaining)} accent
+            <Stat label="Draft Packs" value={String(allowance.remaining)} accent center
                   hint={
-                    // Before the ration starts, say when it starts. "2 a week"
-                    // beside a week-1 deck reads as two packs waiting, and
-                    // there are none — week 1 is the starter grant and
-                    // nothing else.
-                    [
-                      allowance.starterRemaining > 0
-                        ? `${allowance.starterRemaining} starter`
-                        : null,
-                      allowance.week < allowance.rationStartsWeek
-                        ? `${allowance.perWeek} a week from week ${allowance.rationStartsWeek}`
-                        : `${allowance.perWeek} a week`,
-                    ].filter(Boolean).join(' · ')
+                    // The ration is the tour's to explain. Spelling it out here
+                    // — "2 a week", or "2 a week from week 2" before it starts
+                    // — read as packs waiting to be opened, right under the
+                    // number saying how many actually are. Starter packs stay,
+                    // because those are a supply in hand rather than a rule.
+                    allowance.starterRemaining > 0
+                      ? `${allowance.starterRemaining} starter`
+                      : undefined
                   } />
           </button>
-          {/* Same bargain as "Packs left": the tile that reports the season is
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-6">
+          {/* Same bargain as "Draft Packs": the tile that reports the season is
               the way into what the season is made of — every published week's
               reveal, newest first, in a dialog rather than a trip to the
               lineup tab. */}
@@ -443,11 +418,6 @@ export default function CardsPage() {
           </div>
         )}
 
-        {/* ── What Sleeper earned you this week ── */}
-        <div className="mb-6">
-          <BonusBanner bonus={bonus} remaining={allowance.bonusRemaining} />
-        </div>
-
         {/* ── Opener, in place on the page ──
             Nothing to tear open, so there is nothing worth hiding behind a
             dialog for it — the pool being empty is a commissioner problem,
@@ -465,7 +435,7 @@ export default function CardsPage() {
           </p>
         ) : (
           <p className="text-xs text-center py-6" style={{ color: '#555' }}>
-            Tap <span style={{ color: '#80ff49' }}>Packs left</span> above to open one.
+            Tap <span style={{ color: '#80ff49' }}>Draft Packs</span> above to open one.
           </p>
         )}
 
@@ -626,7 +596,14 @@ export default function CardsPage() {
  * Page chrome and the tab bar.
  *
  * The bar copies the league dashboard's: same button metrics, same 2px active
- * underline sitting on the container's own border.
+ * underline sitting on the container's own border — and, on a phone, the same
+ * place. The tabs are what you come here to switch, so they sit at the very top
+ * of the screen and stay there as the page scrolls, rather than under a title
+ * and a back link that cost a phone its first screenful before the game starts.
+ *
+ * They were a dropdown on a phone, which hid two of three tabs behind a tap and
+ * gave Packs, Deck and Lineup no presence at all. Three short labels fit across
+ * the narrowest phone in use, so there is nothing to hide.
  *
  * Every state of the page renders inside this — loading, signed out, error —
  * so the header does not appear and disappear as the fetch settles. The bar
@@ -634,23 +611,22 @@ export default function CardsPage() {
  * rather than read from a context.
  */
 function Shell({
-  children, tab, onTab, isCommissioner, menuOpen, onMenu, menuRef,
+  children, tab, onTab, isCommissioner,
 }: {
   children: React.ReactNode;
   tab?: Tab;
   onTab?: (t: Tab) => void;
   /** Only the tour reads this now — see the extra slide in DraftDeckIntro. */
   isCommissioner?: boolean;
-  menuOpen?: boolean;
-  onMenu?: (open: boolean) => void;
-  menuRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   const tabbed = tab !== undefined && onTab !== undefined;
 
+  // One definition for both bars, so the phone's tabs cannot drift from the
+  // desktop's — the same arrangement the dashboard uses.
   const TabBtn = ({ id, label }: { id: Tab; label: string }) => (
     <button
       onClick={() => onTab?.(id)}
-      className="px-4 py-2.5 text-sm font-medium transition-colors"
+      className="px-4 py-2.5 text-sm font-medium transition-colors shrink-0 whitespace-nowrap"
       style={{
         color: tab === id ? '#e8e6df' : '#555',
         borderBottom: `2px solid ${tab === id ? '#80ff49' : 'transparent'}`,
@@ -662,91 +638,72 @@ function Shell({
   );
 
   return (
-    <div className="min-h-full px-4 py-8 sm:px-8" style={{ color: '#e8e6df' }}>
-      <div className="max-w-5xl mx-auto">
-        <div className="mb-8 flex items-start justify-between gap-4">
-          <div>
-            <Link
-              href="/league/dashboard"
-              className="text-[10px] tracking-widest uppercase mb-2 block transition-colors hover:text-[#e8e6df]"
-              style={{ color: '#555' }}
+    <div className="min-h-full" style={{ color: '#e8e6df' }}>
+      {/* ── Tab bar — mobile ──
+          Pinned to the top of `main`, which is the pane that scrolls — see the
+          note in league/layout.tsx for why the shell around it has to be sized
+          in `dvh` for that to hold still on a phone. */}
+      {tabbed && (
+        <div
+          className="sm:hidden sticky top-0 z-30 border-b"
+          style={{
+            borderColor: '#1e1e20',
+            background: 'rgba(14,14,15,0.95)',
+            backdropFilter: 'blur(8px)',
+          }}
+        >
+          <div className="flex items-stretch px-1">
+            {TABS.map((t) => <TabBtn key={t.id} {...t} />)}
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 py-6 sm:px-8 sm:py-8">
+        <div className="max-w-5xl mx-auto">
+          <div className="mb-6 sm:mb-8 flex items-start justify-between gap-4">
+            <div>
+              {/* Desktop only. A phone reaches the dashboard from the nav it
+                  already has, and the link was sitting where the tabs now are —
+                  the top of the screen, which on a phone is the whole budget. */}
+              <Link
+                href="/league/dashboard"
+                className="hidden sm:block text-[10px] tracking-widest uppercase mb-2 transition-colors hover:text-[#e8e6df]"
+                style={{ color: '#555' }}
+              >
+                ← Dashboard
+              </Link>
+              <h1 className="text-xl font-semibold">Draft Deck</h1>
+              <p className="text-xs mt-1" style={{ color: '#555' }}>
+                Build your deck. Win your legacy.
+              </p>
+            </div>
+
+            {/* The rules, on demand. The same carousel opens itself on a first
+                visit and on a sidebar click; this is the way back to it for
+                somebody who dismissed it for good. */}
+            <button
+              onClick={openDraftDeckIntro}
+              className="text-[11px] font-medium px-3 py-1.5 rounded shrink-0 transition-colors"
+              style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
             >
-              ← Dashboard
-            </Link>
-            <h1 className="text-xl font-semibold">Draft Deck</h1>
-            <p className="text-xs mt-1" style={{ color: '#555' }}>
-              Collect every player from every season the league has played.
-            </p>
+              How it works
+            </button>
           </div>
 
-          {/* The rules, on demand. The same carousel opens itself on a first
-              visit and on a sidebar click; this is the way back to it for
-              somebody who dismissed it for good. */}
-          <button
-            onClick={openDraftDeckIntro}
-            className="text-[11px] font-medium px-3 py-1.5 rounded shrink-0 transition-colors"
-            style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
-          >
-            How it works
-          </button>
-        </div>
-
-        {tabbed && (
-          <>
-            {/* ── Tab bar — desktop ── */}
+          {/* ── Tab bar — desktop ──
+              A wide screen has room for the title above the tabs, so they stay
+              where they were rather than following the phone's to the top. */}
+          {tabbed && (
             <div
               className="hidden sm:flex items-stretch border-b mb-6"
               style={{ borderColor: '#1e1e20' }}
             >
               {TABS.map((t) => <TabBtn key={t.id} {...t} />)}
             </div>
+          )}
 
-            {/* ── Tab bar — mobile ──
-                A menu rather than a row, so no tab can end up off the right of
-                a narrow screen where nobody would think to look for it. */}
-            <div
-              ref={menuRef}
-              className="flex sm:hidden relative border-b mb-6"
-              style={{ borderColor: '#1e1e20' }}
-            >
-              <button
-                onClick={() => onMenu?.(!menuOpen)}
-                aria-expanded={menuOpen}
-                aria-haspopup="menu"
-                className="px-4 py-2.5 text-sm font-medium flex items-center gap-2"
-                style={{ color: '#e8e6df' }}
-              >
-                {TABS.find((t) => t.id === tab)?.label ?? 'Packs'}
-                <span style={{ color: '#555', fontSize: 10 }}>▾</span>
-              </button>
-
-              {menuOpen && (
-                <div
-                  role="menu"
-                  className="absolute top-full left-0 z-50 min-w-[160px] rounded-lg overflow-hidden shadow-lg mt-1"
-                  style={{ background: '#141415', border: '1px solid #1e1e20' }}
-                >
-                  {TABS.map(({ id, label }) => (
-                    <button
-                      key={id}
-                      role="menuitem"
-                      onClick={() => onTab?.(id)}
-                      className="block w-full text-left px-4 py-2.5 text-sm transition-colors"
-                      style={{
-                        color: tab === id ? '#80ff49' : '#999',
-                        background: tab === id ? 'rgba(128,255,73,0.08)' : 'transparent',
-                      }}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        )}
-
-        {children}
+          {children}
+        </div>
       </div>
 
       {/* Rendered from the shell so the tour is available in every state of the
@@ -757,12 +714,25 @@ function Shell({
 }
 
 function Stat({
-  label, value, hint, accent,
-}: { label: string; value: string; hint?: string; accent?: boolean }) {
+  label, value, hint, accent, center,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  accent?: boolean;
+  /**
+   * The hero treatment: centered and a size up.
+   *
+   * Only Draft Packs wears it. It is the tile the game starts from — the pack
+   * itself is behind it — and on a row of three identical tiles it read as one
+   * statistic among three rather than as the button it is.
+   */
+  center?: boolean;
+}) {
   return (
     <div
-      className="rounded p-2 sm:p-3 min-w-0 h-full"
-      style={{ background: '#0e0e0f', border: '1px solid #1e1e20' }}
+      className={`rounded min-w-0 h-full ${center ? 'p-3 sm:p-4 text-center' : 'p-2 sm:p-3'}`}
+      style={{ background: '#0e0e0f', border: `1px solid ${center && accent ? 'rgba(128,255,73,0.28)' : '#1e1e20'}` }}
     >
       <div
         className="text-[8px] sm:text-[10px] uppercase mb-1 sm:mb-1.5 truncate"
@@ -771,7 +741,7 @@ function Stat({
         {label}
       </div>
       <div
-        className="text-sm sm:text-lg font-bold truncate"
+        className={`font-bold truncate ${center ? 'text-2xl sm:text-3xl' : 'text-sm sm:text-lg'}`}
         style={{ color: accent ? '#80ff49' : '#e8e6df' }}
       >
         {value}
