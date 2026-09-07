@@ -91,7 +91,7 @@ async function renderPage(body: CollectionResponse = collection()) {
 }
 
 describe('Draft Deck page chrome', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => { jest.clearAllMocks(); });
 
   // WHY: the tabs are the page's navigation, and on a phone they were a
   //      dropdown that showed one of three. A row is what makes Deck and
@@ -125,7 +125,7 @@ describe('Draft Deck page chrome', () => {
 });
 
 describe('Draft Deck packs tiles', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => { jest.clearAllMocks(); });
 
   // WHY: the tile is the button the pack comes out of, and the rename is what
   //      says so. The ration line under it read as packs waiting to be opened
