@@ -38,6 +38,7 @@ import { WeeklyPanel } from '@/components/cards/WeeklyPanel';
 import { WeekResults } from '@/components/cards/WeekResults';
 import { CardDetail } from '@/components/cards/CardDetail';
 import { CardsDialog } from '@/components/cards/CardsDialog';
+import { CardsLeftPanel } from '@/components/cards/CardsLeftPanel';
 import { useForceSidebarCollapsed } from '@/components/useSidebarForceCollapse';
 import { PANEL_BG } from '@/components/dashboard/shared';
 import { DraftDeckIntro, openDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
@@ -89,6 +90,10 @@ export default function CardsPage() {
   // The week's results behind the "Season" stat, the same idea one tile over:
   // the number is the button for the thing it summarises.
   const [seasonDialogOpen, setSeasonDialogOpen] = useState(false);
+  // And the third tile the same way: "Cards left" is one number, and what it is
+  // a number *of* — the pool, what has been claimed, and whose decks it went
+  // into — is behind this.
+  const [cardsLeftDialogOpen, setCardsLeftDialogOpen] = useState(false);
   // Published results, fetched per week rather than with the collection — see
   // the note at the top. `null` week means "whatever the latest one is", which
   // is what the route answers an absent ?week= with.
@@ -402,11 +407,18 @@ export default function CardsPage() {
             <Stat label="Season" value={stats.seasonPoints.toFixed(1)}
                   hint={`${stats.started} of ${ROSTER_SIZE} started · wk ${weekly.week}`} />
           </button>
-          <Stat
-            label="Cards left"
-            value={allowance.remainingCards.toLocaleString()}
-            hint={`of ${allowance.poolSize.toLocaleString()} · ${allowance.members} playing`}
-          />
+          {/* And the third: just the count. What it is out of, and who has
+              taken the rest, is a tap away rather than an unreadable hint line
+              under it — the tile is the question and the dialog is the
+              answer. */}
+          <button
+            type="button"
+            onClick={() => setCardsLeftDialogOpen(true)}
+            className="text-left h-full"
+            aria-haspopup="dialog"
+          >
+            <Stat label="Cards left" value={allowance.remainingCards.toLocaleString()} />
+          </button>
         </div>
 
         {/* Wildcards found in an earlier pack and never thrown. The opener
@@ -495,6 +507,23 @@ export default function CardsPage() {
             onWeek={(w) => void loadResults(w)}
             loading={resultsLoading}
             variant="dialog"
+          />
+        </CardsDialog>
+
+        {/* ── The pool, itemised, behind the Cards left tile ──
+            The third tile's dialog, and the one that needs the least room:
+            a headline count and a row per member at the default width. */}
+        <CardsDialog
+          open={cardsLeftDialogOpen}
+          onClose={() => setCardsLeftDialogOpen(false)}
+          title="Draft Deck · Cards Left"
+        >
+          <CardsLeftPanel
+            remainingCards={allowance.remainingCards}
+            poolSize={allowance.poolSize}
+            claimed={allowance.claimed}
+            members={allowance.members}
+            entries={standings}
           />
         </CardsDialog>
       </div>
