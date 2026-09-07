@@ -22,13 +22,13 @@ import { prisma } from '@/lib/prisma';
 import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
 import type { SleeperMatchupRaw, SleeperRoster } from '@/lib/sleeper/types';
 import { RouteCache } from '@/lib/cache';
+import { BONUS_KINDS, HIGH_SCORE_THRESHOLD, type BonusKind } from '@/lib/cards/ration';
 
-/** Points a member must beat in a single league to earn the high-score pack. */
-export const HIGH_SCORE_THRESHOLD = 100;
-
-/** The two ways to earn a bonus pack. */
-export const BONUS_KINDS = ['WIN', 'HIGH_SCORE'] as const;
-export type BonusKind = (typeof BONUS_KINDS)[number];
+// The two tunables live in ration.ts, which imports no Prisma, so the Draft
+// Deck tour can state the threshold rather than retype it — see the note there.
+// Re-exported because this is where every caller already looks for them.
+export { BONUS_KINDS, HIGH_SCORE_THRESHOLD } from '@/lib/cards/ration';
+export type { BonusKind } from '@/lib/cards/ration';
 
 /** What a member earned, and the league that earned it. */
 export interface BonusAward {

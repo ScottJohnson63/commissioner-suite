@@ -39,12 +39,39 @@
 /** The zone every deadline in this game is stated in. */
 export const GAME_TIME_ZONE = 'America/Chicago';
 
+/** The zone as a member reads it, for prose rather than for arithmetic. */
+export const GAME_TIME_ZONE_LABEL = 'central';
+
 /** Lineups lock at the end of Monday — 23:59:59.999 central. */
 export const LOCK_HOUR = 23;
 export const LOCK_MINUTE = 59;
 
 /** Results are published the next morning at 10:00 central. */
 export const REVEAL_HOUR = 10;
+
+/**
+ * The weekday each deadline falls on, for prose.
+ *
+ * Not configurable and not arithmetic: lockDay is Labor Day plus whole weeks,
+ * so it is always a Monday, and the reveal is the morning after it. Named here
+ * anyway so that the Draft Deck tour reads its weekdays from the module that
+ * decides them instead of asserting them from memory — the same reason the
+ * hours below are exported. See issue #43.
+ */
+export const LOCK_DAY_LABEL = 'Monday';
+export const REVEAL_DAY_LABEL = 'Tuesday';
+
+/**
+ * A deadline hour as a member would say it out loud — "11:59pm", "10am".
+ *
+ * Drops the minutes when they are zero, because "10am" is how a person states
+ * a time on the hour and "10:00am" reads like a timetable.
+ */
+export function clockLabel(hour: number, minute = 0): string {
+  const suffix = hour < 12 ? 'am' : 'pm';
+  const h = hour % 12 === 0 ? 12 : hour % 12;
+  return minute === 0 ? `${h}${suffix}` : `${h}:${String(minute).padStart(2, '0')}${suffix}`;
+}
 
 /**
  * The last week the game is played.

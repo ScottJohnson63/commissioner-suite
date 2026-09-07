@@ -11,7 +11,8 @@
 import { describe, it, expect } from '@jest/globals';
 import {
   ROSTER_SLOTS, ROSTER_SIZE, ROSTER_SLOT_IDS, FLEX_POSITIONS,
-  findSlot, slotAccepts, layoutRoster, rosterPointsPerGame, deckAveragePointsPerGame,
+  findSlot, slotAccepts, layoutRoster, lineupShape, rosterPointsPerGame,
+  deckAveragePointsPerGame,
   type RosterScorable,
 } from '@/lib/cards/roster';
 
@@ -159,5 +160,25 @@ describe('deckAveragePointsPerGame()', () => {
     const deck = [{ pointsPerGame: 20 }, { pointsPerGame: 20 }];
     expect(deckAveragePointsPerGame([...deck, { pointsPerGame: 2 }]))
       .toBeLessThan(deckAveragePointsPerGame(deck));
+  });
+});
+
+// The Draft Deck tour describes the lineup out of this rather than from memory,
+// which is what stops the explanation drifting from the array — see issue #43.
+describe('lineupShape', () => {
+  it('counts every slot exactly once, in lineup order', () => {
+    const shape = lineupShape();
+    expect(shape.reduce((n, g) => n + g.count, 0)).toBe(ROSTER_SIZE);
+    expect(shape.map((g) => g.label)).toEqual([...new Set(ROSTER_SLOTS.map((s) => s.label))]);
+  });
+
+  it('groups the runs of repeated slots', () => {
+    expect(lineupShape()).toEqual([
+      { label: 'QB',   count: 1 },
+      { label: 'RB',   count: 2 },
+      { label: 'WR',   count: 2 },
+      { label: 'TE',   count: 1 },
+      { label: 'FLEX', count: 3 },
+    ]);
   });
 });

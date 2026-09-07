@@ -36,6 +36,20 @@ export const ELIGIBLE_POSITIONS = ['QB', 'RB', 'WR', 'TE'] as const;
 export type EligiblePosition = (typeof ELIGIBLE_POSITIONS)[number];
 
 /**
+ * What each position is called in prose, plural and lower case.
+ *
+ * Here so that the Draft Deck tour can name the positions that get a card by
+ * walking ELIGIBLE_POSITIONS rather than by listing them again in a sentence.
+ * Adding a position to the list above is then one edit, not two.
+ */
+export const POSITION_LABEL: Record<EligiblePosition, string> = {
+  QB: 'quarterbacks',
+  RB: 'running backs',
+  WR: 'wide receivers',
+  TE: 'tight ends',
+};
+
+/**
  * Highest season-finish rank that still earns each tier, walked in TIER_ORDER.
  *
  * Ranks 1–5 are Hall of Fame, 6–10 Gold, 11–30 Silver, and everyone else
