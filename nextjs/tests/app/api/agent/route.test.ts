@@ -409,6 +409,68 @@ describe('POST /api/agent', () => {
     delete process.env.GEMINI_API_KEY;
   });
 
+  // WHY: The budget defers Groq, it does not veto it. Skipping a request that
+  //      will probably 429 is worth doing while another provider might answer;
+  //      refusing to make it when nothing else can is not. The first version of
+  //      this got it backwards, and a bad Gemini key produced no answer at all
+  //      with a healthy Groq key sitting right there — reported from a live
+  //      deployment as "Every AI provider failed" with an invalid Gemini key
+  //      and an over-budget Groq skip as the only two reasons.
+  it('sends an over-budget prompt to Groq anyway when nothing else can answer', async () => {
+    process.env.GROQ_API_KEY   = 'test-groq-key';
+    process.env.GEMINI_API_KEY = 'bad-key';
+    process.env.AGENT_GROQ_TPM = '10';   // Any real prompt is over this.
+
+    mockSendMessageStream.mockRejectedValueOnce(new Error('[400 Bad Request] API key not valid.'));
+    mockGroqCreate
+      .mockResolvedValueOnce(pass1Response)      // Pass 1
+      .mockResolvedValueOnce(fakeGroqStream());  // Pass 2, over budget but tried
+    setupContextMocks();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Model-Used')).toBe('groq');
+    expect(await res.text()).toBe('Great pick! Start him.');
+
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  // WHY: When the deferred attempt fails too, the reader needs both reasons —
+  //      the invalid key AND the size — not just whichever came last.
+  it('names every reason when the over-budget retry also fails', async () => {
+    process.env.GROQ_API_KEY   = 'test-groq-key';
+    process.env.GEMINI_API_KEY = 'bad-key';
+    process.env.AGENT_GROQ_TPM = '10';
+
+    mockSendMessageStream.mockRejectedValueOnce(new Error('API key not valid'));
+    mockGroqCreate
+      .mockResolvedValueOnce(pass1Response)
+      .mockRejectedValueOnce(new Error('429 rate_limit exceeded'));
+    setupContextMocks();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(res.status).toBe(502);
+    const { error } = await res.json() as { error: string };
+    expect(error).toContain('API key not valid');
+    expect(error).toContain('rate_limit');
+
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  // WHY: A deployment cannot tell whether it is near its provider's per-minute
+  //      ceiling without knowing what its prompts actually cost.
+  it('reports the prompt size on every answer', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.AGENT_PRIMARY = 'groq';
+    setupHappyPath();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(Number(res.headers.get('X-Prompt-Tokens'))).toBeGreaterThan(0);
+  });
+
   // WHY: A revoked key, a retired model ID or a Groq outage is not a 429, and it
   //      used to kill the whole assistant even with a healthy Gemini key present.
   //      Any provider failure must hand off, tagged with which one it was.

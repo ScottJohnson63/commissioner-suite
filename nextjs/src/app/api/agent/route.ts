@@ -53,16 +53,19 @@
 //   which is right on a paid Groq plan, where it is much the faster of the two.
 //
 //   Whichever leads, a failure of ANY kind moves to the other: a rate limit, a
-//   revoked key, a retired model ID, an outage. Groq is additionally SKIPPED
-//   rather than attempted when the prompt is larger than AGENT_GROQ_TPM, since
-//   its per-minute ceiling refuses an oversized prompt outright — and does so
-//   selectively, answering NFL questions and refusing the roster ones.
+//   revoked key, a retired model ID, an outage. Groq is additionally DEFERRED
+//   when the prompt is larger than AGENT_GROQ_TPM, since its per-minute ceiling
+//   refuses an oversized prompt outright — and does so selectively, answering
+//   NFL questions and refusing the roster ones. Deferred, not ruled out: if
+//   nothing else answers, the oversized request is made anyway, because a 429
+//   that might not happen beats an error that certainly will.
 //
 //   X-Model-Used and X-Fallback-Reason (groq_rate_limit | groq_error |
 //   groq_unavailable | groq_prompt_too_large | gemini_error |
-//   gemini_unavailable) record which path was taken. Only when every configured
-//   provider fails does the route return 502, and the body carries each
-//   provider's error so the browser can show what actually went wrong.
+//   gemini_unavailable) record which path was taken, and X-Prompt-Tokens says
+//   what the request cost to ask. Only when every configured provider fails does
+//   the route return 502, and the body carries each provider's error so the
+//   browser can show what actually went wrong.
 //
 //   Groq model IDs are discovered from the account's own catalogue rather than
 //   hardcoded, because a retired ID 404s every request and reads as an outage.
@@ -88,8 +91,9 @@
 //   AGENT_PRIMARY   — optional. 'groq' to answer on Groq first; anything else
 //                     (or unset) answers on Gemini first.
 //   AGENT_GROQ_TPM  — optional. Largest prompt, in tokens, worth sending to
-//                     Groq. Default 12000, the free tier's per-minute ceiling
-//                     on llama-3.3-70b. 0 disables the check.
+//                     Groq while another provider might answer. Default 12000,
+//                     the free tier's per-minute ceiling on llama-3.3-70b.
+//                     0 disables the check. Never blocks a last-resort attempt.
 //   AGENT_DAILY_LIMIT — optional. App-wide prompts per UTC day; default 250.
 //                     Set it to the answering provider's real daily quota.
 //   NFL_SEASON      — current NFL season year (e.g. 2025); defaults to the
@@ -1144,6 +1148,35 @@ function estimateTokens(text: string): number {
 }
 
 /**
+ * Logs which block made a prompt large, when one is.
+ *
+ * A prompt over budget is a data question, not a model question — a deep-bench
+ * league, a roster scan that legitimately reads every team, a stat query that
+ * came back wider than expected — and the only way to tell which is to see the
+ * sections measured separately. Cheap enough to run whenever it matters, which
+ * is only on the requests that already exceeded the ceiling.
+ */
+function logOversizePrompt(prompt: string, tokens: number, budget: number, intent: QueryIntent): void {
+    const MARKS = [
+        'HOW TO USE THE DATA', '--- DATA CONTEXT ---', '--- MY MATCHUP', '--- MY WAIVER WIRE',
+        '--- MY TRADE TARGETS', '--- PANEL DATA UNAVAILABLE', '--- NFL STATS ---',
+        '--- LEAGUE CONTEXT', '--- TRENDING ADDS', '--- TRENDING DROPS',
+    ];
+    const found = MARKS
+        .map((m) => [m, prompt.indexOf(m)] as const)
+        .filter(([, i]) => i >= 0)
+        .sort((a, b) => a[1] - b[1]);
+    const sections = found.map(([mark, at], i) => {
+        const endsAt = i + 1 < found.length ? found[i + 1][1] : prompt.length;
+        return `${mark.replace(/^-+ ?| ?-+$/g, '')}=${estimateTokens(prompt.slice(at, endsAt))}`;
+    });
+    console.warn(
+        `[pass-2] prompt ~${tokens} tokens over the ${budget} budget (intent=${intent}); `
+        + `sections: ${sections.join(', ')}`,
+    );
+}
+
+/**
  * The most tokens one Groq request may carry.
  *
  * Groq enforces tokens-per-minute per model, and its free tier sets that below
@@ -1599,8 +1632,14 @@ async function handlePost(req: NextRequest): Promise<Response> {
     // key for the other provider sitting right there.
     //
     // Which one leads is a quota decision rather than a quality one — see
-    // primaryProvider(). Groq is additionally skipped, rather than attempted
-    // and failed, whenever the prompt is larger than its per-minute budget.
+    // primaryProvider().
+    //
+    // The size budget DEFERS Groq rather than vetoing it. Skipping a request
+    // that will probably 429 is worth doing while another provider might still
+    // answer; refusing to make it when nothing else can is not. The first
+    // version of this got that backwards and turned a bad Gemini key into no
+    // answer at all, with a Groq key sitting right there — a 429 that might not
+    // even happen is strictly better than a certain failure.
     let answer: StreamResult | null = null;
     let modelUsed: ModelUsed = primaryProvider();
     let fallbackReason: string | null = null;
@@ -1610,42 +1649,62 @@ async function handlePost(req: NextRequest): Promise<Response> {
     const tpmBudget = groqTpmBudget();
     const groqOverBudget = tpmBudget > 0 && promptTokens > tpmBudget;
 
-    const order: ModelUsed[] = primaryProvider() === 'groq' ? ['groq', 'gemini'] : ['gemini', 'groq'];
-    const attempts: { provider: ModelUsed; ready: boolean; skip: string | null }[] = order.map((provider) => ({
-        provider,
-        ready: provider === 'groq' ? groqReady : geminiReady,
-        skip: provider === 'groq'
-            ? (!groqReady ? 'groq_unavailable' : groqOverBudget ? 'groq_prompt_too_large' : null)
-            : (!geminiReady ? 'gemini_unavailable' : null),
-    }));
+    if (groqOverBudget) logOversizePrompt(systemPrompt, promptTokens, tpmBudget, plan.intent);
 
-    for (const attempt of attempts) {
-        if (attempt.skip) {
-            if (attempt.skip === 'groq_prompt_too_large') {
-                console.warn(`[pass-2] skipping groq — ~${promptTokens} tokens over the ${tpmBudget} budget`);
-                failures.push(`Groq: prompt is ~${promptTokens} tokens, over the ${tpmBudget} per-minute budget`);
-            }
-            // The reason only counts as a fallback once something else answers.
-            if (!fallbackReason) fallbackReason = attempt.skip;
-            continue;
-        }
+    const order: ModelUsed[] = primaryProvider() === 'groq' ? ['groq', 'gemini'] : ['gemini', 'groq'];
+
+    /**
+     * Runs one provider, recording why it failed.
+     *
+     * Returns the stream rather than assigning it, so the assignment happens at
+     * the call site where TypeScript can still see it — a closure writing to
+     * `answer` narrows it to `never` for every later read.
+     */
+    async function tryProvider(provider: ModelUsed): Promise<StreamResult | null> {
         try {
-            answer = attempt.provider === 'groq'
+            const stream = provider === 'groq'
                 ? await streamGroq(systemPrompt, messages)
                 : await streamGemini(systemPrompt, messages);
-            modelUsed = attempt.provider;
-            break;
+            modelUsed = provider;
+            return stream;
         } catch (providerErr) {
-            const label = attempt.provider === 'groq' ? 'Groq' : 'Gemini';
+            const label = provider === 'groq' ? 'Groq' : 'Gemini';
             const message = providerErr instanceof Error ? providerErr.message : `${label} API error`;
-            console.error(`[pass-2] ${attempt.provider} error:`, providerErr);
+            console.error(`[pass-2] ${provider} error:`, providerErr);
             failures.push(`${label}: ${message}`);
             if (!fallbackReason) {
-                fallbackReason = attempt.provider === 'groq'
+                fallbackReason = provider === 'groq'
                     ? (isGroqRateLimitError(providerErr) ? 'groq_rate_limit' : 'groq_error')
                     : 'gemini_error';
             }
+            return null;
         }
+    }
+
+    let deferredGroq = false;
+
+    for (const provider of order) {
+        const ready = provider === 'groq' ? groqReady : geminiReady;
+        if (!ready) {
+            if (!fallbackReason) fallbackReason = `${provider}_unavailable`;
+            continue;
+        }
+        if (provider === 'groq' && groqOverBudget) {
+            // Held back, not ruled out — see the loop below.
+            deferredGroq = true;
+            if (!fallbackReason) fallbackReason = 'groq_prompt_too_large';
+            continue;
+        }
+        answer = await tryProvider(provider);
+        if (answer) break;
+    }
+
+    // Nothing answered and Groq was only held back for its size. Make the call
+    // anyway: the budget is a guess at somebody's rate limit, and the reader is
+    // otherwise getting an error either way.
+    if (!answer && deferredGroq) {
+        console.warn('[pass-2] no provider answered — trying groq over budget rather than failing');
+        answer = await tryProvider('groq');
     }
 
     if (!answer) {
@@ -1670,6 +1729,9 @@ async function handlePost(req: NextRequest): Promise<Response> {
         'X-Daily-Prompts-Used': String(dailyCount),
         'X-Daily-Reset': String(dailyResetAt()),
         'X-Query-Intent': plan.intent,
+        // What this answer cost to ask. The one number that says whether a
+        // deployment is anywhere near its provider's per-minute ceiling.
+        'X-Prompt-Tokens': String(promptTokens),
         'X-League-Context': leagueCtx ? 'true' : 'false',
         'X-Panel-Data': [
             tools.matchup ? 'matchup' : '',
