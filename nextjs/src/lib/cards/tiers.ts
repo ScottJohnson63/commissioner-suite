@@ -85,6 +85,21 @@ export const TIER_MAX_RANK: Record<Exclude<CardTier, 'BRONZE'>, number> = {
   SILVER: 30,
 };
 
+/**
+ * Games a player must have played to be ranked on his average.
+ *
+ * Tiers are set by points per game, which without a floor would hand a Hall of
+ * Fame card to anyone who had one big afternoon and then vanished. Nine games
+ * is half a season: enough that an average means something, low enough that a
+ * genuinely elite player who missed six weeks still competes for the top tier
+ * rather than being punished for being injured.
+ *
+ * Players below the floor still get cards — they played, so they are
+ * collectible — but they are ranked beneath everyone who cleared it, which in
+ * practice makes them Bronze.
+ */
+export const MIN_GAMES_FOR_TIER = 9;
+
 /** Cards dealt by an ordinary pack, whatever its tier. */
 export const CARDS_PER_PACK = 5;
 

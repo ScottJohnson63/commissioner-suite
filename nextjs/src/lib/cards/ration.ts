@@ -128,3 +128,44 @@ export function packsForWeek(week: number): number {
 export function rollWildcard(rng: () => number = Math.random): number {
   return 1 + Math.floor(rng() * WILDCARD_SIDES);
 }
+
+/**
+ * The most a member can earn from contributing card portraits in a season.
+ *
+ * Lives here rather than in customize.ts so the Draft Deck tour can state the
+ * cap; customize.ts re-exports it and owns the reward logic.
+ *
+ * **This number is a pool-safety limit, not a game-feel one.** Ownership is
+ * exclusive, so every extra pack is cards permanently out of everyone else's
+ * reach, and Silver is the tier that runs out first — 2,160 cards against a
+ * dealt mix that is 28.6% Silver. A tier that empties is dropped from
+ * `rollPackTier` entirely, which collapses the game back to Bronze mid-season.
+ *
+ * Sized against a 70% Silver ceiling for a **ten-member** league, counting
+ * every supply — the ration, the starter grant, the wildcards those pull, and
+ * the Sleeper bonus. Silver drained over a season, by how often a member wins
+ * one of the two weekly bonuses:
+ *
+ *   | cap | no bonuses | 25% | 50% | 75% |
+ *   |-----|-----------|-----|-----|-----|
+ *   | 0   | 38%       | 46% | 54% | 62% |
+ *   | 15  | 52%       | 60% | 69% | 77% |
+ *   | 20  | 57%       | 65% | 73% | 82% |
+ *
+ * 50% is the realistic planning figure: a member wins about half their matchups
+ * by definition, and 100 PPR points is a low bar. Fifteen is the largest round
+ * number holding the ceiling there.
+ *
+ * This was briefly 6, sized when the Sleeper bonus was still a ten-card pack
+ * with a Silver floor — that one pack drew 3.26 Silver against an ordinary
+ * pack's 1.43 and ate most of the budget on its own. Normalising it to an
+ * ordinary five-card pack is what paid for the cap being this size.
+ *
+ * ⚠️ **Sized for ten members.** At twelve the same cap puts Silver at 82%, past
+ * the ceiling — a growing league should drop this to about 4, or find the room
+ * somewhere else. The figures fold in a ×1.46 wildcard multiplier, because
+ * reward packs pull dice of their own and compound.
+ *
+ * Raising this means re-running that arithmetic. See docs/CARDS.md.
+ */
+export const MAX_CUSTOMIZATION_PACKS = 15;

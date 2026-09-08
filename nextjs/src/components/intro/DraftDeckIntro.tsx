@@ -12,8 +12,12 @@
 // every rule from the modules that enforce them. That split is issue #43's:
 // this file is the wiring, and the wiring had nothing to do with the tour
 // having gone out of date. Balance numbers that were once stated in prose here,
-// because allowance.ts and bonus.ts import Prisma and could not be reached from
-// a client component, now come from ration.ts instead — which imports none.
+// because the modules holding them import Prisma and could not be reached from
+// a client component, now come from ration.ts and tiers.ts — which import none.
+//
+// It takes no props. It used to take `isCommissioner`, for a slide about the
+// commissioner's pool tools; that slide is gone, and with it the only reason
+// the card page computed the role at all.
 
 'use client';
 
@@ -33,12 +37,12 @@ export function requestDraftDeckIntro(): void {
   requestIntro(CARDS_INTRO_ID);
 }
 
-export function DraftDeckIntro({ isCommissioner }: { isCommissioner: boolean }) {
+export function DraftDeckIntro() {
   const { open, muted, close, setMuted } = useIntro(CARDS_INTRO_ID);
 
   return (
     <IntroCarousel
-      slides={draftDeckSlides({ isCommissioner })}
+      slides={draftDeckSlides()}
       open={open}
       onClose={close}
       muted={muted}

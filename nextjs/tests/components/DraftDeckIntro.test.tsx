@@ -22,23 +22,28 @@ import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { DraftDeckIntro, openDraftDeckIntro, requestDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
-import { numberWord } from '@/components/intro/draftDeckSlides';
+import { ordinal } from '@/components/intro/draftDeckSlides';
 import {
-  CARDS_PER_PACK, ELIGIBLE_POSITIONS, PACK_GUARANTEE, POSITION_LABEL,
-  TIER_LABEL, TIER_MAX_RANK, TIER_ORDER, WILDCARD_PULL_CHANCE,
+  MIN_GAMES_FOR_TIER, TIER_LABEL, TIER_MAX_RANK, TIER_ORDER, WILDCARD_PACK_TIERS,
 } from '@/lib/cards/tiers';
+import { MAX_CUSTOMIZATION_PACKS } from '@/lib/cards/ration';
 import {
-  FIRST_RATION_WEEK, GUARANTEED_GOLD_PACKS, HIGH_SCORE_THRESHOLD,
-  PACKS_PER_WEEK, STARTER_GUARANTEED_GOLD, STARTER_PACKS, WILDCARD_SIDES,
-} from '@/lib/cards/ration';
-import { ROSTER_SIZE, lineupShape } from '@/lib/cards/roster';
-import {
-  GAME_TIME_ZONE_LABEL, LOCK_DAY_LABEL, LOCK_HOUR, LOCK_MINUTE, MAX_GAME_WEEK,
+  GAME_TIME_ZONE_LABEL, LOCK_DAY_LABEL, LOCK_HOUR, LOCK_MINUTE,
   REVEAL_DAY_LABEL, REVEAL_HOUR, clockLabel,
 } from '@/lib/cards/weeklyGame';
 
-function renderTour(isCommissioner = false) {
-  return render(<DraftDeckIntro isCommissioner={isCommissioner} />);
+/** Every slide, in order — the tour is the same for everybody. */
+const SLIDES = [
+  'Draft Deck. Official card game for Fantasy Football.',
+  'Tiers:',
+  'Wildcards',
+  'Customize your deck.',
+  'Lineup',
+  'Open a pack and get started!',
+];
+
+function renderTour() {
+  return render(<DraftDeckIntro />);
 }
 
 /**
@@ -65,7 +70,7 @@ describe('DraftDeckIntro', () => {
   it('opens itself on a first visit and lands on the overview', () => {
     renderTour();
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getByText('A card game on top of your league')).toBeTruthy();
+    expect(screen.getByText(SLIDES[0])).toBeTruthy();
   });
 
   it('pages forward and back, and closes on the last slide', async () => {
@@ -73,16 +78,16 @@ describe('DraftDeckIntro', () => {
     renderTour();
 
     await user.click(screen.getByRole('button', { name: 'Next' }));
-    expect(screen.getByText('Tiers come from real season finishes')).toBeTruthy();
+    expect(screen.getByText(SLIDES[1])).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Back' }));
-    expect(screen.getByText('A card game on top of your league')).toBeTruthy();
+    expect(screen.getByText(SLIDES[0])).toBeTruthy();
 
-    // Straight to the end, then out. Five clicks: overview, tiers, packs, deck,
-    // lineup, then the closing slide.
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < SLIDES.length - 1; i++) {
       await user.click(screen.getByRole('button', { name: 'Next' }));
     }
+    expect(screen.getByText(SLIDES[SLIDES.length - 1])).toBeTruthy();
+
     await user.click(screen.getByRole('button', { name: "Let's play" }));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -129,159 +134,109 @@ describe('DraftDeckIntro', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  // The Commissioner tab is role-gated in the page, so explaining it to a
-  // member who cannot see it would be describing a tab that is not there.
-  it('describes the Commissioner tab only for a commissioner', async () => {
+  // The commissioner's pool tools had a slide of their own and no longer do,
+  // which is why the component takes no props: there is one tour, and every
+  // member sees the same six slides.
+  it('shows the same slides to everybody', async () => {
     const user = userEvent.setup();
-    const member = renderTour(false);
-    expect(screen.getByText('1 / 6')).toBeTruthy();
-    expect(screen.queryByText('Commissioner')).toBeNull();
-    member.unmount();
-    window.localStorage.clear();
+    renderTour();
+    expect(screen.getByText(`1 / ${SLIDES.length}`)).toBeTruthy();
 
-    renderTour(true);
-    expect(screen.getByText('1 / 7')).toBeTruthy();
-    for (let i = 0; i < 5; i++) {
-      await user.click(screen.getByRole('button', { name: 'Next' }));
+    for (const title of SLIDES) {
+      expect(await slideText(user, title)).toContain(title);
     }
-    expect(screen.getByRole('heading', { name: 'Commissioner' })).toBeTruthy();
+    expect(screen.queryByText('Commissioner')).toBeNull();
   });
 });
 
 // Every expectation here is composed from the constant the game reads at
 // runtime. None of them restates a number, which is the point: a test that
-// hard coded "two packs a week" would have gone stale beside the slide it was
+// hard coded "1st through 5th" would have gone stale beside the slide it was
 // supposed to be guarding.
 describe('DraftDeckIntro — the rules it states', () => {
-  it('describes the weekly ration the game actually pays', async () => {
+  it('states each tier band as the placings tierForRank actually assigns', async () => {
     const user = userEvent.setup();
     renderTour();
-    const packs = await slideText(user, 'Packs');
+    const tiers = await slideText(user, 'Tiers:');
 
-    expect(packs).toContain(
-      `${numberWord(PACKS_PER_WEEK)} packs a week from week ${FIRST_RATION_WEEK} on`,
-    );
-
-    // The regression itself. A ration guarantee is a promise the pity timer
-    // has to keep, so the slide may only make it while there is a quota to
-    // deliver it — see GUARANTEED_GOLD_PACKS and mustForceGold.
-    if (GUARANTEED_GOLD_PACKS > 0) {
-      expect(packs).toContain(
-        `${numberWord(GUARANTEED_GOLD_PACKS)} of them`,
-      );
-    } else {
-      expect(packs).toContain('the ration promises you a pack, not a tier');
-    }
-  });
-
-  it('states the starter grant, which is the one supply that promises a tier', async () => {
-    const user = userEvent.setup();
-    renderTour();
-    const packs = await slideText(user, 'Packs');
-
-    expect(packs).toContain(
-      `${numberWord(STARTER_PACKS)} packs the first time you open the game`,
-    );
-    expect(packs).toContain(
-      `${numberWord(STARTER_GUARANTEED_GOLD)} of them guaranteed Gold or better`,
-    );
-    // Week 1 pays no ration at all — packsForWeek returns 0 below
-    // FIRST_RATION_WEEK — so the grant is a first sitting, not week 1's wage.
-    expect(packs).toContain('Week 1 pays no ration at all');
-  });
-
-  it('states the bonus threshold and the wildcard die from their constants', async () => {
-    const user = userEvent.setup();
-    renderTour();
-    const packs = await slideText(user, 'Packs');
-
-    expect(packs).toContain(`score more than ${HIGH_SCORE_THRESHOLD} in one`);
-    expect(packs).toContain(`pack in ${Math.round(1 / WILDCARD_PULL_CHANCE)} hides a die`);
-    expect(packs).toContain(`one to ${numberWord(WILDCARD_SIDES)} extra packs`);
-  });
-
-  // openPack fills every slot the guarantee does not cover from *strictly
-  // lower* tiers, so the tier on the wrapper is the best card in the pack. The
-  // slide used to call it a floor, which says the exact opposite.
-  it("describes a pack's tier as its ceiling rather than its floor", async () => {
-    const user = userEvent.setup();
-    renderTour();
-    const packs = await slideText(user, 'Packs');
-
-    expect(packs).toContain(`${numberWord(CARDS_PER_PACK)} cards a pack`);
-    expect(packs).toContain('not a floor under the rest');
-    expect(packs).toContain('drawn from the tiers below it');
-    expect(packs).not.toContain('sets the floor');
-
-    for (const tier of TIER_ORDER) {
-      // Bronze guarantees the whole pack and has no filler, so it earns no
-      // clause of its own.
-      if (PACK_GUARANTEE[tier] >= CARDS_PER_PACK) continue;
-      expect(packs).toContain(
-        `a ${TIER_LABEL[tier]} pack ${tier === TIER_ORDER[0] ? 'holds ' : ''}` +
-        `${numberWord(PACK_GUARANTEE[tier])}`,
-      );
-    }
-  });
-
-  it('states the tier bands, in words and in the artwork, from TIER_MAX_RANK', async () => {
-    const user = userEvent.setup();
-    renderTour();
-    const tiers = await slideText(user, 'Tiers come from real season finishes');
-
-    let floor = 1;
+    let first = 1;
     for (const tier of TIER_ORDER) {
       const max = TIER_MAX_RANK[tier as keyof typeof TIER_MAX_RANK] as number | undefined;
       if (max === undefined) {
-        expect(tiers).toContain(`${TIER_LABEL[tier]} — everybody else`);
-        expect(tiers).toContain(`${floor}+`);            // the artwork's open band
+        // The open-ended tier is named, not numbered — it is what everything
+        // below the others falls into.
+        expect(tiers).toContain(`${TIER_LABEL[tier]}: everyone else`);
+        expect(tiers).toContain(`${first}+`);                 // the artwork's open block
       } else {
-        expect(tiers).toContain(`${TIER_LABEL[tier]} — through rank ${max}`);
-        expect(tiers).toContain(`${floor}\u2013${max}`);  // the artwork's closed band
-        floor = max + 1;
+        expect(tiers).toContain(
+          `${TIER_LABEL[tier]}: ${ordinal(first)} through ${ordinal(max)}`,
+        );
+        expect(tiers).toContain(`${first}–${max}`);      // the artwork's closed block
+        first = max + 1;
       }
     }
-
-    // The artwork used to letter each tier with an invented point value, on the
-    // slide that exists to say a tier is not worth points. Nothing scores a
-    // card by its tier.
-    expect(tiers).toContain('A tier is not itself worth points');
-    expect(tiers).not.toContain('pts');
   });
 
-  it('names exactly the positions that get a card', async () => {
+  // Bands are consecutive: Silver starts at 11th because rank 10 is Gold, which
+  // is what tierForRank does. Stating it as "10th through 30th" would put one
+  // finisher in two tiers at once — see the note on TIER_MAX_RANK.
+  it('does not let two tiers claim the same placing', async () => {
     const user = userEvent.setup();
     renderTour();
-    const tiers = await slideText(user, 'Tiers come from real season finishes');
+    const tiers = await slideText(user, 'Tiers:');
 
-    for (const position of ELIGIBLE_POSITIONS) {
-      expect(tiers).toContain(POSITION_LABEL[position]);
+    const closed = TIER_ORDER
+      .map((t) => TIER_MAX_RANK[t as keyof typeof TIER_MAX_RANK] as number | undefined)
+      .filter((max): max is number => max !== undefined);
+
+    for (const max of closed.slice(0, -1)) {
+      expect(tiers).toContain(`through ${ordinal(max)}`);      // one tier ends here
+      expect(tiers).toContain(`${ordinal(max + 1)} through`);  // the next starts after
+      expect(tiers).not.toContain(`${ordinal(max)} through`);  // and never on it
     }
-    expect(tiers).toContain('Kickers and team defenses do not');
+  });
+
+  it('states the games floor the ranking is actually built on', async () => {
+    const user = userEvent.setup();
+    renderTour();
+    const tiers = await slideText(user, 'Tiers:');
+
+    // A minimum, not an exact count: rankSeason sorts players below
+    // MIN_GAMES_FOR_TIER beneath everyone who cleared it rather than dropping
+    // them, so a card can exist on fewer.
+    expect(tiers).toContain(`a minimum of ${MIN_GAMES_FOR_TIER} games played`);
+  });
+
+  it('names the pack tier a wildcard can actually fall out of', async () => {
+    const user = userEvent.setup();
+    renderTour();
+    const wildcard = await slideText(user, 'Wildcards');
+
+    const lowest = WILDCARD_PACK_TIERS[WILDCARD_PACK_TIERS.length - 1];
+    expect(wildcard).toContain(`Each ${TIER_LABEL[lowest]} or better pack`);
+  });
+
+  it('states the portrait reward cap from the constant that enforces it', async () => {
+    const user = userEvent.setup();
+    renderTour();
+    const customize = await slideText(user, 'Customize your deck.');
+
+    expect(customize).toContain(`(limit ${MAX_CUSTOMIZATION_PACKS})`);
+    // The pack is for giving a faceless card a face — isUnillustrated tests the
+    // pool's own headshot, so replacing an existing photo earns nothing.
+    expect(customize).toContain("players that don't have a photo");
   });
 
   it('states the deadlines the clock actually enforces', async () => {
     const user = userEvent.setup();
     renderTour();
-    const lineup = await slideText(user, 'Lineup — the week');
+    const lineup = await slideText(user, 'Lineup');
 
     expect(lineup).toContain(
-      `Submit by ${LOCK_DAY_LABEL} ${clockLabel(LOCK_HOUR, LOCK_MINUTE)} ${GAME_TIME_ZONE_LABEL}`,
+      `Submit it by ${LOCK_DAY_LABEL} @ ${clockLabel(LOCK_HOUR, LOCK_MINUTE)} ${GAME_TIME_ZONE_LABEL} time`,
     );
     expect(lineup).toContain(
-      `Results at ${REVEAL_DAY_LABEL} ${clockLabel(REVEAL_HOUR)} ${GAME_TIME_ZONE_LABEL}`,
+      `View the league results on ${REVEAL_DAY_LABEL} @ ${clockLabel(REVEAL_HOUR)} ${GAME_TIME_ZONE_LABEL} time`,
     );
-    expect(lineup).toContain(`${MAX_GAME_WEEK} weeks`);
-  });
-
-  it('describes the lineup the roster module defines', async () => {
-    const user = userEvent.setup();
-    renderTour();
-    const lineup = await slideText(user, 'Lineup — the week');
-
-    expect(lineup).toContain(`Fill the ${ROSTER_SIZE} slots`);
-    for (const group of lineupShape()) {
-      expect(lineup).toContain(`${numberWord(group.count)} ${group.label}`);
-    }
   });
 });

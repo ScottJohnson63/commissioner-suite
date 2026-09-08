@@ -62,15 +62,16 @@ export const LOCK_DAY_LABEL = 'Monday';
 export const REVEAL_DAY_LABEL = 'Tuesday';
 
 /**
- * A deadline hour as a member would say it out loud — "11:59pm", "10am".
+ * A deadline as a member would read it — "11:59pm", "10:00am".
  *
- * Drops the minutes when they are zero, because "10am" is how a person states
- * a time on the hour and "10:00am" reads like a timetable.
+ * Minutes are always shown, including on the hour. The two deadlines are stated
+ * side by side wherever they appear, and "11:59pm … 10am" reads as though one
+ * of them were less exact than the other when both are to the minute.
  */
 export function clockLabel(hour: number, minute = 0): string {
   const suffix = hour < 12 ? 'am' : 'pm';
   const h = hour % 12 === 0 ? 12 : hour % 12;
-  return minute === 0 ? `${h}${suffix}` : `${h}:${String(minute).padStart(2, '0')}${suffix}`;
+  return `${h}:${String(minute).padStart(2, '0')}${suffix}`;
 }
 
 /**

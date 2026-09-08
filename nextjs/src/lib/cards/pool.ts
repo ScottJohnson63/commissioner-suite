@@ -35,7 +35,7 @@
 
 import { prisma } from '@/lib/prisma';
 import type { CardTier } from '@prisma/client';
-import { tierForRank } from '@/lib/cards/tiers';
+import { MIN_GAMES_FOR_TIER, tierForRank } from '@/lib/cards/tiers';
 
 /**
  * Earliest season eligible for the pool.
@@ -47,20 +47,10 @@ import { tierForRank } from '@/lib/cards/tiers';
  */
 export const CARD_POOL_MIN_SEASON = 1999;
 
-/**
- * Games a player must have played to be ranked on his average.
- *
- * Tiers are set by points per game, which without a floor would hand a Hall of
- * Fame card to anyone who had one big afternoon and then vanished. Nine games
- * is half a season: enough that an average means something, low enough that a
- * genuinely elite player who missed six weeks still competes for the top tier
- * rather than being punished for being injured.
- *
- * Players below the floor still get cards — they played, so they are
- * collectible — but they are ranked beneath everyone who cleared it, which in
- * practice makes them Bronze.
- */
-export const MIN_GAMES_FOR_TIER = 9;
+// MIN_GAMES_FOR_TIER moved to tiers.ts, which imports no Prisma, so the Draft
+// Deck tour can state the floor rather than retype it. Re-exported because
+// rankSeason and every caller already look for it here.
+export { MIN_GAMES_FOR_TIER } from '@/lib/cards/tiers';
 
 /** A card about to be written, before it is ranked. */
 interface ScoredPlayer {

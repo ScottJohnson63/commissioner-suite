@@ -106,71 +106,71 @@ const TIER_COLOR: Record<CardTier, string> = {
   BRONZE:       '#a2683f',
 };
 
-/** Widest a tier's bar is drawn, and the narrowest that still reads as a bar. */
-const TIER_BAR_MAX = 166;
-const TIER_BAR_MIN = 24;
+/** The rank track: where it starts, how wide, and the share the ranked bands use. */
+const TRACK_X = 60;
+const TRACK_W = 252;
+const RANKED_SHARE = 0.78;
+/** Narrowest a block may be drawn and still hold its range label. */
+const BLOCK_MIN = 32;
 
 /**
  * The rank band each tier covers, walked in TIER_ORDER.
  *
  * The last tier is open-ended — TIER_MAX_RANK has no entry for Bronze, which is
- * what "everybody else" means — so it is labelled "31+" and drawn full width.
+ * what "everyone else" means — so it is labelled from its first rank up and
+ * runs to the end of the track.
  */
 function tierBands() {
-  let floor = 1;
+  let first = 1;
   return TIER_ORDER.map((tier) => {
     const max = TIER_MAX_RANK[tier as keyof typeof TIER_MAX_RANK] as number | undefined;
-    const band = max === undefined ? `${floor}+` : `${floor}–${max}`;
-    const ranks = max === undefined ? null : max - floor + 1;
-    floor = (max ?? floor) + 1;
-    return { tier, band, ranks };
+    const band = { tier, first, max, label: max === undefined ? `${first}+` : `${first}–${max}` };
+    if (max !== undefined) first = max + 1;
+    return band;
   });
 }
 
 /**
- * The tier ladder, rarest first: what rank band earns each tier, and how wide
- * that band is.
+ * The tier ladder as a rank axis: each tier's block sits where its band falls.
  *
- * As before, the bar length is how common a tier is rather than how good it is,
- * and labels sit in their own column so the short bars are not cramped. What
- * changed is where the length comes from: it is now the width of the tier's
- * rank band, which is what actually decides how much of the pool the tier
- * holds, instead of four numbers chosen by eye.
+ * Rarest first, and offset — Hall of Fame starts at the left because it starts
+ * at rank 1, and every tier below begins where the one above it ended. That
+ * staircase is the point of the picture: the tiers are consecutive slices of
+ * one ranking, not four separate awards. The range sits inside its own block,
+ * in the tier's colour and bold, so the number and the thing it describes are
+ * the same object.
  *
  * It used to letter each tier with a point value — "Hall of Fame, 100 pts" —
- * directly above the paragraph that says a tier is not itself worth points.
- * Those numbers were invented: nothing in the game scores a card by its tier,
- * and a card scores the points per game on its face whatever tier it is. The
- * picture was teaching the one misconception the slide exists to correct, so it
- * now shows what a tier actually is — a band of season finishes.
+ * directly above the paragraph saying a tier is not itself worth points. Those
+ * numbers were invented: nothing in the game scores a card by its tier.
  *
- * Hall of Fame and Gold draw the same width, because they cover the same five
- * ranks. That is the honest reading of TIER_MAX_RANK: what separates them is
- * which five, which is what the band label beside each bar says.
- *
- * Bands, labels and widths all come from tiers.ts, so the drawing says the same
- * thing as the rule and keeps saying it when the rule is retuned. See issue #43.
+ * Bands, widths and labels all come from TIER_MAX_RANK, so the drawing says the
+ * same thing as the rule and keeps saying it when the rule is retuned. Blocks
+ * are floored at BLOCK_MIN so a narrow band still fits its label; the ranked
+ * bands share RANKED_SHARE of the track and the open-ended tier takes the rest.
  */
 export function TierArt() {
   const bands = tierBands();
-  const widest = Math.max(...bands.map((b) => b.ranks ?? 0), 1);
-  const barFor = (ranks: number | null) => (
-    ranks === null ? TIER_BAR_MAX
-      : Math.max(TIER_BAR_MIN, Math.round((ranks / widest) * TIER_BAR_MAX))
-  );
+  const lastRanked = Math.max(...bands.map((b) => b.max ?? 0), 1);
+  const perRank = (TRACK_W * RANKED_SHARE) / lastRanked;
+  const startX = (first: number) => TRACK_X + (first - 1) * perRank;
 
   return (
     <svg viewBox="0 0 320 110" width="100%" height="110" role="img"
       aria-label="Card tiers, and the season-finish ranks that earn each one">
       {bands.map((b, i) => {
         const color = TIER_COLOR[b.tier];
-        const bar = barFor(b.ranks);
+        const x = startX(b.first);
+        const width = b.max === undefined
+          ? Math.max(BLOCK_MIN, TRACK_X + TRACK_W - x)
+          : Math.max(BLOCK_MIN, (b.max - b.first + 1) * perRank);
         return (
-          <g key={b.tier} transform={`translate(24 ${14 + i * 22})`}>
+          <g key={b.tier} transform={`translate(8 ${14 + i * 22})`}>
             <text x="0" y="11.5" fill={color} fontSize="9">{TIER_LABEL[b.tier]}</text>
-            <rect x="76" y="1" width={bar} height="14" rx="3"
+            <rect x={x} y="1" width={width} height="14" rx="3"
               fill={`${color}22`} stroke={color} />
-            <text x={82 + bar} y="11.5" fill={DIM} fontSize="8">{b.band}</text>
+            <text x={x + width / 2} y="11.5" fill={color} fontSize="9" fontWeight="700"
+              textAnchor="middle">{b.label}</text>
           </g>
         );
       })}
@@ -207,44 +207,6 @@ export function DeckTabsArt({ active }: {
       <rect x="32" y="83" width="30" height="6" rx="3" fill={LIME} opacity="0.6" />
       <rect x="126" y="83" width="44" height="6" rx="3" fill={DIM} />
       <rect x="220" y="83" width="38" height="6" rx="3" fill={DIM} />
-    </svg>
-  );
-}
-
-/**
- * The Commissioner page's tab bar, with one tab lit.
- *
- * Its own art rather than a variant of DeckTabsArt: this is a different page
- * with a different title above the bar, and the point of the slide that uses it
- * is that the controls are somewhere else now.
- */
-export function CommissionerTabsArt({ active }: {
-  active: 'schedules' | 'divisions' | 'lottery' | 'draft-deck';
-}) {
-  const tabs = [
-    { id: 'schedules'  as const, label: 'Schedules',  x: 24,  w: 62 },
-    { id: 'divisions'  as const, label: 'Divisions',  x: 98,  w: 60 },
-    { id: 'lottery'    as const, label: 'Lottery',    x: 170, w: 48 },
-    { id: 'draft-deck' as const, label: 'Draft Deck', x: 230, w: 66 },
-  ];
-  return (
-    <svg viewBox="0 0 320 110" width="100%" height="110" role="img"
-      aria-label={`The ${active} tab of the Commissioner page`}>
-      <text x="24" y="24" fill={INK} fontSize="12" fontWeight="600">Commissioner</text>
-
-      {tabs.map((t) => (
-        <g key={t.id}>
-          <text x={t.x} y="52" fill={t.id === active ? INK : DIM} fontSize="11"
-            fontWeight={t.id === active ? 600 : 400}>{t.label}</text>
-          {t.id === active && <rect x={t.x - 4} y="60" width={t.w} height="2" rx="1" fill={LIME} />}
-        </g>
-      ))}
-
-      <rect x="24" y="61" width="272" height="1" fill={FAINT} />
-      <rect x="24" y="74" width="130" height="24" rx="4" fill="#0a0a0b" stroke={FAINT} />
-      <rect x="166" y="74" width="130" height="24" rx="4" fill="#0a0a0b" stroke={FAINT} />
-      <rect x="34" y="83" width="52" height="6" rx="3" fill={LIME} opacity="0.6" />
-      <rect x="176" y="83" width="64" height="6" rx="3" fill={DIM} />
     </svg>
   );
 }
