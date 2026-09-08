@@ -69,7 +69,10 @@
 //
 //   Groq model IDs are discovered from the account's own catalogue rather than
 //   hardcoded, because a retired ID 404s every request and reads as an outage.
-//   GET /api/agent?live=1 reports what each key can actually reach.
+//   This is not hypothetical: a live account's catalogue came back carrying no
+//   llama model at all, and the search fell through to gpt-oss as designed.
+//   GET /api/agent?live=1 reports what each key can actually reach, which model
+//   would serve each pass, and the per-minute budget that follows from it.
 //
 // ── League context (Phase 2) ─────────────────────────────────────────────────
 //   If the client includes `sleeperLeagueId` in the request body AND the
@@ -91,9 +94,11 @@
 //   AGENT_PRIMARY   — optional. 'groq' to answer on Groq first; anything else
 //                     (or unset) answers on Gemini first.
 //   AGENT_GROQ_TPM  — optional. Largest prompt, in tokens, worth sending to
-//                     Groq while another provider might answer. Default 12000,
-//                     the free tier's per-minute ceiling on llama-3.3-70b.
-//                     0 disables the check. Never blocks a last-resort attempt.
+//                     Groq while another provider might answer. Without it the
+//                     figure is read from the model that will actually answer
+//                     (GROQ_TPM_BY_MODEL); set it on a paid plan, where every
+//                     figure in that table is far too low. 0 disables the
+//                     check. Never blocks a last-resort attempt.
 //   AGENT_DAILY_LIMIT — optional. App-wide prompts per UTC day; default 250.
 //                     Set it to the answering provider's real daily quota.
 //   NFL_SEASON      — current NFL season year (e.g. 2025); defaults to the
@@ -156,25 +161,62 @@ function getGemini(): GoogleGenerativeAI | null {
 // models the account can actually reach, and the first hit wins. An explicit
 // GROQ_MODEL / GROQ_PLANNER_MODEL always overrides the search.
 
+// The llama IDs sat at the head of both lists until a live catalogue read came
+// back without a single one of them on it — Groq had retired the family on that
+// account, and the search fell through to gpt-oss exactly as designed. They stay
+// at the back for accounts that still serve them; what an account actually
+// offers today leads.
+
 /** Answer pass (pass 2) — capable first, cheap last. */
 const GROQ_ANSWER_CANDIDATES = [
-    'llama-3.3-70b-versatile',
     'openai/gpt-oss-120b',
-    'meta-llama/llama-4-scout-17b-16e-instruct',
+    'qwen/qwen3.8-27b',
+    'qwen/qwen3.6-27b',
     'openai/gpt-oss-20b',
+    'llama-3.3-70b-versatile',
+    'meta-llama/llama-4-scout-17b-16e-instruct',
     'llama-3.1-8b-instant',
 ];
 
 /** Planner pass (pass 1) — a temp=0 JSON classification, so cheap first. */
 const GROQ_PLANNER_CANDIDATES = [
-    'llama-3.1-8b-instant',
     'openai/gpt-oss-20b',
+    'qwen/qwen3.6-27b',
+    'openai/gpt-oss-120b',
+    'llama-3.1-8b-instant',
     'llama-3.3-70b-versatile',
-    'meta-llama/llama-4-scout-17b-16e-instruct',
 ];
 
-/** Model families on the Groq catalogue that cannot serve chat completions. */
-const NON_CHAT_MODEL_PATTERN = /whisper|tts|guard|embed|prompt-?guard/i;
+/**
+ * Model families on the Groq catalogue that cannot serve chat completions.
+ *
+ * `orpheus` and `compound` are here because a live catalogue read turned them
+ * up: the first is a speech family whose IDs say nothing about speech, and the
+ * second is an agentic system rather than a chat model. Both would otherwise be
+ * eligible for the "take whatever is on offer" fallback below.
+ */
+const NON_CHAT_MODEL_PATTERN = /whisper|tts|guard|embed|prompt-?guard|orpheus|compound/i;
+
+/**
+ * Free-tier tokens-per-minute, per Groq model.
+ *
+ * One global number was wrong the moment it met a real account. The default was
+ * 12,000 — llama-3.3-70b's ceiling — on a deployment whose catalogue carries no
+ * llama at all and answers on gpt-oss-120b, which allows 8,000. So the budget is
+ * read from whichever model is actually going to serve the request.
+ *
+ * Free-tier figures, and the conservative reading where sources disagree. A paid
+ * plan is far higher: set AGENT_GROQ_TPM and none of this table applies.
+ */
+const GROQ_TPM_BY_MODEL: Record<string, number> = {
+    'llama-3.3-70b-versatile': 12_000,
+    'openai/gpt-oss-120b':      8_000,
+    'openai/gpt-oss-20b':       8_000,
+    'llama-3.1-8b-instant':     6_000,
+};
+
+/** Assumed ceiling for a model the table does not name. */
+const GROQ_TPM_DEFAULT = 8_000;
 
 function geminiModel(): string {
     return process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
@@ -1189,9 +1231,11 @@ function logOversizePrompt(prompt: string, tokens: number, budget: number, inten
  *
  * Set AGENT_GROQ_TPM to your plan's real figure; 0 disables the check.
  */
-function groqTpmBudget(): number {
+function groqTpmBudget(model: string | null): number {
     const configured = Number(process.env.AGENT_GROQ_TPM);
-    return Number.isFinite(configured) && configured >= 0 ? Math.floor(configured) : 12_000;
+    if (Number.isFinite(configured) && configured >= 0) return Math.floor(configured);
+    if (!model) return GROQ_TPM_DEFAULT;
+    return GROQ_TPM_BY_MODEL[model] ?? GROQ_TPM_DEFAULT;
 }
 
 function isGroqRateLimitError(err: unknown): boolean {
@@ -1340,10 +1384,18 @@ async function probeGroq(): Promise<Record<string, unknown>> {
     if (!getGroq()) return { configured: false };
     const ids = await groqModelIds();
     if (!ids) return { configured: true, reachable: false, error: 'Could not list models — see server logs for the provider error.' };
+    const answer = await resolveGroqModel('answer');
     return {
         configured: true,
         reachable:  true,
-        selected:   { planner: await resolveGroqModel('planner'), answer: await resolveGroqModel('answer') },
+        selected:   { planner: await resolveGroqModel('planner'), answer },
+        // The per-minute ceiling this deployment is working against, and where
+        // the figure came from. A catalogue that has retired the model the
+        // default was chosen for is not visible any other way.
+        tpmBudget:  groqTpmBudget(answer),
+        tpmSource:  process.env.AGENT_GROQ_TPM?.trim()
+            ? 'AGENT_GROQ_TPM'
+            : (answer in GROQ_TPM_BY_MODEL ? `known free-tier limit for ${answer}` : 'default for an unlisted model'),
         available:  ids.filter((id) => !NON_CHAT_MODEL_PATTERN.test(id)).sort(),
     };
 }
@@ -1646,7 +1698,10 @@ async function handlePost(req: NextRequest): Promise<Response> {
     const failures: string[] = [];
 
     const promptTokens = estimateTokens(systemPrompt);
-    const tpmBudget = groqTpmBudget();
+    // The ceiling belongs to the model that would serve this, not to whichever
+    // model the candidate list happens to lead with — see GROQ_TPM_BY_MODEL.
+    const groqAnswerModel = groqReady ? await resolveGroqModel('answer') : null;
+    const tpmBudget = groqTpmBudget(groqAnswerModel);
     const groqOverBudget = tpmBudget > 0 && promptTokens > tpmBudget;
 
     if (groqOverBudget) logOversizePrompt(systemPrompt, promptTokens, tpmBudget, plan.intent);
@@ -1732,6 +1787,7 @@ async function handlePost(req: NextRequest): Promise<Response> {
         // What this answer cost to ask. The one number that says whether a
         // deployment is anywhere near its provider's per-minute ceiling.
         'X-Prompt-Tokens': String(promptTokens),
+        'X-Groq-Tpm-Budget': String(tpmBudget),
         'X-League-Context': leagueCtx ? 'true' : 'false',
         'X-Panel-Data': [
             tools.matchup ? 'matchup' : '',

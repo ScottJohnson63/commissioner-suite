@@ -459,6 +459,62 @@ describe('POST /api/agent', () => {
     delete process.env.GEMINI_API_KEY;
   });
 
+  // WHY: A live catalogue read came back with no llama model on it at all —
+  //      Groq had retired the family on that account — so the search fell
+  //      through to gpt-oss-120b while the budget still carried llama-70b's
+  //      12,000 ceiling. gpt-oss allows 8,000, and the difference is every
+  //      panel-backed question refused. The ceiling belongs to the model that
+  //      is actually going to serve the request.
+  it('takes the per-minute budget from the model that will answer', async () => {
+    // A distinct key: the catalogue cache is keyed by API key, so reusing the
+    // shared one would serve an earlier test's model list.
+    process.env.GROQ_API_KEY = 'groq-key-no-llama';
+    process.env.AGENT_PRIMARY = 'groq';
+    // A catalogue with no llama on it, exactly as reported from production.
+    mockGroqModelList.mockResolvedValue({
+      data: [{ id: 'openai/gpt-oss-120b' }, { id: 'openai/gpt-oss-20b' }, { id: 'groq/compound' }],
+    });
+    setupHappyPath();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(res.headers.get('X-Groq-Tpm-Budget')).toBe('8000');
+  });
+
+  // WHY: An operator on a paid plan has a far higher ceiling than any of these,
+  //      and must not be held to a free-tier table.
+  it('lets AGENT_GROQ_TPM override the per-model table', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.AGENT_PRIMARY = 'groq';
+    process.env.AGENT_GROQ_TPM = '300000';
+    setupHappyPath();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(res.headers.get('X-Groq-Tpm-Budget')).toBe('300000');
+  });
+
+  // WHY: The "take whatever chat model is on offer" fallback must not reach for
+  //      a speech model or an agentic system. Both were on a real catalogue.
+  it('never falls back to a non-chat model on the catalogue', async () => {
+    process.env.GROQ_API_KEY = 'groq-key-exotic-catalogue';
+    process.env.AGENT_PRIMARY = 'groq';
+    // Nothing the candidate lists know about; only one of these can chat.
+    mockGroqModelList.mockResolvedValue({
+      data: [
+        { id: 'canopylabs/orpheus-v1-english' },
+        { id: 'groq/compound-mini' },
+        { id: 'allam-2-7b' },
+      ],
+    });
+    setupHappyPath();
+
+    await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    const answerCall = mockGroqCreate.mock.calls[1][0] as { model: string };
+    expect(answerCall.model).toBe('allam-2-7b');
+  });
+
   // WHY: A deployment cannot tell whether it is near its provider's per-minute
   //      ceiling without knowing what its prompts actually cost.
   it('reports the prompt size on every answer', async () => {
