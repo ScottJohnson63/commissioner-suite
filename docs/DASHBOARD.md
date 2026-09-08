@@ -41,8 +41,10 @@ shows each league's **status dot**:
 | Waivers | Free agents worth a claim, ranked against your thinnest positions |
 | Trades | Trades that fit both rosters, labelled by how likely they are to be accepted |
 
-Each panel loads on demand — press its button when you want the numbers, so nothing burns
-a Sleeper call you did not ask for.
+Each tab loads itself when you open it, and reloads when you switch leagues — the
+**Refresh** button in the panel's corner is there to pick up scores and odds that have
+moved since. The routes hold their assembled answer for a minute, so moving between tabs
+costs nothing.
 
 ---
 

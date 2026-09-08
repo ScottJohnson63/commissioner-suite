@@ -1,28 +1,16 @@
 'use client';
 
-import { useState } from 'react';
 import type { MatchupReportResponse } from '@/types/projections';
 import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton, NoLeague, PlayerAvatar, StatsSeasonNote } from './shared';
 import { ContextTooltip } from './ContextTooltip';
+import { usePanelReport } from './usePanelReport';
 
 export function MatchupReportPanel({
   leagueId, userId,
 }: { leagueId: string | null; userId: string | null }) {
-  const [data, setData]       = useState<MatchupReportResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
-
-  async function run() {
-    if (!leagueId || !userId) return;
-    setLoading(true); setError(null);
-    try {
-      const res  = await fetch(`/api/sleeper/matchup-report?leagueId=${leagueId}&userId=${userId}`);
-      const json = await res.json() as MatchupReportResponse & { error?: string };
-      if (!res.ok) throw new Error(json.error ?? 'Failed to load matchup report');
-      setData(json);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Error'); }
-    finally { setLoading(false); }
-  }
+  const { data, loading, error, reload } = usePanelReport<MatchupReportResponse>(
+    '/api/sleeper/matchup-report', leagueId, userId, 'Failed to load matchup report',
+  );
 
   return (
     <div className="rounded-xl p-5 flex flex-col gap-4" style={PANEL_BG}>
@@ -33,8 +21,8 @@ export function MatchupReportPanel({
             <p className="text-sm font-semibold" style={{ color: '#e8e6df' }}>Matchup Analysis</p>
           </div>
         </div>
-        <PanelActionBtn onClick={() => void run()} disabled={!leagueId || !userId}
-          loading={loading} label="Analyze Matchup" loadingLabel="Analyzing…" />
+        <PanelActionBtn onClick={() => void reload()} disabled={!leagueId || !userId}
+          loading={loading} label="Refresh" loadingLabel="Analyzing…" />
       </div>
 
       {(!leagueId || !userId) && <NoLeague />}

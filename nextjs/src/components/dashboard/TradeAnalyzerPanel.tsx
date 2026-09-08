@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
 import type { TradeSuggestionsResponse } from '@/types/suggestions';
 import type { Acceptance } from '@/lib/tradeFinder';
 import { PANEL_BG, INNER_BG, PanelActionBtn, PanelSkeleton, NoLeague, PlayerAvatar, StatsSeasonNote } from './shared';
+import { usePanelReport } from './usePanelReport';
 
 /**
  * How the three acceptance tiers read on the card.
@@ -35,23 +35,10 @@ const EMPTY_MESSAGE: Record<NonNullable<TradeSuggestionsResponse['noTradesReason
 export function TradeAnalyzerPanel({
   leagueId, userId,
 }: { leagueId: string | null; userId: string | null }) {
-  const [data, setData]       = useState<TradeSuggestionsResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
-
-  async function run() {
-    if (!leagueId || !userId) return;
-    setLoading(true); setError(null);
-    try {
-      const res = await fetch(
-        // No season param: the server resolves it from NFL_SEASON (see resolveSeason).
-        `/api/sleeper/trade-suggestions?leagueId=${leagueId}&userId=${userId}`,
-      );
-      if (!res.ok) throw new Error('Failed to load trades');
-      setData(await res.json() as TradeSuggestionsResponse);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Error'); }
-    finally { setLoading(false); }
-  }
+  // No season param: the server resolves it from NFL_SEASON (see resolveSeason).
+  const { data, loading, error, reload } = usePanelReport<TradeSuggestionsResponse>(
+    '/api/sleeper/trade-suggestions', leagueId, userId, 'Failed to load trades',
+  );
 
   return (
     <div className="rounded-xl p-5 flex flex-col gap-4" style={PANEL_BG}>
@@ -65,8 +52,8 @@ export function TradeAnalyzerPanel({
             </p>
           </div>
         </div>
-        <PanelActionBtn onClick={() => void run()} disabled={!leagueId || !userId}
-          loading={loading} label="Analyze Trades" loadingLabel="Loading…" />
+        <PanelActionBtn onClick={() => void reload()} disabled={!leagueId || !userId}
+          loading={loading} label="Refresh" loadingLabel="Loading…" />
       </div>
 
       {(!leagueId || !userId) && <NoLeague />}
