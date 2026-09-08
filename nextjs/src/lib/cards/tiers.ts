@@ -36,6 +36,20 @@ export const ELIGIBLE_POSITIONS = ['QB', 'RB', 'WR', 'TE'] as const;
 export type EligiblePosition = (typeof ELIGIBLE_POSITIONS)[number];
 
 /**
+ * What each position is called in prose, plural and lower case.
+ *
+ * Here so that the Draft Deck tour can name the positions that get a card by
+ * walking ELIGIBLE_POSITIONS rather than by listing them again in a sentence.
+ * Adding a position to the list above is then one edit, not two.
+ */
+export const POSITION_LABEL: Record<EligiblePosition, string> = {
+  QB: 'quarterbacks',
+  RB: 'running backs',
+  WR: 'wide receivers',
+  TE: 'tight ends',
+};
+
+/**
  * Highest season-finish rank that still earns each tier, walked in TIER_ORDER.
  *
  * Ranks 1–5 are Hall of Fame, 6–10 Gold, 11–30 Silver, and everyone else
@@ -70,6 +84,21 @@ export const TIER_MAX_RANK: Record<Exclude<CardTier, 'BRONZE'>, number> = {
   GOLD: 10,
   SILVER: 30,
 };
+
+/**
+ * Games a player must have played to be ranked on his average.
+ *
+ * Tiers are set by points per game, which without a floor would hand a Hall of
+ * Fame card to anyone who had one big afternoon and then vanished. Nine games
+ * is half a season: enough that an average means something, low enough that a
+ * genuinely elite player who missed six weeks still competes for the top tier
+ * rather than being punished for being injured.
+ *
+ * Players below the floor still get cards — they played, so they are
+ * collectible — but they are ranked beneath everyone who cleared it, which in
+ * practice makes them Bronze.
+ */
+export const MIN_GAMES_FOR_TIER = 9;
 
 /** Cards dealt by an ordinary pack, whatever its tier. */
 export const CARDS_PER_PACK = 5;
@@ -199,26 +228,6 @@ export const PACK_DROP_WEIGHT: Record<CardTier, number> = {
   BRONZE: 40,
 };
 
-/**
- * What a card of each tier is worth to a deck's score.
- *
- * Ownership is exclusive, so the game is a race for the scarce top of the pool
- * rather than a completion challenge — which means members need a single number
- * to be ranked on, and it has to reward rarity over volume. These weights are
- * roughly the scarcity ratio, compressed: there are about nineteen Bronze cards
- * for every Hall of Fame one, and a Hall of Fame card is worth twenty-five
- * Bronze. Compressing it that way keeps a deep Bronze deck worth something
- * without ever letting it out-score a genuinely rare one.
- *
- * Four Hall of Fame cards beat a hundred Bronze. That is the intended shape.
- */
-export const DECK_POINTS: Record<CardTier, number> = {
-  HALL_OF_FAME: 100,
-  GOLD: 40,
-  SILVER: 15,
-  BRONZE: 4,
-};
-
 /** Display copy for each tier, used by the pack-opening UI and the collection. */
 export const TIER_LABEL: Record<CardTier, string> = {
   HALL_OF_FAME: 'Hall of Fame',
@@ -226,19 +235,6 @@ export const TIER_LABEL: Record<CardTier, string> = {
   SILVER: 'Silver',
   BRONZE: 'Bronze',
 };
-
-/**
- * Total deck score for a set of owned cards, grouped by tier.
- *
- * Takes counts rather than cards so the leaderboard can score every member from
- * one grouped query instead of loading everybody's collection.
- */
-export function deckScore(countsByTier: Partial<Record<CardTier, number>>): number {
-  return TIER_ORDER.reduce(
-    (total, tier) => total + (countsByTier[tier] ?? 0) * DECK_POINTS[tier],
-    0,
-  );
-}
 
 /**
  * Tier assignment for a season finish.

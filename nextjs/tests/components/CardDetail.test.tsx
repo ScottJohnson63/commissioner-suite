@@ -56,6 +56,20 @@ function panel(over: Partial<OwnedCardDto> = {}, rewardsRemaining = 15) {
 }
 
 describe('CardDetail', () => {
+  it('gives the lineup the whole pane rather than the column beside the card', () => {
+    // The phone layout puts the card and the form side by side and drops the
+    // lineup underneath, across both columns — four slots in a ~150px column
+    // is four rows of buttons, and four rows is what pushed the dialog past
+    // the bottom of the screen. Structural rather than visual, because the
+    // rule that matters is which box the buttons live in.
+    panel();
+
+    const lineup = screen.getByText('Lineup').parentElement as HTMLElement;
+    expect(lineup.className).toContain('col-span-2');
+    // A child of the grid itself, not of the form column.
+    expect((lineup.parentElement as HTMLElement).className).toContain('grid');
+  });
+
   it('prompts when nothing is selected', () => {
     render(
       <CardDetail card={null} roster={ROSTER} onSave={onSave} onAssign={onAssign}

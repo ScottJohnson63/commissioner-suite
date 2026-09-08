@@ -678,13 +678,26 @@ Names and pictures are read live rather than frozen: a member who renames a card
 after the fact renames it everywhere, which is what a nickname is for. Only the
 score is frozen.
 
+The reveal is drawn twice from one component. On the **lineup** tab it is a
+framed panel under the roster, picking its week from a row of buttons — at most
+eighteen of them, and seeing how many weeks have been played is worth the width.
+On the **packs** tab it is behind the **Season** tile: tapping the number that
+reports your season total opens the same panel in a dialog, which is the bargain
+"Packs left" already makes one tile over — the number is the way into the thing
+it summarises. A dialog is phone-wide, so there the weeks collapse into a
+dropdown, newest first.
+
+Opening that dialog re-reads with no `?week=`, so it always opens on the current
+week however far into the back catalogue the last visit wandered.
+
 ---
 
 ## Season reset
 
 Everything a member owns is scoped to `gameSeason`, which tracks `NFL_SEASON`.
-A commissioner clears a season from the panel at the bottom of `/league/cards`,
-which requires typing the year back before the button enables.
+A commissioner clears a season from the Draft Deck tab of
+`/league/commissioner`, which requires typing the year back before the button
+enables.
 
 The reset clears decks, grants, openings, lineups and submitted weeks — which
 also releases every claimed card back into the pool for the new season, and
@@ -793,7 +806,8 @@ Two ways to run it:
 npx tsx prisma/rebuild-pool.ts
 ```
 
-from `nextjs/`, or the rebuild button on `/league/cards` under Commissioner.
+from `nextjs/`, or the rebuild button on the Draft Deck tab of
+`/league/commissioner`.
 Both call the same `rebuildCardPool`. The CLI form prints the tier counts before
 and after and checks for orphaned ownerships, which is worth having when the
 rebuild follows a band change rather than a routine stat sync.

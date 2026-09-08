@@ -2,12 +2,15 @@
 
 // /league/cards — Draft Deck.
 //
-// Four tabs over one fetch: Packs is where cards come from, Deck is what you
-// have, Lineup is the week you are playing, and Commissioner is the pool behind
-// all of it. It was a single scroll — the ration, the opener, the rank card,
-// the lineup, the standings, the grid and an admin panel, in that order — which
-// meant opening a pack and looking something up in your deck were the same
-// page-length journey.
+// Three tabs over one fetch: Packs is where cards come from, Deck is what you
+// have, and Lineup is the week you are playing. It was a single scroll — the
+// ration, the opener, the rank card, the lineup, the standings, the grid and an
+// admin panel, in that order — which meant opening a pack and looking something
+// up in your deck were the same page-length journey.
+//
+// The pool behind all of it was a fourth tab here, right-aligned and
+// commissioner-only. It is now the Draft Deck tab of /league/commissioner,
+// alongside the rest of running the league — this page is the game.
 //
 // The results of a published week are the one thing not on the collection
 // fetch. They are a league-wide read of every lineup rather than a member's own
@@ -21,7 +24,7 @@
 // person, so there is no public view to degrade to — a signed-out visitor gets
 // an explanation rather than an empty grid.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { PackOpener } from '@/components/cards/PackOpener';
@@ -29,11 +32,10 @@ import { DeckGrid } from '@/components/cards/DeckGrid';
 import { RosterPanel } from '@/components/cards/RosterPanel';
 import { RankCard } from '@/components/cards/RankCard';
 import { Standings } from '@/components/cards/Standings';
-import { BonusBanner } from '@/components/cards/BonusBanner';
-import { CardAdminPanel } from '@/components/cards/CardAdminPanel';
 import { PendingWildcards } from '@/components/cards/WildcardReveal';
 import { WeeklyPanel } from '@/components/cards/WeeklyPanel';
 import { WeekResults } from '@/components/cards/WeekResults';
+import { CardsLeftPanel } from '@/components/cards/CardsLeftPanel';
 import { CardDetail } from '@/components/cards/CardDetail';
 import { CardsDialog } from '@/components/cards/CardsDialog';
 import { useForceSidebarCollapsed } from '@/components/useSidebarForceCollapse';
@@ -46,8 +48,8 @@ import type {
   RosterUpdateResponse, WeekResultsDto, WildcardResponse,
 } from '@/types/cards';
 
-/** The tabs, in bar order. Commissioner is right-aligned and gated on role. */
-type Tab = 'packs' | 'deck' | 'lineup' | 'commissioner';
+/** The tabs, in bar order. */
+type Tab = 'packs' | 'deck' | 'lineup';
 
 /**
  * Lineup is its own tab rather than a panel inside Deck.
@@ -57,19 +59,14 @@ type Tab = 'packs' | 'deck' | 'lineup' | 'commissioner';
  * scroll meant the thing that decides your standing sat under the thing you
  * only look at, and every lineup change was a scroll past the whole collection.
  */
-const LEFT_TABS: { id: Tab; label: string }[] = [
+const TABS: { id: Tab; label: string }[] = [
   { id: 'packs',  label: 'Packs' },
   { id: 'deck',   label: 'Deck' },
   { id: 'lineup', label: 'Lineup' },
 ];
 
-const RIGHT_TABS: { id: Tab; label: string }[] = [
-  { id: 'commissioner', label: 'Commissioner' },
-];
-
 export default function CardsPage() {
-  const { data: session, status } = useSession();
-  const isCommissioner = session?.user?.role === 'COMMISSIONER';
+  const { status } = useSession();
   const [data, setData] = useState<CollectionResponse | null>(null);
   const [busySlot, setBusySlot] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,16 +75,21 @@ export default function CardsPage() {
   // from inside the effect — a synchronous setState that cascades a re-render.
   // Deriving it below keeps the effect to just the fetch.
   const [settled, setSettled] = useState(false);
-  const [rawTab, setRawTab] = useState<Tab>('packs');
+  const [tab, setTab] = useState<Tab>('packs');
   // The card open in the detail panel, by id rather than by value: the deck is
   // re-read after every save, so holding the object would pin a stale copy.
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
   // The pack opener lives behind a dialog opened from the "Packs left" stat —
   // see the Packs tab below. Kept separate from `pack` state inside PackOpener
   // itself, which is why closing this never discards a reveal in progress.
   const [packDialogOpen, setPackDialogOpen] = useState(false);
+  // The week's results behind the "Season" stat, the same idea one tile over:
+  // the number is the button for the thing it summarises.
+  const [seasonDialogOpen, setSeasonDialogOpen] = useState(false);
+  // And the third tile the same way: "Cards left" is one number, and what it is
+  // a number *of* — the pool, what has been claimed, and whose decks it went
+  // into — is behind this.
+  const [cardsLeftDialogOpen, setCardsLeftDialogOpen] = useState(false);
   // Published results, fetched per week rather than with the collection — see
   // the note at the top. `null` week means "whatever the latest one is", which
   // is what the route answers an absent ?week= with.
@@ -100,28 +102,7 @@ export default function CardsPage() {
   // estate that row wants before any of that starts truncating. Only takes
   // effect on a narrow viewport; a member with the sidebar pinned open on a
   // wide screen keeps it.
-  useForceSidebarCollapsed(rawTab === 'lineup');
-
-  // Derived rather than stored, so a member who loses the commissioner role
-  // mid-session falls back to Packs instead of staring at a tab that is no
-  // longer in the bar. Guarding only on setRawTab would leave the old value in
-  // place and render nothing.
-  const tab: Tab = rawTab === 'commissioner' && !isCommissioner ? 'packs' : rawTab;
-
-  const setTab = useCallback((next: Tab) => {
-    setRawTab(next);
-    setMenuOpen(false);
-  }, []);
-
-  // Close the mobile menu on any click outside it.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [menuOpen]);
+  useForceSidebarCollapsed(tab === 'lineup');
 
   /**
    * One request, not two.
@@ -178,14 +159,20 @@ export default function CardsPage() {
     }
   }, []);
 
-  // Fetched the first time the lineup tab is opened, and re-fetched when a new
-  // week is published — `revealedWeeks` growing is what says that has happened.
+  // Fetched the first time the lineup tab is opened or the Season dialog is
+  // and re-fetched when a new week is published — `revealedWeeks` growing is
+  // what says that has happened.
+  //
+  // Opening the dialog re-reads with a null week, which is what makes it open
+  // on the current week however deep into the season's back catalogue the last
+  // visit wandered.
   const revealed = data?.weekly.revealedWeeks.length ?? 0;
+  const wantsResults = tab === 'lineup' || seasonDialogOpen;
   useEffect(() => {
     // Same shape as the fetch-on-mount above, disabled for the same reason.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (tab === 'lineup' && revealed > 0) void loadResults(null);
-  }, [tab, revealed, loadResults]);
+    if (wantsResults && revealed > 0) void loadResults(null);
+  }, [wantsResults, revealed, loadResults]);
 
   const loading = status === 'loading' || (status === 'authenticated' && !settled);
 
@@ -328,7 +315,7 @@ export default function CardsPage() {
     );
   }
 
-  const { allowance, stats, cards, roster, standings, bonus, weekly, seasons } = data;
+  const { allowance, stats, cards, roster, standings, weekly, seasons } = data;
   const poolEmpty = allowance.poolSize === 0;
 
   // Resolved from the freshly-read deck rather than stored, so the panel shows
@@ -341,25 +328,22 @@ export default function CardsPage() {
   const rewardsRemaining = Math.max(0, MAX_CUSTOMIZATION_PACKS - finished);
 
   return (
-    <Shell
-      tab={tab}
-      onTab={setTab}
-      showCommissioner={isCommissioner}
-      menuOpen={menuOpen}
-      onMenu={setMenuOpen}
-      menuRef={menuRef}
-    >
+    <Shell tab={tab} onTab={setTab}>
       {/* ── Packs ──────────────────────────────────────────────────────────
           Kept mounted rather than unmounted on a tab switch: the opener holds
           a torn pack and a half-turned reveal in local state, and looking
           something up in the deck mid-pack should not throw the pack away. */}
       <div style={{ display: tab === 'packs' ? undefined : 'none' }}>
         {/* ── This week's ration ──
-            Three tiles in one row even on the smallest current iPhone: the
-            grid is a fixed three columns rather than auto-fit, so it never
-            wraps, and Stat shrinks its own type at the sm breakpoint instead
-            of the tiles reflowing. */}
-        <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-6">
+            Draft Packs on a row of its own, above the pair.
+
+            The three were one row of equal tiles, which said they were three
+            statistics. They are not: two report the season and the pool, and
+            the third is how you play — the sealed pack is behind it. It now
+            gets the width and the size that says so, and the row under it is
+            the two readouts, side by side on the smallest current iPhone
+            without wrapping. */}
+        <div className="flex justify-center mb-2 sm:mb-3">
           {/* The pack itself stays off-screen until this is tapped — see the
               dialog below. The card doubles as that button, so opening a pack
               starts from the same number that says how many you have. */}
@@ -367,32 +351,48 @@ export default function CardsPage() {
             type="button"
             onClick={() => setPackDialogOpen(true)}
             disabled={poolEmpty}
-            className="text-left disabled:cursor-default"
+            className="w-full max-w-[15rem] disabled:cursor-default"
             aria-haspopup="dialog"
           >
-            <Stat label="Packs left" value={String(allowance.remaining)} accent
+            <Stat label="Draft Packs" value={String(allowance.remaining)} accent center
                   hint={
-                    // Before the ration starts, say when it starts. "2 a week"
-                    // beside a week-1 deck reads as two packs waiting, and
-                    // there are none — week 1 is the starter grant and
-                    // nothing else.
-                    [
-                      allowance.starterRemaining > 0
-                        ? `${allowance.starterRemaining} starter`
-                        : null,
-                      allowance.week < allowance.rationStartsWeek
-                        ? `${allowance.perWeek} a week from week ${allowance.rationStartsWeek}`
-                        : `${allowance.perWeek} a week`,
-                    ].filter(Boolean).join(' · ')
+                    // The ration is the tour's to explain. Spelling it out here
+                    // — "2 a week", or "2 a week from week 2" before it starts
+                    // — read as packs waiting to be opened, right under the
+                    // number saying how many actually are. Starter packs stay,
+                    // because those are a supply in hand rather than a rule.
+                    allowance.starterRemaining > 0
+                      ? `${allowance.starterRemaining} starter`
+                      : undefined
                   } />
           </button>
-          <Stat label="Season" value={stats.seasonPoints.toFixed(1)}
-                hint={`${stats.started} of ${ROSTER_SIZE} started · wk ${weekly.week}`} />
-          <Stat
-            label="Cards left"
-            value={allowance.remainingCards.toLocaleString()}
-            hint={`of ${allowance.poolSize.toLocaleString()} · ${allowance.members} playing`}
-          />
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-6">
+          {/* Same bargain as "Draft Packs": the tile that reports the season is
+              the way into what the season is made of — every published week's
+              reveal, newest first, in a dialog rather than a trip to the
+              lineup tab. */}
+          <button
+            type="button"
+            onClick={() => setSeasonDialogOpen(true)}
+            className="text-left h-full"
+            aria-haspopup="dialog"
+          >
+            <Stat label="Season" value={stats.seasonPoints.toFixed(1)}
+                  hint={`${stats.started} of ${ROSTER_SIZE} started · wk ${weekly.week}`} />
+          </button>
+          {/* And the third: just the count. What it is out of, and who has
+              taken the rest, is a tap away rather than an unreadable hint line
+              under it — the tile is the question and the dialog is the
+              answer. */}
+          <button
+            type="button"
+            onClick={() => setCardsLeftDialogOpen(true)}
+            className="text-left h-full"
+            aria-haspopup="dialog"
+          >
+            <Stat label="Cards left" value={allowance.remainingCards.toLocaleString()} />
+          </button>
         </div>
 
         {/* Wildcards found in an earlier pack and never thrown. The opener
@@ -417,11 +417,6 @@ export default function CardsPage() {
           </div>
         )}
 
-        {/* ── What Sleeper earned you this week ── */}
-        <div className="mb-6">
-          <BonusBanner bonus={bonus} remaining={allowance.bonusRemaining} />
-        </div>
-
         {/* ── Opener, in place on the page ──
             Nothing to tear open, so there is nothing worth hiding behind a
             dialog for it — the pool being empty is a commissioner problem,
@@ -439,7 +434,7 @@ export default function CardsPage() {
           </p>
         ) : (
           <p className="text-xs text-center py-6" style={{ color: '#555' }}>
-            Tap <span style={{ color: '#80ff49' }}>Packs left</span> above to open one.
+            Tap <span style={{ color: '#80ff49' }}>Draft Packs</span> above to open one.
           </p>
         )}
 
@@ -464,6 +459,42 @@ export default function CardsPage() {
             />
           </CardsDialog>
         )}
+
+        {/* ── The week's results, behind the Season tile ──
+            The same panel the lineup tab draws, in its dialog variant. Wide
+            enough for the run of played cards to be more than one per row on a
+            laptop, which is the half of the reveal worth opening for. */}
+        <CardsDialog
+          open={seasonDialogOpen}
+          onClose={() => setSeasonDialogOpen(false)}
+          title="Draft Deck · Results"
+          widthClassName="sm:max-w-2xl"
+        >
+          <WeekResults
+            results={results}
+            week={resultsWeek}
+            onWeek={(w) => void loadResults(w)}
+            loading={resultsLoading}
+            variant="dialog"
+          />
+        </CardsDialog>
+
+        {/* ── The pool, itemised, behind the Cards left tile ──
+            The third tile's dialog, and the one that needs the least room:
+            a headline count and a row per member at the default width. */}
+        <CardsDialog
+          open={cardsLeftDialogOpen}
+          onClose={() => setCardsLeftDialogOpen(false)}
+          title="Draft Deck · Cards Left"
+        >
+          <CardsLeftPanel
+            remainingCards={allowance.remainingCards}
+            poolSize={allowance.poolSize}
+            claimed={allowance.claimed}
+            members={allowance.members}
+            entries={standings}
+          />
+        </CardsDialog>
       </div>
 
       {/* ── Deck ───────────────────────────────────────────────────────────
@@ -499,6 +530,11 @@ export default function CardsPage() {
           onClose={() => setSelectedId(null)}
           title="Draft Deck · Card"
           widthClassName="sm:max-w-2xl"
+          // The one dialog whose child sizes itself to the phone, so the one
+          // that holds still instead of scrolling. A card is a fixed set of
+          // controls — a name, a picture, the lineup — not a list that can
+          // grow past the pane.
+          fitViewport
         >
           <CardDetail
             // Remounts on a change of selection, which is what resets the
@@ -556,11 +592,6 @@ export default function CardsPage() {
           {standings.length > 1 && <Standings entries={standings} />}
         </>
       )}
-
-      {/* ── Commissioner ── */}
-      {tab === 'commissioner' && isCommissioner && (
-        <CardAdminPanel gameSeason={allowance.gameSeason} onChanged={() => void load()} />
-      )}
     </Shell>
   );
 }
@@ -569,11 +600,14 @@ export default function CardsPage() {
  * Page chrome and the tab bar.
  *
  * The bar copies the league dashboard's: same button metrics, same 2px active
- * underline sitting on the container's own border, and Commissioner pushed to
- * the right by a flex spacer and a hairline divider. Right-alignment is the
- * dashboard's convention for "this is administration, not the thing you came
- * for", and repeating it here means it reads as the same idea rather than a
- * fourth thing to learn.
+ * underline sitting on the container's own border — and, on a phone, the same
+ * place. The tabs are what you come here to switch, so they sit at the very top
+ * of the screen and stay there as the page scrolls, rather than under a title
+ * and a back link that cost a phone its first screenful before the game starts.
+ *
+ * They were a dropdown on a phone, which hid two of three tabs behind a tap and
+ * gave Packs, Deck and Lineup no presence at all. Three short labels fit across
+ * the narrowest phone in use, so there is nothing to hide.
  *
  * Every state of the page renders inside this — loading, signed out, error —
  * so the header does not appear and disappear as the fetch settles. The bar
@@ -581,23 +615,20 @@ export default function CardsPage() {
  * rather than read from a context.
  */
 function Shell({
-  children, tab, onTab, showCommissioner, menuOpen, onMenu, menuRef,
+  children, tab, onTab,
 }: {
   children: React.ReactNode;
   tab?: Tab;
   onTab?: (t: Tab) => void;
-  showCommissioner?: boolean;
-  menuOpen?: boolean;
-  onMenu?: (open: boolean) => void;
-  menuRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   const tabbed = tab !== undefined && onTab !== undefined;
-  const visible = [...LEFT_TABS, ...(showCommissioner ? RIGHT_TABS : [])];
 
+  // One definition for both bars, so the phone's tabs cannot drift from the
+  // desktop's — the same arrangement the dashboard uses.
   const TabBtn = ({ id, label }: { id: Tab; label: string }) => (
     <button
       onClick={() => onTab?.(id)}
-      className="px-4 py-2.5 text-sm font-medium transition-colors"
+      className="px-4 py-2.5 text-sm font-medium transition-colors shrink-0 whitespace-nowrap"
       style={{
         color: tab === id ? '#e8e6df' : '#555',
         borderBottom: `2px solid ${tab === id ? '#80ff49' : 'transparent'}`,
@@ -609,114 +640,101 @@ function Shell({
   );
 
   return (
-    <div className="min-h-full px-4 py-8 sm:px-8" style={{ color: '#e8e6df' }}>
-      <div className="max-w-5xl mx-auto">
-        <div className="mb-8 flex items-start justify-between gap-4">
-          <div>
-            <Link
-              href="/league/dashboard"
-              className="text-[10px] tracking-widest uppercase mb-2 block transition-colors hover:text-[#e8e6df]"
-              style={{ color: '#555' }}
+    <div className="min-h-full" style={{ color: '#e8e6df' }}>
+      {/* ── Tab bar — mobile ──
+          Pinned to the top of `main`, which is the pane that scrolls — see the
+          note in league/layout.tsx for why the shell around it has to be sized
+          in `dvh` for that to hold still on a phone. */}
+      {tabbed && (
+        <div
+          className="sm:hidden sticky top-0 z-30 border-b"
+          style={{
+            borderColor: '#1e1e20',
+            background: 'rgba(14,14,15,0.95)',
+            backdropFilter: 'blur(8px)',
+          }}
+        >
+          <div className="flex items-stretch px-1">
+            {TABS.map((t) => <TabBtn key={t.id} {...t} />)}
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 py-6 sm:px-8 sm:py-8">
+        <div className="max-w-5xl mx-auto">
+          <div className="mb-6 sm:mb-8 flex items-start justify-between gap-4">
+            <div>
+              {/* Desktop only. A phone reaches the dashboard from the nav it
+                  already has, and the link was sitting where the tabs now are —
+                  the top of the screen, which on a phone is the whole budget. */}
+              <Link
+                href="/league/dashboard"
+                className="hidden sm:block text-[10px] tracking-widest uppercase mb-2 transition-colors hover:text-[#e8e6df]"
+                style={{ color: '#555' }}
+              >
+                ← Dashboard
+              </Link>
+              <h1 className="text-xl font-semibold">Draft Deck</h1>
+              <p className="text-xs mt-1" style={{ color: '#555' }}>
+                Build your deck. Win your legacy.
+              </p>
+            </div>
+
+            {/* The rules, on demand. The same carousel opens itself on a first
+                visit and on a sidebar click; this is the way back to it for
+                somebody who dismissed it for good. */}
+            <button
+              onClick={openDraftDeckIntro}
+              className="text-[11px] font-medium px-3 py-1.5 rounded shrink-0 transition-colors"
+              style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
             >
-              ← Dashboard
-            </Link>
-            <h1 className="text-xl font-semibold">Draft Deck</h1>
-            <p className="text-xs mt-1" style={{ color: '#555' }}>
-              Collect every player from every season the league has played.
-            </p>
+              How it works
+            </button>
           </div>
 
-          {/* The rules, on demand. The same carousel opens itself on a first
-              visit and on a sidebar click; this is the way back to it for
-              somebody who dismissed it for good. */}
-          <button
-            onClick={openDraftDeckIntro}
-            className="text-[11px] font-medium px-3 py-1.5 rounded shrink-0 transition-colors"
-            style={{ color: '#80ff49', border: '1px solid rgba(128,255,73,0.3)' }}
-          >
-            How it works
-          </button>
-        </div>
-
-        {tabbed && (
-          <>
-            {/* ── Tab bar — desktop ── */}
+          {/* ── Tab bar — desktop ──
+              A wide screen has room for the title above the tabs, so they stay
+              where they were rather than following the phone's to the top. */}
+          {tabbed && (
             <div
               className="hidden sm:flex items-stretch border-b mb-6"
               style={{ borderColor: '#1e1e20' }}
             >
-              {LEFT_TABS.map((t) => <TabBtn key={t.id} {...t} />)}
-              {showCommissioner && (
-                <>
-                  <div className="flex-1" />
-                  <div className="w-px my-2" style={{ background: '#1e1e20' }} />
-                  {RIGHT_TABS.map((t) => <TabBtn key={t.id} {...t} />)}
-                </>
-              )}
+              {TABS.map((t) => <TabBtn key={t.id} {...t} />)}
             </div>
+          )}
 
-            {/* ── Tab bar — mobile ──
-                A bar that scrolls sideways hides the right-hand tab, which is
-                the one that is hardest to guess at. A menu shows all of them. */}
-            <div
-              ref={menuRef}
-              className="flex sm:hidden relative border-b mb-6"
-              style={{ borderColor: '#1e1e20' }}
-            >
-              <button
-                onClick={() => onMenu?.(!menuOpen)}
-                aria-expanded={menuOpen}
-                aria-haspopup="menu"
-                className="px-4 py-2.5 text-sm font-medium flex items-center gap-2"
-                style={{ color: '#e8e6df' }}
-              >
-                {visible.find((t) => t.id === tab)?.label ?? 'Packs'}
-                <span style={{ color: '#555', fontSize: 10 }}>▾</span>
-              </button>
-
-              {menuOpen && (
-                <div
-                  role="menu"
-                  className="absolute top-full left-0 z-50 min-w-[160px] rounded-lg overflow-hidden shadow-lg mt-1"
-                  style={{ background: '#141415', border: '1px solid #1e1e20' }}
-                >
-                  {visible.map(({ id, label }) => (
-                    <button
-                      key={id}
-                      role="menuitem"
-                      onClick={() => onTab?.(id)}
-                      className="block w-full text-left px-4 py-2.5 text-sm transition-colors"
-                      style={{
-                        color: tab === id ? '#80ff49' : '#999',
-                        background: tab === id ? 'rgba(128,255,73,0.08)' : 'transparent',
-                      }}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        )}
-
-        {children}
+          {children}
+        </div>
       </div>
 
       {/* Rendered from the shell so the tour is available in every state of the
           page — loading, signed out and errored included. */}
-      <DraftDeckIntro isCommissioner={showCommissioner ?? false} />
+      <DraftDeckIntro />
     </div>
   );
 }
 
 function Stat({
-  label, value, hint, accent,
-}: { label: string; value: string; hint?: string; accent?: boolean }) {
+  label, value, hint, accent, center,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  accent?: boolean;
+  /**
+   * The hero treatment: centered and a size up.
+   *
+   * Only Draft Packs wears it. It is the tile the game starts from — the pack
+   * itself is behind it — and on a row of three identical tiles it read as one
+   * statistic among three rather than as the button it is.
+   */
+  center?: boolean;
+}) {
   return (
     <div
-      className="rounded p-2 sm:p-3 min-w-0"
-      style={{ background: '#0e0e0f', border: '1px solid #1e1e20' }}
+      className={`rounded min-w-0 h-full ${center ? 'p-3 sm:p-4 text-center' : 'p-2 sm:p-3'}`}
+      style={{ background: '#0e0e0f', border: `1px solid ${center && accent ? 'rgba(128,255,73,0.28)' : '#1e1e20'}` }}
     >
       <div
         className="text-[8px] sm:text-[10px] uppercase mb-1 sm:mb-1.5 truncate"
@@ -725,7 +743,7 @@ function Stat({
         {label}
       </div>
       <div
-        className="text-sm sm:text-lg font-bold truncate"
+        className={`font-bold truncate ${center ? 'text-2xl sm:text-3xl' : 'text-sm sm:text-lg'}`}
         style={{ color: accent ? '#80ff49' : '#e8e6df' }}
       >
         {value}

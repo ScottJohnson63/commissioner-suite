@@ -15,8 +15,9 @@
 
 import { describe, it, expect } from '@jest/globals';
 import {
-  MAX_GAME_WEEK, currentWindow, formatCentral, labourDay, lastRevealedWeek,
-  lockAt, phaseOf, revealAt, revealedWeeks, seasonOver, windowForWeek,
+  LOCK_HOUR, LOCK_MINUTE, MAX_GAME_WEEK, REVEAL_HOUR, clockLabel, currentWindow,
+  formatCentral, labourDay, lastRevealedWeek, lockAt, phaseOf, revealAt,
+  revealedWeeks, seasonOver, windowForWeek,
 } from '@/lib/cards/weeklyGame';
 
 /** The wall clock in Chicago at an instant, for asserting on a deadline. */
@@ -149,5 +150,23 @@ describe('which week a submission belongs to', () => {
     expect(revealedWeeks(2025, at('2025-10-01T16:00:00Z'))).toEqual([1, 2, 3, 4]);
     // An hour before week 4's reveal, only three are out.
     expect(revealedWeeks(2025, at('2025-09-30T13:00:00Z'))).toEqual([1, 2, 3]);
+  });
+});
+
+// The Draft Deck tour states both deadlines through this, so that "submit by
+// Monday 11:59pm" is read off LOCK_HOUR rather than typed out — see issue #43.
+describe('clockLabel', () => {
+  it('states the two real deadlines the way a member reads them', () => {
+    expect(clockLabel(LOCK_HOUR, LOCK_MINUTE)).toBe('11:59pm');
+    expect(clockLabel(REVEAL_HOUR)).toBe('10:00am');
+  });
+
+  it('always shows minutes, pads them, and reads noon and midnight as 12', () => {
+    expect(clockLabel(9, 0)).toBe('9:00am');
+    expect(clockLabel(9, 5)).toBe('9:05am');
+    expect(clockLabel(12)).toBe('12:00pm');
+    expect(clockLabel(0)).toBe('12:00am');
+    expect(clockLabel(0, 1)).toBe('12:01am');
+    expect(clockLabel(13, 30)).toBe('1:30pm');
   });
 });

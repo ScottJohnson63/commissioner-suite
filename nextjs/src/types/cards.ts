@@ -286,6 +286,16 @@ export interface RosterUpdateResponse {
   stats: DeckStatsDto;
 }
 
+/** GET /api/cards/pool — the pool itself, as opposed to anybody's collection. */
+export interface PoolResponse {
+  gameSeason: number;
+  poolSize: number;
+  perWeek: number;
+  seasons: number[];
+  /** Cards per tier, keyed by tier name. */
+  byTier: Record<string, number>;
+}
+
 /** GET /api/cards/leaderboard */
 export interface LeaderboardResponse {
   gameSeason: number;

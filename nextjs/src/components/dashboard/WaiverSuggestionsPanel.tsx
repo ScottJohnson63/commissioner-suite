@@ -5,6 +5,7 @@ import Image from 'next/image';
 import type { PositionNeed, StatWindow, WaiverSuggestionsResponse } from '@/types/suggestions';
 import { SLEEPER_THUMB, PANEL_BG, PanelActionBtn, PanelSkeleton, NoLeague, StatsSeasonNote } from './shared';
 import { ContextTooltip } from './ContextTooltip';
+import { usePanelReport } from './usePanelReport';
 
 // Two-stage image loader: DB headshot (NFL CDN) → Sleeper CDN → letter avatar.
 // Each stage only fires if the previous one returned an error or was unavailable.
@@ -126,22 +127,12 @@ function NeedRow({ need }: { need: PositionNeed }) {
 export function WaiverSuggestionsPanel({
   leagueId, userId,
 }: { leagueId: string | null; userId: string | null }) {
-  const [data, setData]       = useState<WaiverSuggestionsResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
+  // No season param: the server resolves it from NFL_SEASON (see resolveSeason).
+  const { data, loading, error, reload } = usePanelReport<WaiverSuggestionsResponse>(
+    '/api/sleeper/waiver-suggestions', leagueId, userId, 'Failed to load suggestions',
+  );
   const [posFilter, setPosFilter] = useState<string | null>(null);
   const [page, setPage]           = useState(0);
-
-  // The list the rows are drawn from: every suggestion, or one position's.
-  const shown = useMemo(
-    () => (data?.suggestions ?? []).filter((s) => !posFilter || s.position === posFilter),
-    [data, posFilter],
-  );
-  const pageCount = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
-  // Clamped rather than reset: a filter that shortens the list should not throw
-  // away the reader's place when the page they were on still exists.
-  const safePage  = Math.min(page, pageCount - 1);
-  const rows      = shown.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
 
   // Positions actually present in the pool, in the order the server mixed them —
   // which is worst-need first, so the first chip is the biggest hole.
@@ -151,19 +142,29 @@ export function WaiverSuggestionsPanel({
     return seen;
   }, [data]);
 
-  async function run() {
-    if (!leagueId || !userId) return;
-    setLoading(true); setError(null);
-    setPosFilter(null); setPage(0);
-    try {
-      const res = await fetch(
-        // No season param: the server resolves it from NFL_SEASON (see resolveSeason).
-        `/api/sleeper/waiver-suggestions?leagueId=${leagueId}&userId=${userId}`,
-      );
-      if (!res.ok) throw new Error('Failed to load suggestions');
-      setData(await res.json() as WaiverSuggestionsResponse);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Error'); }
-    finally { setLoading(false); }
+  // A filter belongs to the list it was chosen from, and the list reloads on
+  // its own when the league changes underneath it. Falling back to everything
+  // when the new pool has no such chip beats filtering the whole list away.
+  const activeFilter = posFilter && positions.includes(posFilter) ? posFilter : null;
+
+  // The list the rows are drawn from: every suggestion, or one position's.
+  const shown = useMemo(
+    () => (data?.suggestions ?? []).filter((s) => !activeFilter || s.position === activeFilter),
+    [data, activeFilter],
+  );
+  const pageCount = Math.max(1, Math.ceil(shown.length / PAGE_SIZE));
+  // Clamped rather than reset: a filter that shortens the list should not throw
+  // away the reader's place when the page they were on still exists.
+  const safePage  = Math.min(page, pageCount - 1);
+  const rows      = shown.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+
+  // The reader's filter and page belong to the list they were looking at, so a
+  // refresh puts both back rather than opening the new list part-way down a
+  // position that may not be in it.
+  function refresh() {
+    setPosFilter(null);
+    setPage(0);
+    void reload();
   }
 
   return (
@@ -175,8 +176,8 @@ export function WaiverSuggestionsPanel({
             <p className="text-sm font-semibold" style={{ color: '#e8e6df' }}>Waiver Wire</p>
           </div>
         </div>
-        <PanelActionBtn onClick={() => void run()} disabled={!leagueId || !userId}
-          loading={loading} label="Find Suggestions" loadingLabel="Loading…" />
+        <PanelActionBtn onClick={refresh} disabled={!leagueId || !userId}
+          loading={loading} label="Refresh" loadingLabel="Loading…" />
       </div>
 
       {(!leagueId || !userId) && <NoLeague />}
@@ -222,8 +223,8 @@ export function WaiverSuggestionsPanel({
                     onClick={() => { setPosFilter(pos); setPage(0); }}
                     className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
                     style={{
-                      background: posFilter === pos ? 'rgba(128,255,73,0.12)' : '#1a1a1c',
-                      color:      posFilter === pos ? '#80ff49' : '#666',
+                      background: activeFilter === pos ? 'rgba(128,255,73,0.12)' : '#1a1a1c',
+                      color:      activeFilter === pos ? '#80ff49' : '#666',
                     }}
                   >
                     {pos ?? 'All'}
