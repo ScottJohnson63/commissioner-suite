@@ -53,12 +53,15 @@
 //   which is right on a paid Groq plan, where it is much the faster of the two.
 //
 //   Whichever leads, a failure of ANY kind moves to the other: a rate limit, a
-//   revoked key, a retired model ID, an outage. Groq is additionally DEFERRED
-//   when the prompt is larger than AGENT_GROQ_TPM, since its per-minute ceiling
-//   refuses an oversized prompt outright — and does so selectively, answering
-//   NFL questions and refusing the roster ones. Deferred, not ruled out: if
-//   nothing else answers, the oversized request is made anyway, because a 429
-//   that might not happen beats an error that certainly will.
+//   revoked key, a retired model ID, an outage.
+//
+//   Each provider is given the prompt FITTED TO ITS OWN CEILING. Gemini allows
+//   a quarter of a million tokens a minute and never needs cutting; Groq's free
+//   tier stops at a few thousand and answers 413 rather than degrading — a
+//   deployment reported "Limit 8000, Requested 12890". One prompt sized for
+//   both would be a prompt sized for the smaller, so instead the blocks are
+//   assembled once and rendered per attempt. See renderPrompt for what is
+//   given up first.
 //
 //   X-Model-Used and X-Fallback-Reason (groq_rate_limit | groq_error |
 //   groq_unavailable | groq_prompt_too_large | gemini_error |
@@ -67,8 +70,11 @@
 //   the route return 502, and the body carries each provider's error so the
 //   browser can show what actually went wrong.
 //
-//   Groq model IDs are discovered from the account's own catalogue rather than
-//   hardcoded, because a retired ID 404s every request and reads as an outage.
+//   NEITHER provider's model ID is hardcoded, because a retired one 404s every
+//   request and reads as an outage. Both have done it here: a Groq catalogue
+//   came back with no llama model on it at all, and a Gemini key answered
+//   "gemini-2.5-flash is no longer available to new users" minutes after the
+//   probe had listed that very model as available.
 //   This is not hypothetical: a live account's catalogue came back carrying no
 //   llama model at all, and the search fell through to gpt-oss as designed.
 //   GET /api/agent?live=1 reports what each key can actually reach, which model
@@ -90,7 +96,9 @@
 //   GROQ_MODEL      — optional. Pins the Groq model for both passes; without it
 //                     the model is discovered from the account's catalogue.
 //   GROQ_PLANNER_MODEL — optional. Pins Pass 1 only.
-//   GEMINI_MODEL    — optional model ID override (default gemini-2.5-flash).
+//   GEMINI_MODEL    — optional. Pins the Gemini model; without it the model is
+//                     discovered from the account's catalogue and a 404 walks
+//                     down GEMINI_ANSWER_CANDIDATES.
 //   AGENT_PRIMARY   — optional. 'groq' to answer on Groq first; anything else
 //                     (or unset) answers on Gemini first.
 //   AGENT_GROQ_TPM  — optional. Largest prompt, in tokens, worth sending to
@@ -218,8 +226,82 @@ const GROQ_TPM_BY_MODEL: Record<string, number> = {
 /** Assumed ceiling for a model the table does not name. */
 const GROQ_TPM_DEFAULT = 8_000;
 
-function geminiModel(): string {
-    return process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+/**
+ * Answer models, newest first.
+ *
+ * A pinned default is a time bomb, and this one went off: gemini-2.5-flash was
+ * the constant here until a deployment answered
+ *
+ *   404 — This model models/gemini-2.5-flash is no longer available to new
+ *   users. Please update your code to use models/gemini-3.6-flash
+ *
+ * The catalogue had listed it as available the whole time; being on the list
+ * and being callable by a *new* key turn out to be different things. So the
+ * list narrows the choice and a 404 moves down it — see streamGemini.
+ *
+ * gemini-3.6-flash leads because Google's own error names it. The moving alias
+ * sits behind it as the self-healing option, and the older IDs behind that for
+ * accounts that still serve them.
+ */
+const GEMINI_ANSWER_CANDIDATES = [
+    'gemini-3.6-flash',
+    'gemini-flash-latest',
+    'gemini-3.5-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash',
+];
+
+// Catalogue cache, keyed by API key so a rotated key re-reads it.
+let geminiCatalogue: { key: string; ids: string[] } | null = null;
+
+/** Model IDs the configured Gemini key can see, or null if the list is unavailable. */
+async function geminiModelIds(): Promise<string[] | null> {
+    const key = process.env.GEMINI_API_KEY?.trim();
+    if (!key) return null;
+    if (geminiCatalogue?.key === key) return geminiCatalogue.ids;
+    try {
+        // Key goes in the header, never the URL, so it cannot end up in a log.
+        const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+            headers: { 'x-goog-api-key': key },
+            signal:  AbortSignal.timeout(8000),
+        });
+        if (!res.ok) return null;
+        const body = (await res.json()) as { models?: { name?: string; supportedGenerationMethods?: string[] }[] };
+        const ids = (body.models ?? [])
+            .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
+            .map((m) => (m.name ?? '').replace(/^models\//, ''))
+            .filter(Boolean);
+        if (!ids.length) return null;
+        geminiCatalogue = { key, ids };
+        return ids;
+    } catch (listErr) {
+        // Not fatal: fall back to the candidate order and let the call report.
+        console.error('[gemini] model catalogue unavailable:', listErr);
+        return null;
+    }
+}
+
+/**
+ * The Gemini answer models to try, in order.
+ *
+ * An explicit GEMINI_MODEL is the only entry when it is set — an operator who
+ * pins a model means it. Otherwise the candidates the account can see lead,
+ * with the rest behind them, because the catalogue has already been caught
+ * listing a model it will not serve.
+ */
+async function geminiModelChain(): Promise<string[]> {
+    const override = process.env.GEMINI_MODEL?.trim();
+    if (override) return [override];
+    const ids = await geminiModelIds();
+    if (!ids) return GEMINI_ANSWER_CANDIDATES;
+    const offered = GEMINI_ANSWER_CANDIDATES.filter((c) => ids.includes(c));
+    const rest = GEMINI_ANSWER_CANDIDATES.filter((c) => !offered.includes(c));
+    return [...offered, ...rest];
+}
+
+/** The model a probe or a planner call should name. */
+async function geminiModel(): Promise<string> {
+    return (await geminiModelChain())[0];
 }
 
 // Catalogue cache, keyed by API key so a rotated key re-reads it.
@@ -269,11 +351,22 @@ async function resolveGroqModel(kind: 'planner' | 'answer'): Promise<string> {
     return usable ?? candidates[0];
 }
 
-/** True for the 404 a retired or inaccessible model ID produces. */
+/**
+ * True for the 404 a retired or inaccessible model ID produces.
+ *
+ * Each provider words it differently, and Google's is the one worth quoting:
+ * "This model models/gemini-2.5-flash is no longer available to new users."
+ * Not an outage, not a bad key — a model that exists for some callers and not
+ * for this one, and a plain 404 to anything matching on status alone.
+ */
 function isModelNotFoundError(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
     const msg = error.message.toLowerCase();
-    return msg.includes('model_not_found') || msg.includes('does not exist');
+    return msg.includes('model_not_found')
+        || msg.includes('does not exist')
+        || msg.includes('no longer available')
+        || msg.includes('is not found for api version')
+        || (msg.includes('404') && msg.includes('model'));
 }
 
 // NFL_SEASON must be set to the most recently completed season (e.g. 2025).
@@ -866,7 +959,7 @@ async function planWithGemini(userMessage: string): Promise<string | null> {
     const client = getGemini();
     if (!client) return null;
     try {
-        const model = client.getGenerativeModel({ model: geminiModel(), systemInstruction: PLANNER_SYSTEM_PROMPT });
+        const model = client.getGenerativeModel({ model: await geminiModel(), systemInstruction: PLANNER_SYSTEM_PROMPT });
         const result = await model.generateContent(userMessage);
         return result.response.text();
     } catch (err) {
@@ -1035,19 +1128,125 @@ function formatTrendingRows(
 }
 
 /**
- * Assembles the full system prompt for Pass 2 (the answer-generation call).
+ * One labelled block of the system prompt.
  *
- * Sections injected:
- *   DATA CONTEXT  — plain-English description of what the NFL stats represent.
- *   NFL STATS     — numbered list of formatted stat rows from executeQueryPlan.
- *   LEAGUE CONTEXT — rosters, standings, and upcoming matchups (when available).
- *   TRENDING ADDS/DROPS — top Sleeper waiver activity from the last 24 h.
+ * The prompt is assembled as parts rather than one string so it can be fitted
+ * to a budget afterwards. See renderPrompt.
+ */
+interface PromptSection {
+    name: string;
+    text: string;
+    /** Lower is kept longer. 0 is never dropped. */
+    priority: number;
+    /** Whether the tail of this block can be cut line by line. */
+    truncatable?: boolean;
+}
+
+/**
+ * Cuts a block to a token budget, keeping the head.
+ *
+ * The head is where the header and the best rows are — every list in this
+ * prompt is already ranked — so the tail is what goes. The note matters: a
+ * silently shortened list reads as a complete one, and the model will say
+ * "these are the only players available" about a list that was cut.
+ */
+function truncateToTokens(text: string, budget: number): string {
+    const NOTE = '  … (list shortened to fit this model\'s per-minute limit)';
+    if (budget <= 0) return '';
+    const lines = text.split('\n');
+    const kept: string[] = [];
+    let used = estimateTokens(NOTE);
+    for (const line of lines) {
+        const cost = estimateTokens(`${line}\n`);
+        if (used + cost > budget) break;
+        kept.push(line);
+        used += cost;
+    }
+    if (kept.length === lines.length) return text;
+    return [...kept, NOTE].join('\n');
+}
+
+/**
+ * The least a shortened block may keep and still be worth its header.
+ *
+ * Roughly a handful of rows. Under it the block is dropped instead.
+ */
+const MIN_KEPT_SECTION_TOKENS = 150;
+
+/** What a fitted prompt came out as, and what it cost to get there. */
+interface RenderedPrompt {
+    text: string;
+    tokens: number;
+    /** Blocks removed entirely, least important first. */
+    dropped: string[];
+    /** Blocks kept but cut short. */
+    truncated: string[];
+}
+
+/**
+ * Joins the sections, dropping and shortening from the bottom until they fit.
+ *
+ * Trimming what the prompt carries is not the same as capping it, and this is
+ * the difference: a deployment answered 413 with "Limit 8000, Requested 12890"
+ * because its league was bigger than anything the trimming had been measured
+ * against. There is no set of blocks that is small enough for every league, so
+ * the prompt is fitted to whichever model is about to receive it instead.
+ *
+ * Least important goes first, and the panel that answers the question goes
+ * last — an answer built on a shortened stat list is worth having, an answer
+ * with the reader's own roster cut out of it is not.
+ */
+function renderPrompt(sections: PromptSection[], budget: number): RenderedPrompt {
+    const kept = sections.map((s) => ({ ...s }));
+    const join = () => kept.map((s) => s.text).filter(Boolean).join('\n');
+    const dropped: string[] = [];
+    const truncated: string[] = [];
+
+    if (Number.isFinite(budget)) {
+        // Least important first: highest priority number, then largest.
+        const order = [...kept]
+            .filter((s) => s.priority > 0)
+            .sort((a, b) => b.priority - a.priority || b.text.length - a.text.length);
+
+        for (const section of order) {
+            const current = estimateTokens(join());
+            if (current <= budget) break;
+            const without = current - estimateTokens(section.text);
+            const room = budget - without;
+            // A block cut to its header and a row or two costs its header and
+            // answers nothing, and a two-name "trending" list invites the model
+            // to draw conclusions from two names. Below the floor it goes
+            // entirely, which frees the room for the blocks above it.
+            if (section.truncatable && room >= MIN_KEPT_SECTION_TOKENS) {
+                section.text = truncateToTokens(section.text, room);
+                truncated.push(section.name);
+            } else {
+                section.text = '';
+                dropped.push(section.name);
+            }
+        }
+    }
+
+    const text = join();
+    return { text, tokens: estimateTokens(text), dropped, truncated };
+}
+
+/**
+ * Assembles the system prompt for Pass 2 (the answer-generation call) as
+ * fitted blocks.
+ *
+ * Sections, in the order they are given up when space runs short:
+ *   TRENDING       — league-wide add/drop activity, the least specific thing here.
+ *   LEAGUE CONTEXT — rosters, standings and the schedule ahead.
+ *   NFL STATS      — the comparison set beside the panels' own numbers.
+ *   PANELS         — the reader's own matchup, waivers and trade targets.
+ *   Instructions and DATA CONTEXT are never dropped.
  *
  * When the user asked a league-specific question but hasn't connected their
  * Sleeper account, a `missingLeague` notice is added so the model can prompt
  * them to connect rather than giving a generic (wrong) answer.
  */
-function buildSystemPrompt(
+function buildPromptSections(
     stats: PlayerStats[],
     trendingAdds: TrendingPlayer[],
     trendingDrops: TrendingPlayer[],
@@ -1057,7 +1256,7 @@ function buildSystemPrompt(
     leagueCtx: LeagueContext | null,
     tools: AgentTools,
     missingLeague = false,
-): string {
+): PromptSection[] {
     const statsBlock = stats.length
         ? stats.map((p, i) => `${i + 1}. ${formatStatRow(p)}`).join('\n')
         : 'No stat data available for this query.';
@@ -1065,20 +1264,10 @@ function buildSystemPrompt(
     // Fifty names the reader did not ask about are fifty names of prompt. Only
     // the questions that are actually about waiver activity get them.
     const showTrending = TRENDING_INTENTS.includes(plan.intent);
-    const trendingBlock = showTrending
-        ? `--- TRENDING ADDS, LEAGUE-WIDE (last 24h) ---
-${formatTrendingRows(trendingAdds, playerIndex, 'added')}
+    const toolBlock = formatAgentTools(tools);
+    const hasMyTeam = tools.matchup !== null || tools.waivers !== null || tools.trades !== null;
 
---- TRENDING DROPS, LEAGUE-WIDE (last 24h) ---
-${formatTrendingRows(trendingDrops, playerIndex, 'dropped')}
-`
-        : '';
-
-    const leagueBlock = leagueCtx ? formatLeagueContext(leagueCtx) : '';
-    const toolBlock   = formatAgentTools(tools);
-    const hasMyTeam   = tools.matchup !== null || tools.waivers !== null || tools.trades !== null;
-
-    return `You are an expert fantasy football analyst talking to one manager about their own team.
+    const instructions = `You are an expert fantasy football analyst talking to one manager about their own team.
 Lead with the recommendation. Then support it with the numbers, and name them.
 Keep it to a few short paragraphs or a short list — this is read on a phone.
 Format with plain Markdown: **bold** for the names and verdicts that matter, "- " for lists. No tables, no headings.
@@ -1093,14 +1282,24 @@ ${showTrending ? 'The TRENDING lists are a popularity snapshot of what the whole
 Do not invent players, stats or scores that are not below. If a specific number really is missing, say which one and answer with what is there.
 The NFL STATS section is pre-ranked — do not reorder it. Player labels carry games played and per-game averages.
 Projections carry a floor and a ceiling: the projection is the expectation, and the gap between floor and ceiling is the risk. Say which one matters for the call you are making.
+A list marked as shortened was cut to fit a size limit — say so if you lean on it, and never call it complete.`;
 
---- DATA CONTEXT ---
-${dataContext}
-${toolBlock ? `\n${toolBlock}\n` : ''}
---- NFL STATS ---
-${statsBlock}
-
-${leagueBlock}${trendingBlock}`;
+    return [
+        { name: 'instructions', priority: 0, text: instructions },
+        { name: 'data-context', priority: 0, text: `--- DATA CONTEXT ---\n${dataContext}` },
+        { name: 'panels',       priority: 1, truncatable: true, text: toolBlock },
+        { name: 'nfl-stats',    priority: 2, truncatable: true, text: `--- NFL STATS ---\n${statsBlock}` },
+        { name: 'league',       priority: 3, truncatable: true, text: leagueCtx ? formatLeagueContext(leagueCtx) : '' },
+        {
+            name: 'trending',
+            priority: 4,
+            truncatable: true,
+            text: showTrending
+                ? `--- TRENDING ADDS, LEAGUE-WIDE (last 24h) ---\n${formatTrendingRows(trendingAdds, playerIndex, 'added')}\n\n`
+                    + `--- TRENDING DROPS, LEAGUE-WIDE (last 24h) ---\n${formatTrendingRows(trendingDrops, playerIndex, 'dropped')}\n`
+                : '',
+        },
+    ].filter((s) => s.text !== '');
 }
 
 /**
@@ -1190,46 +1389,15 @@ function estimateTokens(text: string): number {
 }
 
 /**
- * Logs which block made a prompt large, when one is.
+ * The tokens-per-minute ceiling a Groq request is fitted to.
  *
- * A prompt over budget is a data question, not a model question — a deep-bench
- * league, a roster scan that legitimately reads every team, a stat query that
- * came back wider than expected — and the only way to tell which is to see the
- * sections measured separately. Cheap enough to run whenever it matters, which
- * is only on the requests that already exceeded the ceiling.
- */
-function logOversizePrompt(prompt: string, tokens: number, budget: number, intent: QueryIntent): void {
-    const MARKS = [
-        'HOW TO USE THE DATA', '--- DATA CONTEXT ---', '--- MY MATCHUP', '--- MY WAIVER WIRE',
-        '--- MY TRADE TARGETS', '--- PANEL DATA UNAVAILABLE', '--- NFL STATS ---',
-        '--- LEAGUE CONTEXT', '--- TRENDING ADDS', '--- TRENDING DROPS',
-    ];
-    const found = MARKS
-        .map((m) => [m, prompt.indexOf(m)] as const)
-        .filter(([, i]) => i >= 0)
-        .sort((a, b) => a[1] - b[1]);
-    const sections = found.map(([mark, at], i) => {
-        const endsAt = i + 1 < found.length ? found[i + 1][1] : prompt.length;
-        return `${mark.replace(/^-+ ?| ?-+$/g, '')}=${estimateTokens(prompt.slice(at, endsAt))}`;
-    });
-    console.warn(
-        `[pass-2] prompt ~${tokens} tokens over the ${budget} budget (intent=${intent}); `
-        + `sections: ${sections.join(', ')}`,
-    );
-}
-
-/**
- * The most tokens one Groq request may carry.
+ * Groq enforces this per model, and its free tier sets it below what a
+ * panel-backed prompt costs on every model it offers: 8,000 on the gpt-oss
+ * pair, 6,000 on llama-3.1-8b. A prompt over the ceiling does not degrade, it
+ * 413s — a deployment reported "Limit 8000, Requested 12890" — so the prompt is
+ * cut to fit rather than sent and refused. See renderPrompt.
  *
- * Groq enforces tokens-per-minute per model, and its free tier sets that below
- * what a panel-backed prompt costs on every model except the largest: 8,000 on
- * the gpt-oss pair, 6,000 on llama-3.1-8b. A prompt over the ceiling does not
- * degrade, it 429s — and it does so *selectively*, answering questions about
- * the NFL and refusing the ones about the reader's own roster, which are the
- * questions the panels exist for. Better to skip an attempt that cannot succeed
- * and let the other provider have it.
- *
- * Set AGENT_GROQ_TPM to your plan's real figure; 0 disables the check.
+ * Set AGENT_GROQ_TPM to your plan's real figure; 0 means no ceiling.
  */
 function groqTpmBudget(model: string | null): number {
     const configured = Number(process.env.AGENT_GROQ_TPM);
@@ -1307,23 +1475,41 @@ function toReadableStream(chunks: AsyncIterable<string>): ReadableStream<Uint8Ar
 async function streamGemini(systemPrompt: string, messages: { role: string; content: string }[]): Promise<StreamResult> {
     const client = getGemini();
     if (!client) throw new Error('GEMINI_API_KEY is not configured');
-    const modelId = geminiModel();
-    const model = client.getGenerativeModel({ model: modelId, systemInstruction: systemPrompt });
+
     const history = messages.slice(0, -1).map((m) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }],
     }));
     const lastMessage = messages[messages.length - 1];
-    const chat = model.startChat({ history });
-    const result = await chat.sendMessageStream(lastMessage.content);
-    return {
-        model: modelId,
-        stream: toReadableStream((async function* () {
-            for await (const chunk of result.stream) {
-                yield chunk.text();
-            }
-        })()),
-    };
+
+    // A retired model ID answers 404, which reads exactly like an outage from
+    // the browser. Walking the chain turns "the assistant is broken" into one
+    // slower request — and the catalogue cache is dropped on the way, since it
+    // is the thing that vouched for the dead ID.
+    const chain = await geminiModelChain();
+    let lastErr: unknown = null;
+
+    for (const modelId of chain) {
+        try {
+            const model = client.getGenerativeModel({ model: modelId, systemInstruction: systemPrompt });
+            const chat = model.startChat({ history });
+            const result = await chat.sendMessageStream(lastMessage.content);
+            return {
+                model: modelId,
+                stream: toReadableStream((async function* () {
+                    for await (const chunk of result.stream) {
+                        yield chunk.text();
+                    }
+                })()),
+            };
+        } catch (modelErr) {
+            lastErr = modelErr;
+            if (!isModelNotFoundError(modelErr)) throw modelErr;
+            console.warn(`[pass-2] gemini model ${modelId} is gone — trying the next candidate`);
+            geminiCatalogue = null;
+        }
+    }
+    throw lastErr ?? new Error('No Gemini model was available');
 }
 
 /**
@@ -1402,7 +1588,7 @@ async function probeGroq(): Promise<Record<string, unknown>> {
 
 /** Live check: is the Gemini key valid, and is the configured model on offer? */
 async function probeGemini(): Promise<Record<string, unknown>> {
-    const wanted = geminiModel();
+    const wanted = await geminiModel();
     const key = process.env.GEMINI_API_KEY?.trim();
     if (!key) return { configured: false };
     try {
@@ -1669,7 +1855,7 @@ async function handlePost(req: NextRequest): Promise<Response> {
     const missingLeague = MY_TEAM_INTENTS.includes(plan.intent) && !hasMyTeam && leagueCtx === null;
 
     const dataContext = buildDataContext(plan, hasMyTeam || leagueCtx !== null);
-    const systemPrompt = buildSystemPrompt(
+    const sections = buildPromptSections(
         stats, trendingAdds, trendingDrops, playerIndex, plan, dataContext, leagueCtx, tools, missingLeague,
     );
 
@@ -1684,43 +1870,46 @@ async function handlePost(req: NextRequest): Promise<Response> {
     // key for the other provider sitting right there.
     //
     // Which one leads is a quota decision rather than a quality one — see
-    // primaryProvider().
-    //
-    // The size budget DEFERS Groq rather than vetoing it. Skipping a request
-    // that will probably 429 is worth doing while another provider might still
-    // answer; refusing to make it when nothing else can is not. The first
-    // version of this got that backwards and turned a bad Gemini key into no
-    // answer at all, with a Groq key sitting right there — a 429 that might not
-    // even happen is strictly better than a certain failure.
+    // primaryProvider(). Each provider gets the prompt fitted to ITS own
+    // ceiling: Gemini allows a quarter of a million tokens a minute and never
+    // needs cutting, while Groq's free tier stops at a few thousand, and one
+    // prompt sized for both would be a prompt sized for the smaller.
     let answer: StreamResult | null = null;
     let modelUsed: ModelUsed = primaryProvider();
     let fallbackReason: string | null = null;
+    let rendered: RenderedPrompt = renderPrompt(sections, Infinity);
     const failures: string[] = [];
 
-    const promptTokens = estimateTokens(systemPrompt);
-    // The ceiling belongs to the model that would serve this, not to whichever
-    // model the candidate list happens to lead with — see GROQ_TPM_BY_MODEL.
+    // Groq counts the completion and the conversation against the same
+    // per-minute ceiling as the prompt, so both are reserved before fitting.
+    const historyTokens = estimateTokens(messages.map((m) => m.content).join('\n'));
+    const ANSWER_RESERVE = 1_500;
     const groqAnswerModel = groqReady ? await resolveGroqModel('answer') : null;
     const tpmBudget = groqTpmBudget(groqAnswerModel);
-    const groqOverBudget = tpmBudget > 0 && promptTokens > tpmBudget;
+    // Floored, because a prompt cut below this carries no data and the model can
+    // only answer that it has none — which is worse than letting the provider
+    // refuse an oversized request and falling through to the other one.
+    const MIN_USEFUL_PROMPT = 1_000;
+    const groqPromptBudget = tpmBudget > 0
+        ? Math.max(MIN_USEFUL_PROMPT, tpmBudget - historyTokens - ANSWER_RESERVE)
+        : Infinity;
 
-    if (groqOverBudget) logOversizePrompt(systemPrompt, promptTokens, tpmBudget, plan.intent);
-
-    const order: ModelUsed[] = primaryProvider() === 'groq' ? ['groq', 'gemini'] : ['gemini', 'groq'];
-
-    /**
-     * Runs one provider, recording why it failed.
-     *
-     * Returns the stream rather than assigning it, so the assignment happens at
-     * the call site where TypeScript can still see it — a closure writing to
-     * `answer` narrows it to `never` for every later read.
-     */
+    /** Runs one provider on a prompt fitted to its own limit. */
     async function tryProvider(provider: ModelUsed): Promise<StreamResult | null> {
+        const fitted = renderPrompt(sections, provider === 'groq' ? groqPromptBudget : Infinity);
+        if (fitted.dropped.length || fitted.truncated.length) {
+            console.warn(
+                `[pass-2] ${provider}: fitted prompt to ~${fitted.tokens} tokens`
+                + `${fitted.dropped.length ? ` — dropped ${fitted.dropped.join(', ')}` : ''}`
+                + `${fitted.truncated.length ? ` — shortened ${fitted.truncated.join(', ')}` : ''}`,
+            );
+        }
         try {
             const stream = provider === 'groq'
-                ? await streamGroq(systemPrompt, messages)
-                : await streamGemini(systemPrompt, messages);
+                ? await streamGroq(fitted.text, messages)
+                : await streamGemini(fitted.text, messages);
             modelUsed = provider;
+            rendered = fitted;
             return stream;
         } catch (providerErr) {
             const label = provider === 'groq' ? 'Groq' : 'Gemini';
@@ -1736,30 +1925,15 @@ async function handlePost(req: NextRequest): Promise<Response> {
         }
     }
 
-    let deferredGroq = false;
-
+    const order: ModelUsed[] = primaryProvider() === 'groq' ? ['groq', 'gemini'] : ['gemini', 'groq'];
     for (const provider of order) {
         const ready = provider === 'groq' ? groqReady : geminiReady;
         if (!ready) {
             if (!fallbackReason) fallbackReason = `${provider}_unavailable`;
             continue;
         }
-        if (provider === 'groq' && groqOverBudget) {
-            // Held back, not ruled out — see the loop below.
-            deferredGroq = true;
-            if (!fallbackReason) fallbackReason = 'groq_prompt_too_large';
-            continue;
-        }
         answer = await tryProvider(provider);
         if (answer) break;
-    }
-
-    // Nothing answered and Groq was only held back for its size. Make the call
-    // anyway: the budget is a guess at somebody's rate limit, and the reader is
-    // otherwise getting an error either way.
-    if (!answer && deferredGroq) {
-        console.warn('[pass-2] no provider answered — trying groq over budget rather than failing');
-        answer = await tryProvider('groq');
     }
 
     if (!answer) {
@@ -1786,8 +1960,12 @@ async function handlePost(req: NextRequest): Promise<Response> {
         'X-Query-Intent': plan.intent,
         // What this answer cost to ask. The one number that says whether a
         // deployment is anywhere near its provider's per-minute ceiling.
-        'X-Prompt-Tokens': String(promptTokens),
+        // What this answer cost to ask, and what had to go to make it fit. The
+        // numbers that say whether a deployment is near its provider's ceiling.
+        'X-Prompt-Tokens': String(rendered.tokens),
         'X-Groq-Tpm-Budget': String(tpmBudget),
+        'X-Prompt-Dropped': rendered.dropped.join(',') || 'none',
+        'X-Prompt-Shortened': rendered.truncated.join(',') || 'none',
         'X-League-Context': leagueCtx ? 'true' : 'false',
         'X-Panel-Data': [
             tools.matchup ? 'matchup' : '',

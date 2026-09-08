@@ -220,6 +220,7 @@ describe('POST /api/agent', () => {
     // that are about Groq opt into being Groq-first explicitly.
     delete process.env.AGENT_PRIMARY;
     delete process.env.AGENT_GROQ_TPM;
+    delete process.env.GEMINI_MODEL;
 
     // Default: authenticated, within both budgets.
     mockAuth.mockResolvedValue(fakeSession as never);
@@ -383,28 +384,127 @@ describe('POST /api/agent', () => {
   });
 
   // WHY: Groq's free tier caps tokens per MINUTE below what a panel-backed
-  //      prompt costs on every model but its largest. An oversized prompt does
-  //      not degrade there, it 429s — and selectively, answering NFL questions
-  //      and refusing the roster ones. A doomed attempt is not worth the round
-  //      trip, so the prompt size decides whether Groq is tried at all.
-  it('skips Groq entirely when the prompt is over its per-minute budget', async () => {
+  //      prompt costs on every model it offers, and an oversized prompt does not
+  //      degrade there — it 413s. A live deployment answered "Limit 8000,
+  //      Requested 12890". Trimming what the prompt carries is not the same as
+  //      capping it: no fixed set of blocks is small enough for every league, so
+  //      the prompt is fitted to whichever model is about to receive it.
+  it('cuts an over-budget prompt down to fit rather than sending it', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.AGENT_PRIMARY = 'groq';
+    process.env.AGENT_GROQ_TPM = '2600';   // ~1,100 for the prompt after reserves
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('waiver_wire'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+    mockFetchTrending.mockResolvedValue({
+      adds:  [...Array(40)].map((_, i) => ({ player_id: `a${i}`, count: 900 - i, type: 'add' as const })),
+      drops: [...Array(40)].map((_, i) => ({ player_id: `d${i}`, count: 800 - i, type: 'drop' as const })),
+    });
+    const index: Record<string, { name: string; position: string; team: string | null }> = {};
+    for (let i = 0; i < 40; i += 1) {
+      index[`a${i}`] = { name: `Trending Add Number ${i}`, position: 'RB', team: 'BUF' };
+      index[`d${i}`] = { name: `Trending Drop Number ${i}`, position: 'WR', team: 'NYG' };
+    }
+    mockFetchPlayerIndex.mockResolvedValue(index);
+    mockFormatTools.mockReturnValue(
+      `--- MY WAIVER WIRE ---\n${[...Array(30)].map((_, i) => `  ${i}. A free agent with a reason attached`).join('\n')}`,
+    );
+
+    const res = await POST(makeReq({
+      messages: [{ role: 'user', content: 'Who do I add?' }],
+      sleeperLeagueId: 'league-1',
+    }));
+
+    expect(res.status).toBe(200);
+    // It fit, and it said what it gave up to fit.
+    expect(Number(res.headers.get('X-Prompt-Tokens'))).toBeLessThanOrEqual(1200);
+    expect(res.headers.get('X-Prompt-Dropped')).not.toBe('none');
+  });
+
+  // WHY: Least important goes first, and the panel that answers the question
+  //      goes last. An answer built on a shortened trending list is worth
+  //      having; one with the reader's own roster cut out of it is not.
+  it('shortens trending while leaving the panel that answers the question whole', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.AGENT_PRIMARY = 'groq';
+    process.env.AGENT_GROQ_TPM = '3000';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('waiver_wire'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+    mockFetchTrending.mockResolvedValue({
+      adds:  [...Array(40)].map((_, i) => ({ player_id: `a${i}`, count: 900 - i, type: 'add' as const })),
+      drops: [...Array(40)].map((_, i) => ({ player_id: `d${i}`, count: 800 - i, type: 'drop' as const })),
+    });
+    const index: Record<string, { name: string; position: string; team: string | null }> = {};
+    for (let i = 0; i < 40; i += 1) {
+      index[`a${i}`] = { name: `Trending Add Number ${i}`, position: 'RB', team: 'BUF' };
+      index[`d${i}`] = { name: `Trending Drop Number ${i}`, position: 'WR', team: 'NYG' };
+    }
+    mockFetchPlayerIndex.mockResolvedValue(index);
+    mockFormatTools.mockReturnValue('--- MY WAIVER WIRE ---\n  1. The one free agent that matters');
+
+    await POST(makeReq({
+      messages: [{ role: 'user', content: 'Who do I add?' }],
+      sleeperLeagueId: 'league-1',
+    }));
+
+    const prompt = systemPromptSent();
+    // The panel survived in full.
+    expect(prompt).toContain('The one free agent that matters');
+    // Trending gave up room for it: some of the forty names are gone.
+    expect(prompt).toContain('list shortened to fit');
+    expect(prompt).not.toContain('Trending Add Number 39');
+  });
+
+  // WHY: A silently shortened list reads as a complete one, and the model will
+  //      call it complete — "these are the only players available" about a list
+  //      that was cut to fit.
+  it('marks a shortened list as shortened, and tells the model so', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.AGENT_PRIMARY = 'groq';
+    process.env.AGENT_GROQ_TPM = '2200';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('waiver_wire'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+    mockFormatTools.mockReturnValue(
+      `--- MY WAIVER WIRE ---\n${[...Array(80)].map((_, i) => `  ${i}. A free agent with a reason attached to him`).join('\n')}`,
+    );
+
+    await POST(makeReq({
+      messages: [{ role: 'user', content: 'Who do I add?' }],
+      sleeperLeagueId: 'league-1',
+    }));
+
+    const prompt = systemPromptSent();
+    expect(prompt).toContain('list shortened to fit');
+    expect(prompt).toContain('A list marked as shortened was cut to fit a size limit');
+  });
+
+  // WHY: Gemini allows a quarter of a million tokens a minute. Cutting its
+  //      prompt to Groq's few thousand would throw away data it could have used.
+  it('sends Gemini the whole prompt while Groq gets a fitted one', async () => {
     process.env.GROQ_API_KEY   = 'test-groq-key';
     process.env.GEMINI_API_KEY = 'test-gemini-key';
-    process.env.AGENT_PRIMARY  = 'groq';
-    process.env.AGENT_GROQ_TPM = '10';   // Any real prompt is over this.
-
-    mockGroqCreate.mockResolvedValueOnce(pass1Response);
+    process.env.AGENT_GROQ_TPM = '2000';
+    mockGroqCreate.mockResolvedValueOnce(planningAs('waiver_wire'));
     async function* geminiStream() { yield { text: () => 'Gemini answer.' }; }
     mockSendMessageStream.mockResolvedValueOnce({ stream: geminiStream() });
     setupContextMocks();
+    mockFormatTools.mockReturnValue(
+      `--- MY WAIVER WIRE ---\n${[...Array(80)].map((_, i) => `  ${i}. A free agent with a reason attached to him`).join('\n')}`,
+    );
 
-    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Big one' }] }));
+    const res = await POST(makeReq({
+      messages: [{ role: 'user', content: 'Who do I add?' }],
+      sleeperLeagueId: 'league-1',
+    }));
 
-    expect(res.status).toBe(200);
     expect(res.headers.get('X-Model-Used')).toBe('gemini');
-    expect(res.headers.get('X-Fallback-Reason')).toBe('groq_prompt_too_large');
-    // Pass 1 only: the answer call was never attempted.
-    expect(mockGroqCreate).toHaveBeenCalledTimes(1);
+    expect(res.headers.get('X-Prompt-Dropped')).toBe('none');
+    expect(res.headers.get('X-Prompt-Shortened')).toBe('none');
 
     delete process.env.GEMINI_API_KEY;
   });
@@ -513,6 +613,75 @@ describe('POST /api/agent', () => {
 
     const answerCall = mockGroqCreate.mock.calls[1][0] as { model: string };
     expect(answerCall.model).toBe('allam-2-7b');
+  });
+
+  // WHY: A pinned Gemini model is a time bomb, and this one went off:
+  //
+  //        404 — This model models/gemini-2.5-flash is no longer available to
+  //        new users. Please update your code to use models/gemini-3.6-flash
+  //
+  //      The probe had reported that model as available minutes earlier: being
+  //      on the catalogue and being callable by a NEW key are different things.
+  //      So a 404 has to move down the list rather than surface as an outage.
+  it('moves to the next Gemini model when one is no longer available', async () => {
+    delete process.env.GROQ_API_KEY;
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+
+    mockGenerateContent.mockResolvedValueOnce({ response: { text: () => pass1Content } });
+    async function* geminiStream() { yield { text: () => 'Answered by the newer model.' }; }
+    mockSendMessageStream
+      .mockRejectedValueOnce(new Error(
+        '[404 Not Found] This model models/gemini-2.5-flash is no longer available to new users. '
+        + 'Please update your code to use models/gemini-3.6-flash',
+      ))
+      .mockResolvedValueOnce({ stream: geminiStream() });
+    setupContextMocks();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('Answered by the newer model.');
+    expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
+
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  // WHY: Only a missing model is worth retrying. Walking the whole candidate
+  //      list against a revoked key would turn one clear error into five.
+  it('does not walk the model list on an error that is not a missing model', async () => {
+    delete process.env.GROQ_API_KEY;
+    process.env.GEMINI_API_KEY = 'bad-key';
+
+    mockGenerateContent.mockResolvedValueOnce({ response: { text: () => pass1Content } });
+    mockSendMessageStream.mockRejectedValue(new Error('[400 Bad Request] API key not valid.'));
+    setupContextMocks();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(res.status).toBe(502);
+    expect(mockSendMessageStream).toHaveBeenCalledTimes(1);
+
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  // WHY: An operator who pins GEMINI_MODEL means it — a chain that wandered off
+  //      a deliberate choice would be a surprise, not a recovery.
+  it('uses only the pinned model when GEMINI_MODEL is set', async () => {
+    delete process.env.GROQ_API_KEY;
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+    process.env.GEMINI_MODEL   = 'gemini-3.6-flash';
+
+    mockGenerateContent.mockResolvedValueOnce({ response: { text: () => pass1Content } });
+    async function* geminiStream() { yield { text: () => 'Pinned.' }; }
+    mockSendMessageStream.mockResolvedValueOnce({ stream: geminiStream() });
+    setupContextMocks();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(res.headers.get('X-Model-Id')).toBe('gemini-3.6-flash');
+
+    delete process.env.GEMINI_MODEL;
+    delete process.env.GEMINI_API_KEY;
   });
 
   // WHY: A deployment cannot tell whether it is near its provider's per-minute
