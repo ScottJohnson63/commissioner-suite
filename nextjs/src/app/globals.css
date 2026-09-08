@@ -111,3 +111,27 @@ body {
      on a card that has already snapped to its new angle. */
   .ut-flip-face { transition-delay: 0s !important; }
 }
+
+/* ── The scroll pane's bottom reservation ──────────────────────────────────
+   Below `md`, the floating nav button hovers over the bottom-right corner and
+   takes no space of its own, so every page leaves it a band to hover in.
+
+   A page that has its OWN bottom bar — the assistant's composer — wants the
+   bottom of the screen instead, and a composer floating 96px up with an empty
+   strip beneath it is the giveaway that it did not get it. Such a page sets
+   `--app-main-pad-bottom: 0px` while it is mounted and takes responsibility for
+   clearing the button itself (see --app-bottom-bar-height in MobileNav).
+
+   It is a variable rather than a Tailwind class because the page that needs it
+   is not the element that carries it. */
+.app-scroll-pane {
+  padding-bottom: var(--app-main-pad-bottom, 6rem);
+}
+
+@media (min-width: 768px) {
+  /* The rail replaces the floating button from `md` up, so there is nothing to
+     leave room for. */
+  .app-scroll-pane {
+    padding-bottom: 0;
+  }
+}

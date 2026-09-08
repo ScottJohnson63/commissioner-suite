@@ -22,11 +22,13 @@ export default function LeagueLayout({ children }: { children: React.ReactNode }
       {/* The rail from `md` up; below it the floating hamburger below takes
           over and the rail removes itself from the row entirely. */}
       <LeagueSidebar />
-      {/* The padding is what keeps the floating button off the last row of a
-          page — a fixed element takes no space of its own. `overscroll-none`
-          stops a flick at either end of this pane from chaining out to the
-          document and bouncing the shell. */}
-      <main className="flex-1 overflow-auto overscroll-none min-w-0 pb-24 md:pb-0">
+      {/* `app-scroll-pane` is the padding that keeps the floating button off the
+          last row of a page — a fixed element takes no space of its own. It is a
+          CSS variable rather than a class so a page with a bottom bar of its own
+          can claim the space back; see globals.css. `overscroll-none` stops a
+          flick at either end of this pane from chaining out to the document and
+          bouncing the shell. */}
+      <main className="flex-1 overflow-auto overscroll-none min-w-0 app-scroll-pane">
         {children}
       </main>
       <MobileNav />

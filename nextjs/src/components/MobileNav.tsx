@@ -98,10 +98,10 @@ export function MobileNav() {
                        flex flex-col gap-0.5 transition-all duration-200"
             style={{
               right: 'calc(env(safe-area-inset-right, 0px) + 16px)',
-              bottom: 'calc(env(safe-area-inset-bottom, 0px) + 80px)',
+              bottom: 'calc(env(safe-area-inset-bottom, 0px) + 80px + var(--app-bottom-bar-height, 0px))',
               minWidth: 220,
               maxWidth: 'calc(100vw - env(safe-area-inset-right, 0px) - 32px)',
-              maxHeight: 'calc(100dvh - env(safe-area-inset-bottom, 0px) - 120px)',
+              maxHeight: 'calc(100dvh - env(safe-area-inset-bottom, 0px) - 120px - var(--app-bottom-bar-height, 0px))',
               background: 'rgba(14,14,15,0.92)',
               backdropFilter: 'blur(12px)',
               border: '1px solid #2a2a2c',
@@ -175,7 +175,10 @@ export function MobileNav() {
           className="fixed z-50 flex items-center justify-center rounded-full transition-colors"
           style={{
             right: 'calc(env(safe-area-inset-right, 0px) + 16px)',
-            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
+            // A page with its own bottom bar — the assistant's composer —
+            // publishes its height here, and the button steps up over it rather
+            // than landing on the send key.
+            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px + var(--app-bottom-bar-height, 0px))',
             width: 52,
             height: 52,
             background: 'rgba(20,20,21,0.92)',
