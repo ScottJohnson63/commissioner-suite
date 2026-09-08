@@ -1,7 +1,8 @@
 # League Dashboard — Usage Guide
 
 The league dashboard (`/league/dashboard`) is the central hub for the Commissioner Suite.
-It requires a Sleeper account connection and is organized into three tabs.
+It is organized into five tabs: **Matchup**, **Waivers** and **Trades**, which each need a
+Sleeper account connection, then **Statistics** and **News**, which anybody can read.
 
 ---
 
@@ -21,11 +22,11 @@ Your session persists across page refreshes. To switch accounts, click **disconn
 
 ## Tabs
 
-### League
+### Matchup, Waivers and Trades
 
-Context for a specific Sleeper league. Use the dropdown at the top to switch between your leagues.
-
-The dropdown shows each league's **status dot**:
+The three tabs about your own team, each read live from Sleeper for whichever league is
+picked in the dropdown at the top. Use that dropdown to switch between your leagues; it
+shows each league's **status dot**:
 
 | Colour | Status |
 |--------|--------|
@@ -34,16 +35,14 @@ The dropdown shows each league's **status dot**:
 | 🔵 Blue | Drafting |
 | ⚫ Grey | Complete |
 
-**Planned sections** (coming soon):
+| Tab | What it holds |
+|-----|---------------|
+| Matchup | Your starters against this week's opponent, with each side's boom and bust range |
+| Waivers | Free agents worth a claim, ranked against your thinnest positions |
+| Trades | Trades that fit both rosters, labelled by how likely they are to be accepted |
 
-| Section | Description |
-|---------|-------------|
-| Standings | Win/loss records and division standings |
-| Roster | Your current roster and waiver picks |
-| Matchups | Head-to-head matchup history |
-| Trades | Recent and pending trade activity |
-| Waivers | Waiver wire priority and claims |
-| Draft | Draft board and pick history |
+Each panel loads on demand — press its button when you want the numbers, so nothing burns
+a Sleeper call you did not ask for.
 
 ---
 

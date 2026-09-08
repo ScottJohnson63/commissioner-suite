@@ -6,12 +6,14 @@ import { useSession } from 'next-auth/react';
 import { LeagueSelector } from '@/components/LeagueSelector';
 import { useSleeperData } from '@/hooks/useSleeperData';
 import type { TrendingData } from '@/types/trending';
-import { LeagueTab }      from '@/components/dashboard/LeagueTab';
+import { MatchupReportPanel }      from '@/components/dashboard/MatchupReportPanel';
+import { WaiverSuggestionsPanel }  from '@/components/dashboard/WaiverSuggestionsPanel';
+import { TradeAnalyzerPanel }      from '@/components/dashboard/TradeAnalyzerPanel';
 import { StatisticsTab }  from '@/components/dashboard/StatisticsTab';
 import { NewsTab }        from '@/components/dashboard/NewsTab';
 import { openAppIntro }   from '@/components/intro/AppIntro';
 
-type Tab = 'league' | 'statistics' | 'news';
+type Tab = 'matchup' | 'waivers' | 'trades' | 'statistics' | 'news';
 
 // The two tabs a signed-out visitor may browse. Everything behind them
 // (/api/nfl/*, /api/news, /api/trending) is unauthenticated already, so this
@@ -22,7 +24,7 @@ const PUBLIC_TABS: Tab[] = ['statistics', 'news'];
 
 export default function LeagueDashboardPage() {
   const { sleeperUser, activeLeagueId, setActiveLeagueId } = useSleeperData();
-  const [tab, setTab] = useState<Tab>('league');
+  const [tab, setTab] = useState<Tab>('matchup');
 
   const [trending, setTrending]               = useState<TrendingData | null>(null);
   const [trendingLoading, setTrendingLoading] = useState(true);
@@ -49,28 +51,36 @@ export default function LeagueDashboardPage() {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchTrending(); }, [fetchTrending]);
 
-  // League needs a Sleeper account behind it, so it joins the public two only
-  // once there is a session.
+  // Matchup, Waivers and Trades each read your own roster out of Sleeper, so
+  // they join the public two only once there is a session. They used to be
+  // three panels stacked inside a single League tab, which meant scrolling past
+  // the one you did not come for; a tab apiece is the whole of the change.
   //
   // Schedules, Divisions and Lottery used to sit to the right of these, behind
   // a divider that said "this is administration, not the thing you came for".
   // They now have a page that says it outright — see /league/commissioner.
   const TABS: { id: Tab; label: string }[] = [
-    ...(isAuthed ? [{ id: 'league' as Tab, label: 'League' }] : []),
+    ...(isAuthed
+      ? [
+          { id: 'matchup' as Tab, label: 'Matchup' },
+          { id: 'waivers' as Tab, label: 'Waivers' },
+          { id: 'trades'  as Tab, label: 'Trades'  },
+        ]
+      : []),
     { id: 'statistics', label: 'Statistics' },
     { id: 'news',       label: 'News'       },
   ];
 
-  // `tab` defaults to League, which a signed-out visitor cannot see. Falling
+  // `tab` defaults to Matchup, which a signed-out visitor cannot see. Falling
   // back to the first visible tab means no separate default per auth state, and
-  // it also catches a member who signs out while sitting on League.
+  // it also catches a member who signs out while sitting on Matchup.
   const activeTab: Tab = TABS.some((t) => t.id === tab) ? tab : PUBLIC_TABS[0];
 
-  // The mobile bar scrolls sideways where its tabs do not fit — three of them
-  // do on most phones and not on the narrowest. Two things stop that hiding a
-  // tab off the right-hand end, which is the failing of a plain scrolling bar:
-  // the fade below shows while there is more to reach, and the active tab is
-  // pulled into view whenever it changes.
+  // The mobile bar scrolls sideways where its tabs do not fit, which five of
+  // them do on any phone. Two things stop that hiding a tab off the right-hand
+  // end, which is the failing of a plain scrolling bar: the fade below shows
+  // while there is more to reach, and the active tab is pulled into view
+  // whenever it changes.
   const tabRowRef = useRef<HTMLDivElement>(null);
   const [tabsScrollable, setTabsScrollable] = useState(false);
   // Whether the row overflows at all, as against `tabsScrollable`, which is
@@ -283,9 +293,19 @@ export default function LeagueDashboardPage() {
         {TABS.map(({ id, label }) => <TabBtn key={id} id={id} label={label} />)}
       </div>
 
-      {/* ── Tab content ── */}
-      {isAuthed && activeTab === 'league' && (
-        <LeagueTab sleeperUser={sleeperUser} activeLeagueId={activeLeagueId} />
+      {/* ── Tab content ──
+          Each of the three league panels is now the whole of its tab, so each
+          gets the full width it used to share. */}
+      {isAuthed && activeTab === 'matchup' && (
+        <MatchupReportPanel leagueId={activeLeagueId} userId={sleeperUser?.userId ?? null} />
+      )}
+
+      {isAuthed && activeTab === 'waivers' && (
+        <WaiverSuggestionsPanel leagueId={activeLeagueId} userId={sleeperUser?.userId ?? null} />
+      )}
+
+      {isAuthed && activeTab === 'trades' && (
+        <TradeAnalyzerPanel leagueId={activeLeagueId} userId={sleeperUser?.userId ?? null} />
       )}
 
       {activeTab === 'statistics' && (
