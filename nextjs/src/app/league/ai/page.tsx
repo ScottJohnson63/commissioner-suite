@@ -19,6 +19,8 @@ import { useSleeperData } from '@/hooks/useSleeperData';
 import { LeagueSelector } from '@/components/LeagueSelector';
 import { ChatMarkdown } from '@/components/ai/ChatMarkdown';
 import { useAgentUsage } from '@/components/ai/useAgentUsage';
+import { useChatViewport } from '@/components/ai/useChatViewport';
+import { useStickToBottom } from '@/components/ai/useStickToBottom';
 import type { AgentUsage } from '@/components/ai/useAgentUsage';
 import { SUGGESTED_PROMPTS } from '@/lib/agentIntents';
 
@@ -262,12 +264,14 @@ export default function AIPage() {
   const [modelUsed, setModelUsed] = useState<ModelUsed>('gemini');
   const [modelId, setModelId] = useState<string | null>(null);
 
-  const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages]);
+  // The composer is the page's bottom bar: it claims the band the floating nav
+  // button hovers in, and publishes its height so the button steps up over it.
+  const composerRef = useRef<HTMLDivElement | null>(null);
+  const columnRef = useChatViewport(composerRef);
+  const {
+    ref: transcriptRef, showJumpButton: showJumpToLatest, jumpToLatest,
+  } = useStickToBottom(messages);
 
   // Read after mount, not during render: localStorage does not exist on the
   // server, and a value read during render would be a hydration mismatch.
@@ -419,7 +423,14 @@ export default function AIPage() {
   const canSend = Boolean(input.trim()) && !loading && !exhausted;
 
   return (
-    <main className="h-full flex flex-col min-h-0" style={{ color: '#e8e6df' }}>
+    // `--kb-inset` is however much of the viewport the software keyboard is
+    // covering, kept current by useChatViewport. Subtracting it is what puts the
+    // composer above the keyboard instead of behind it.
+    <main
+      ref={columnRef as React.RefObject<HTMLElement>}
+      className="flex flex-col min-h-0"
+      style={{ color: '#e8e6df', height: 'calc(100% - var(--kb-inset, 0px))' }}
+    >
       {/* ── Header ──
           One row on every width. The model badge moved down beside the usage
           meter: on a phone this row is a title, a league name and a model ID,
@@ -446,7 +457,10 @@ export default function AIPage() {
           `min-h-0` is what makes this the only thing that scrolls: without it a
           flex child refuses to shrink below its content and the whole column
           grows instead, taking the composer off the bottom of the screen. */}
-      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 sm:px-8 sm:py-6">
+      <div
+        ref={transcriptRef}
+        className="relative flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 sm:px-8 sm:py-6"
+      >
         <div className="max-w-2xl mx-auto flex flex-col gap-5 sm:gap-6">
 
           {showAlert && (
@@ -521,19 +535,36 @@ export default function AIPage() {
             </div>
           ))}
 
-          <div ref={bottomRef} />
         </div>
       </div>
 
       {/* ── Composer ── */}
       <div
-        className="shrink-0 px-4 sm:px-8"
+        ref={composerRef}
+        className="relative shrink-0 px-4 sm:px-8"
         style={{
           borderTop: '1px solid #1e1e20',
           paddingTop: '0.75rem',
           paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.75rem)',
         }}
       >
+        {/* Scrolled away from a streaming answer — the way back, rather than
+            being dragged there by the next token. */}
+        {showJumpToLatest && (
+          <button
+            onClick={jumpToLatest}
+            className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5
+                       rounded-full text-xs shadow-lg transition-colors"
+            style={{ top: -44, background: '#1e1e20', border: '1px solid #3a3a3c', color: '#c9c7c1' }}
+          >
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor"
+              strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M6 2v8M2.5 6.5L6 10l3.5-3.5" />
+            </svg>
+            Latest
+          </button>
+        )}
+
         <div className="max-w-2xl mx-auto flex flex-col gap-2.5">
           {showFallbackToast && (
             <FallbackToast reason={showFallbackToast} onDismiss={dismissFallbackToast} />
@@ -579,10 +610,12 @@ export default function AIPage() {
             <button
               onClick={() => void handleSubmit()}
               disabled={!canSend}
-              className="shrink-0 rounded-full flex items-center justify-center transition-colors"
+              // 44px on a phone: the smallest target a thumb hits reliably, and
+              // the one control on this page that a mis-tap costs a prompt from
+              // a limited hourly allowance. A pointer does not need the room.
+              className="shrink-0 rounded-full flex items-center justify-center transition-colors
+                         w-11 h-11 sm:w-9 sm:h-9"
               style={{
-                width: 36,
-                height: 36,
                 background: canSend ? '#80ff49' : '#1e1e20',
                 color: canSend ? '#0e0e0f' : '#444',
               }}
@@ -595,9 +628,10 @@ export default function AIPage() {
             </button>
           </div>
 
-          <p className="text-center text-xs leading-snug" style={{ color: '#3a3a38' }}>
-            AI responses may be inaccurate — verify important decisions.{' '}
-            Trending data by{' '}
+          {/* One line. Two of them cost 4% of a phone screen to say something
+              nobody reads twice, and the screen is the composer's to give. */}
+          <p className="text-center text-[11px] leading-none" style={{ color: '#3a3a38' }}>
+            AI can be wrong — verify. Data by{' '}
             <a
               href="https://sleeper.com"
               target="_blank"
