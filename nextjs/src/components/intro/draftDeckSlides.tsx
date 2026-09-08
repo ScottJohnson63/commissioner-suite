@@ -27,7 +27,9 @@
 // no hooks to re-read. DraftDeckIntro.tsx is now just the wiring.
 
 import { IntroList, type IntroSlide } from './IntroCarousel';
-import { CardsArt, TierArt, DeckTabsArt } from './IntroArt';
+import {
+  CARD_DETAIL_CALLOUTS, CardDetailArt, CardsArt, DeckTabsArt, TierArt, WildCardArt,
+} from './IntroArt';
 import {
   MIN_GAMES_FOR_TIER, TIER_LABEL, TIER_MAX_RANK, TIER_ORDER, WILDCARD_PACK_TIERS,
 } from '@/lib/cards/tiers';
@@ -128,6 +130,17 @@ export function draftDeckSlides(): IntroSlide[] {
       ),
     },
     {
+      key: 'card',
+      eyebrow: 'The rules',
+      title: 'Card Details',
+      art: <CardDetailArt />,
+      body: (
+        <IntroList
+          items={CARD_DETAIL_CALLOUTS.map((callout, i) => `${i + 1} - ${callout}`)}
+        />
+      ),
+    },
+    {
       key: 'tiers',
       eyebrow: 'The rules',
       title: 'Tiers:',
@@ -144,9 +157,9 @@ export function draftDeckSlides(): IntroSlide[] {
     },
     {
       key: 'wildcard',
-      eyebrow: 'Draft Deck · Packs',
-      title: 'Wildcards',
-      art: <DeckTabsArt active="packs" />,
+      eyebrow: 'Draft Deck',
+      title: 'Wild Card',
+      art: <WildCardArt />,
       body: (
         <p>
           Each {wildcardFloor()} pack holds the possibility of holding a wildcard. This

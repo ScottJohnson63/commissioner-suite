@@ -23,6 +23,7 @@ import userEvent from '@testing-library/user-event';
 
 import { DraftDeckIntro, openDraftDeckIntro, requestDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
 import { ordinal } from '@/components/intro/draftDeckSlides';
+import { CARD_DETAIL_CALLOUTS } from '@/components/intro/IntroArt';
 import {
   MIN_GAMES_FOR_TIER, TIER_LABEL, TIER_MAX_RANK, TIER_ORDER, WILDCARD_PACK_TIERS,
 } from '@/lib/cards/tiers';
@@ -35,8 +36,9 @@ import {
 /** Every slide, in order — the tour is the same for everybody. */
 const SLIDES = [
   'Draft Deck. Official card game for Fantasy Football.',
+  'Card Details',
   'Tiers:',
-  'Wildcards',
+  'Wild Card',
   'Customize your deck.',
   'Lineup',
   'Open a pack and get started!',
@@ -196,6 +198,16 @@ describe('DraftDeckIntro — the rules it states', () => {
     }
   });
 
+  it('numbers the card-detail bullets the way the artwork numbers its rings', async () => {
+    const user = userEvent.setup();
+    renderTour();
+    const details = await slideText(user, 'Card Details');
+
+    CARD_DETAIL_CALLOUTS.forEach((callout, i) => {
+      expect(details).toContain(`${i + 1} - ${callout}`);
+    });
+  });
+
   it('states the games floor the ranking is actually built on', async () => {
     const user = userEvent.setup();
     renderTour();
@@ -210,7 +222,7 @@ describe('DraftDeckIntro — the rules it states', () => {
   it('names the pack tier a wildcard can actually fall out of', async () => {
     const user = userEvent.setup();
     renderTour();
-    const wildcard = await slideText(user, 'Wildcards');
+    const wildcard = await slideText(user, 'Wild Card');
 
     const lowest = WILDCARD_PACK_TIERS[WILDCARD_PACK_TIERS.length - 1];
     expect(wildcard).toContain(`Each ${TIER_LABEL[lowest]} or better pack`);
