@@ -21,6 +21,8 @@ describe('rateLimit module', () => {
   let incrementDaily:  () => void;
   let checkHourlyLimit: (id: string) => { allowed: boolean; remaining: number; resetAt: number };
   let peekHourlyLimit: (id: string) => { used: number; remaining: number; resetAt: number };
+  let checkDailyLimit: () => { allowed: boolean; used: number; remaining: number; resetAt: number };
+  let DAILY_LIMIT:     number;
   let getClientId:     (req: NextRequest) => string;
   let HOURLY_LIMIT:    number;
 
@@ -37,6 +39,8 @@ describe('rateLimit module', () => {
     incrementDaily    = mod.incrementDaily;
     checkHourlyLimit  = mod.checkHourlyLimit;
     peekHourlyLimit   = mod.peekHourlyLimit;
+    checkDailyLimit   = mod.checkDailyLimit;
+    DAILY_LIMIT       = mod.DAILY_LIMIT;
     getClientId       = mod.getClientId;
     HOURLY_LIMIT      = mod.HOURLY_LIMIT;
   });
@@ -198,6 +202,48 @@ describe('rateLimit module', () => {
     const peeked = peekHourlyLimit('over');
     expect(peeked.used).toBe(HOURLY_LIMIT);
     expect(peeked.remaining).toBe(0);
+  });
+
+  // ── checkDailyLimit ────────────────────────────────────────────────────────
+  //
+  // The app's copy of the answering provider's daily quota. It used to be a
+  // counter that only ever got logged, so the first prompt past the provider's
+  // budget came back as a raw 429 from inside a streaming answer.
+
+  // WHY: Reading the budget must not spend it — the check runs before every
+  //      prompt, including ones that are then refused for some other reason.
+  it('checkDailyLimit does not consume from the daily counter', () => {
+    incrementDaily();
+    expect(checkDailyLimit().used).toBe(1);
+    expect(checkDailyLimit().used).toBe(1);
+    expect(getDailyCount()).toBe(1);
+  });
+
+  // WHY: This is the message the reader gets instead of the provider's. It has
+  //      to turn off at exactly the limit, not one past it.
+  it('checkDailyLimit refuses at the limit and not before', () => {
+    for (let i = 0; i < DAILY_LIMIT - 1; i += 1) incrementDaily();
+    expect(checkDailyLimit()).toMatchObject({ allowed: true, remaining: 1 });
+
+    incrementDaily();
+    expect(checkDailyLimit()).toMatchObject({ allowed: false, remaining: 0 });
+  });
+
+  // WHY: The counter rolls at UTC midnight, and the page shows a countdown to
+  //      it. A reset time in the past would read as "resets now" all day.
+  it('checkDailyLimit reports the next UTC midnight as the reset', () => {
+    // The clock is fixed at 2025-01-01T00:00:00Z, so midnight is 24h out.
+    expect(checkDailyLimit().resetAt).toBe(Date.parse('2025-01-02T00:00:00.000Z'));
+  });
+
+  // WHY: A new UTC day is a new budget, and the app must reopen without a
+  //      restart.
+  it('checkDailyLimit reopens the budget on the next UTC day', () => {
+    for (let i = 0; i < DAILY_LIMIT; i += 1) incrementDaily();
+    expect(checkDailyLimit().allowed).toBe(false);
+
+    jest.advanceTimersByTime(24 * 60 * 60 * 1000);
+    expect(checkDailyLimit()).toMatchObject({ allowed: true, used: 0, remaining: DAILY_LIMIT });
   });
 
   function makeReq(headers: Record<string, string>): NextRequest {

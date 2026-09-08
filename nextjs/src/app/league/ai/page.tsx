@@ -19,6 +19,8 @@ import { useSleeperData } from '@/hooks/useSleeperData';
 import { LeagueSelector } from '@/components/LeagueSelector';
 import { ChatMarkdown } from '@/components/ai/ChatMarkdown';
 import { useAgentUsage } from '@/components/ai/useAgentUsage';
+import type { AgentUsage } from '@/components/ai/useAgentUsage';
+import { SUGGESTED_PROMPTS } from '@/lib/agentIntents';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -34,26 +36,6 @@ type ModelUsed = 'gemini' | 'groq' | null;
 
 const ALERT_DISMISSED_KEY = 'agent_alert_dismissed';
 
-/**
- * The openers.
- *
- * Every one of these is a question the route now has a data source for. The
- * old set was written before it did — "should I start or sit my running back
- * this week?" was in it, and the assistant answered it by asking which running
- * back was meant, because nothing in its context knew. Each of these maps to an
- * intent that pulls the asker's own roster: the lineup ones to the matchup
- * report, the pickup one to the waiver scan, the trade one to the trade finder,
- * and the trending one to a form ranking rather than to Sleeper's add counts.
- */
-const SUGGESTED_PROMPTS = [
-  'How does my matchup look this week?',
-  'Who should I start at flex?',
-  'Which free agents fix my weakest position?',
-  'What trade should I offer, and to who?',
-  'Which running backs are trending up right now?',
-  'Who on my bench should be starting?',
-];
-
 const PANEL_LABEL: Record<string, string> = {
   matchup: 'Matchup Analysis',
   waivers: 'Waiver Wire',
@@ -62,7 +44,9 @@ const PANEL_LABEL: Record<string, string> = {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function SessionAlert({ limit, onDismiss }: { limit: number; onDismiss: () => void }) {
+function SessionAlert({ limit, dailyLimit, onDismiss }: {
+  limit: number; dailyLimit: number; onDismiss: () => void;
+}) {
   return (
     <div
       className="w-full rounded-xl px-4 py-3.5 sm:px-5 sm:py-4 text-sm flex flex-col gap-2"
@@ -86,11 +70,12 @@ function SessionAlert({ limit, onDismiss }: { limit: number; onDismiss: () => vo
         </button>
       </div>
       <p style={{ color: '#888' }}>
-        You are limited to <strong style={{ color: '#e8e6df' }}>{limit} prompts per hour</strong>.
-        This agent is shared — please use it sparingly so everyone can access it.
-        The agent uses <strong style={{ color: '#e8e6df' }}>Groq</strong> by default and
-        automatically switches to <strong style={{ color: '#e8e6df' }}>Gemini</strong> if
-        Groq is rate-limited or unavailable.
+        You are limited to <strong style={{ color: '#e8e6df' }}>{limit} prompts per hour</strong>,
+        and the league shares <strong style={{ color: '#e8e6df' }}>{dailyLimit} a day</strong>.
+        Please use it sparingly so everyone can access it.
+        The agent answers on <strong style={{ color: '#e8e6df' }}>Gemini</strong> and
+        falls back to <strong style={{ color: '#e8e6df' }}>Groq</strong> if Gemini is
+        rate-limited or unavailable.
       </p>
     </div>
   );
@@ -102,11 +87,19 @@ function FallbackToast({ reason, onDismiss }: { reason: string; onDismiss: () =>
     return () => clearTimeout(t);
   }, [onDismiss]);
 
-  const message = reason === 'groq_rate_limit'
-    ? 'Groq rate limit reached — switched to'
-    : reason === 'groq_unavailable'
-      ? 'Groq is not configured — using'
-      : 'Groq error — switched to';
+  // Whichever provider led, the toast names the one that actually answered —
+  // and says why the other did not, because "the assistant is slow today" and
+  // "your primary key is revoked" look identical from the reader's chair.
+  const FALLBACK_MESSAGE: Record<string, string> = {
+    gemini_error:          'Gemini error — switched to',
+    gemini_unavailable:    'Gemini is not configured — using',
+    groq_rate_limit:       'Groq rate limit reached — switched to',
+    groq_unavailable:      'Groq is not configured — using',
+    groq_prompt_too_large: 'Too much data for Groq this minute — using',
+    groq_error:            'Groq error — switched to',
+  };
+  const message = FALLBACK_MESSAGE[reason] ?? 'Switched to';
+  const answered = reason.startsWith('gemini') ? 'Groq' : 'Gemini';
 
   return (
     // A row of the composer rather than a floating pill. Pinned to the viewport
@@ -120,7 +113,7 @@ function FallbackToast({ reason, onDismiss }: { reason: string; onDismiss: () =>
     >
       <span className="shrink-0" style={{ color: '#facc15' }}>⚠</span>
       <span className="min-w-0 flex-1">
-        {message} <strong style={{ color: '#e8e6df' }}>Gemini</strong>
+        {message} <strong style={{ color: '#e8e6df' }}>{answered}</strong>
       </span>
       <button
         onClick={onDismiss}
@@ -139,20 +132,32 @@ function resetLabel(resetAt: number): string {
   const mins = Math.ceil((resetAt - Date.now()) / 60000);
   if (mins <= 0) return 'resets now';
   if (mins < 60) return `resets in ${mins}m`;
-  return 'resets in 1h';
+  const hours = Math.round(mins / 60);
+  return `resets in ${hours}h`;
 }
 
-function UsageBar({
-  used, limit, dailyUsed, resetAt,
-}: { used: number; limit: number; dailyUsed: number; resetAt: number }) {
-  const pct = Math.min(100, limit > 0 ? (used / limit) * 100 : 0);
+/**
+ * Two budgets, one bar.
+ *
+ * The reader's own hour and the app's shared day run out independently, and the
+ * bar shows whichever is closer to gone — being told 3/15 while the app has
+ * nothing left for anyone is the confusion this exists to avoid.
+ */
+function UsageBar({ usage, dayExhausted }: { usage: AgentUsage; dayExhausted: boolean }) {
+  const hourPct = usage.limit > 0 ? (usage.used / usage.limit) * 100 : 0;
+  const dayPct  = usage.dailyLimit > 0 ? (usage.dailyUsed / usage.dailyLimit) * 100 : 0;
+  const pct = Math.min(100, Math.max(hourPct, dayPct));
   const barColor = pct >= 100 ? '#ef4444' : pct >= 80 ? '#facc15' : '#80ff49';
 
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2 text-xs" style={{ color: '#555' }}>
-        <span className="truncate">{used}/{limit} this hour · {resetLabel(resetAt)}</span>
-        <span className="shrink-0">{dailyUsed} today</span>
+        <span className="truncate">
+          {dayExhausted
+            ? `Shared daily limit reached · ${resetLabel(usage.dailyResetAt)}`
+            : `${usage.used}/${usage.limit} this hour · ${resetLabel(usage.resetAt)}`}
+        </span>
+        <span className="shrink-0">{usage.dailyUsed}/{usage.dailyLimit} today</span>
       </div>
       <div className="h-1 w-full rounded-full overflow-hidden" style={{ background: '#1e1e20' }}>
         <div
@@ -243,7 +248,7 @@ async function readErrorMessage(res: Response): Promise<string> {
 export default function AIPage() {
   useSession();
   const { sleeperUser, activeLeagueId, setActiveLeagueId } = useSleeperData();
-  const { usage, exhausted, clientId, recordResponse, recordRejection } = useAgentUsage();
+  const { usage, exhausted, dayExhausted, clientId, recordResponse, recordRejection } = useAgentUsage();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -254,7 +259,7 @@ export default function AIPage() {
   const [showAlert, setShowAlert] = useState(false);
   const [showFallbackToast, setShowFallbackToast] = useState<string | null>(null);
 
-  const [modelUsed, setModelUsed] = useState<ModelUsed>('groq');
+  const [modelUsed, setModelUsed] = useState<ModelUsed>('gemini');
   const [modelId, setModelId] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -316,7 +321,11 @@ export default function AIPage() {
       // ── Handle rate-limit ──────────────────────────────────────────────────
       if (res.status === 429) {
         const data = (await res.json()) as { error: string; resetAt?: number };
-        recordRejection(data.resetAt);
+        // The daily 429 is the app's budget, not this reader's hour. The header
+        // says which, so the meter and the composer can say the right thing.
+        const daily = Number(res.headers.get('X-Daily-Prompts-Used') ?? 0)
+          >= Number(res.headers.get('X-Daily-Limit') ?? Infinity);
+        recordRejection(data.resetAt, daily ? 'daily' : 'hourly');
         setMessages((prev) => {
           const updated = [...prev];
           updated[updated.length - 1] = {
@@ -440,7 +449,9 @@ export default function AIPage() {
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 sm:px-8 sm:py-6">
         <div className="max-w-2xl mx-auto flex flex-col gap-5 sm:gap-6">
 
-          {showAlert && <SessionAlert limit={usage.limit} onDismiss={dismissAlert} />}
+          {showAlert && (
+            <SessionAlert limit={usage.limit} dailyLimit={usage.dailyLimit} onDismiss={dismissAlert} />
+          )}
 
           {/* Empty state */}
           {messages.length === 0 && (
@@ -455,15 +466,15 @@ export default function AIPage() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full">
-                {SUGGESTED_PROMPTS.map((p) => (
+                {SUGGESTED_PROMPTS.map(({ text }) => (
                   <button
-                    key={p}
-                    onClick={() => void handleSubmit(p)}
+                    key={text}
+                    onClick={() => void handleSubmit(text)}
                     disabled={loading || exhausted}
                     className="text-left px-4 py-3 rounded-xl text-sm border transition-colors disabled:opacity-50"
                     style={{ background: '#141415', borderColor: '#2a2a2c', color: '#9a9a94' }}
                   >
-                    {p}
+                    {text}
                   </button>
                 ))}
               </div>
@@ -530,12 +541,7 @@ export default function AIPage() {
 
           <div className="flex items-center justify-between gap-3">
             <div className="flex-1 min-w-0">
-              <UsageBar
-                used={usage.used}
-                limit={usage.limit}
-                dailyUsed={usage.dailyUsed}
-                resetAt={usage.resetAt}
-              />
+              <UsageBar usage={usage} dayExhausted={dayExhausted} />
             </div>
             <ModelBadge model={modelUsed} modelId={modelId} />
           </div>
@@ -550,7 +556,9 @@ export default function AIPage() {
               onChange={(e) => { setInput(e.target.value); resize(e.target); }}
               onKeyDown={handleKeyDown}
               placeholder={
-                exhausted
+                dayExhausted
+                  ? `Shared daily limit reached — ${resetLabel(usage.dailyResetAt)}`
+                  : exhausted
                   ? `Hourly limit reached — ${resetLabel(usage.resetAt)}`
                   // Short enough to sit on one line at 16px on a small phone —
                   // a wrapped placeholder is clipped by a one-row textarea.

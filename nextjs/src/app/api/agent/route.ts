@@ -13,7 +13,9 @@
 //     position, opponent, season, weeksBack). This structured plan is then used
 //     to fetch precisely the right data from the DB — avoiding the need to dump
 //     all stats into the prompt context — and to decide which of the dashboard
-//     panels the answer needs.
+//     panels the answer needs. The six openers the page offers skip this pass
+//     entirely: their plans are written down in src/lib/agentIntents.ts, which
+//     the page reads too, so the button and the route cannot disagree.
 //
 //   Pass 2 — Answer generation (Groq primary, Gemini fallback, streaming)
 //     The final system prompt is assembled from DB stats, Sleeper trending data,
@@ -35,21 +37,32 @@
 //
 // ── Rate limiting ────────────────────────────────────────────────────────────
 //   • Per-client: HOURLY_LIMIT prompts per rolling 60-minute window (in-memory).
-//   • Global daily counter:  logged in response headers for observability.
-//   Response headers expose limit/remaining/reset so the client can show a
-//   countdown to the user when they approach the cap, and GET ?usage=1 reports
-//   the same bucket without spending from it so a page reload does not draw an
-//   empty meter over a window that is already half gone.
+//   • App-wide:   DAILY_LIMIT prompts per UTC day, the app's copy of the
+//                 answering provider's daily quota. Reaching ours first is the
+//                 point: the reader gets our message rather than a provider 429
+//                 from inside a half-written answer.
+//   Response headers expose both limits with their remaining counts and reset
+//   times, and GET ?usage=1 reports the same buckets without spending from them
+//   so a page reload does not draw an empty meter over a window already gone.
 //
 // ── Model fallback ────────────────────────────────────────────────────────────
-//   Groq is the primary model. If Groq fails for ANY reason — rate limit, bad
-//   or revoked key, retired model ID, outage — and a GEMINI_API_KEY is
-//   configured, the request is retried on Gemini 2.5 Flash. If GROQ_API_KEY is
-//   absent entirely, Gemini serves the request directly. The X-Model-Used and
-//   X-Fallback-Reason (groq_rate_limit | groq_error | groq_unavailable) response
-//   headers record which path was taken. Only when every configured provider
-//   fails does the route return 502, and the body carries each provider's error
-//   so the browser can show what actually went wrong.
+//   Gemini answers first and Groq is the fallback, which is a quota decision
+//   rather than a quality one: a panel-backed prompt runs 5,000-9,000 tokens,
+//   and Groq's free tier allows 100,000 a day on its largest model — about a
+//   dozen answers for a whole league. Set AGENT_PRIMARY=groq to reverse it,
+//   which is right on a paid Groq plan, where it is much the faster of the two.
+//
+//   Whichever leads, a failure of ANY kind moves to the other: a rate limit, a
+//   revoked key, a retired model ID, an outage. Groq is additionally SKIPPED
+//   rather than attempted when the prompt is larger than AGENT_GROQ_TPM, since
+//   its per-minute ceiling refuses an oversized prompt outright — and does so
+//   selectively, answering NFL questions and refusing the roster ones.
+//
+//   X-Model-Used and X-Fallback-Reason (groq_rate_limit | groq_error |
+//   groq_unavailable | groq_prompt_too_large | gemini_error |
+//   gemini_unavailable) record which path was taken. Only when every configured
+//   provider fails does the route return 502, and the body carries each
+//   provider's error so the browser can show what actually went wrong.
 //
 //   Groq model IDs are discovered from the account's own catalogue rather than
 //   hardcoded, because a retired ID 404s every request and reads as an outage.
@@ -72,6 +85,13 @@
 //                     the model is discovered from the account's catalogue.
 //   GROQ_PLANNER_MODEL — optional. Pins Pass 1 only.
 //   GEMINI_MODEL    — optional model ID override (default gemini-2.5-flash).
+//   AGENT_PRIMARY   — optional. 'groq' to answer on Groq first; anything else
+//                     (or unset) answers on Gemini first.
+//   AGENT_GROQ_TPM  — optional. Largest prompt, in tokens, worth sending to
+//                     Groq. Default 12000, the free tier's per-minute ceiling
+//                     on llama-3.3-70b. 0 disables the check.
+//   AGENT_DAILY_LIMIT — optional. App-wide prompts per UTC day; default 250.
+//                     Set it to the answering provider's real daily quota.
 //   NFL_SEASON      — current NFL season year (e.g. 2025); defaults to the
 //                     current calendar year. Set this explicitly — stale values
 //                     are the most common cause of wrong season data.
@@ -82,8 +102,13 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
 import {
-  HOURLY_LIMIT, getClientId, checkHourlyLimit, peekHourlyLimit, getDailyCount, incrementDaily,
+  HOURLY_LIMIT, DAILY_LIMIT, getClientId, checkHourlyLimit, peekHourlyLimit,
+  checkDailyLimit, dailyResetAt, getDailyCount, incrementDaily,
 } from '@/lib/rateLimit';
+import {
+  VALID_INTENTS, emptyPlan, plannerShortcut,
+} from '@/lib/agentIntents';
+import type { QueryIntent, QueryPlan } from '@/lib/agentIntents';
 import {
   fetchTrending, fetchSleeperPlayerIndex, fetchLeagueContext,
 } from '@/lib/agentContext';
@@ -250,34 +275,11 @@ interface PlayerStats {
 type ModelUsed = 'gemini' | 'groq';
 
 // ── Query plan types ──────────────────────────────────────────────────────────
-
-type QueryIntent =
-    | 'top_position'        // "best QBs last year"
-    | 'player_vs_opponent'  // "Josh Allen vs the Patriots"
-    | 'player_comparison'   // "Lamar vs Mahomes"
-    | 'player_recent'       // "how has Davante Adams been doing"
-    | 'air_yards_efficiency' // Phase 1: "WRs with high air yards but few catches"
-    | 'workload_trend'       // Phase 1: "is RB X declining over the season"
-    | 'efficiency_gap'       // Phase 1: "high targets, low points — buy-low"
-    | 'standings'            // Phase 2: "who is in first place / league standings"
-    | 'roster_scan'          // Phase 2: "who in our league has weak RBs"
-    | 'playoff_schedule'     // Phase 2: "who has easiest playoff schedule"
-    // Phase 3 — the three dashboard panels, answered from the panel's own data.
-    | 'start_sit'            // "should I start or sit my RB this week"
-    | 'waiver_wire'          // "who should I pick up"
-    | 'trade_analyzer'       // "who should I trade for"
-    | 'trending'             // "who is being added league-wide"
-    | 'general';             // fallback
-
-interface QueryPlan {
-    intent: QueryIntent;
-    players: string[];
-    position: string | null;
-    opponent: string | null;
-    season: number | null;
-    weeksBack: number | null;   // Phase 1: "last 3 weeks" → 3
-}
-
+//
+// QueryIntent and QueryPlan moved to src/lib/agentIntents.ts, which the page
+// reads too: the six openers it shows are recognised here by their exact text
+// and answered without a classification call, and the two lists cannot be
+// allowed to drift apart.
 
 // ── Turso stat queries ────────────────────────────────────────────────────────
 
@@ -420,6 +422,13 @@ async function executeQueryPlan(plan: QueryPlan): Promise<PlayerStats[]> {
                 return prisma.nflWeeklyStat.findMany({
                     where: { playerId, opponentTeam: { contains: plan.opponent }, week: { gte: 1, lte: 18 } },
                     orderBy: [{ season: 'desc' }, { week: 'desc' }],
+                    // Every one of these rows goes straight into the prompt, and
+                    // this is the only query where nothing else bounds them:
+                    // there is no season filter, and the opponent is matched by
+                    // substring, so a planner that answers "LA" matches LA, LAR
+                    // and LAC, and one that answers a single letter matches most
+                    // of the league. Twenty games is more than any answer needs.
+                    take: 20,
                     select: STAT_SELECT,
                 }) as unknown as PlayerStats[];
             }
@@ -556,9 +565,13 @@ async function executeQueryPlan(plan: QueryPlan): Promise<PlayerStats[]> {
             case 'start_sit':
             case 'waiver_wire':
             case 'trade_analyzer':
+                // A shorter list than the intents that have nothing else: here
+                // the stat rows are only the comparison set beside the panel's
+                // own numbers, and the twelfth-best RB of the last three weeks
+                // has never changed a start/sit call.
                 return plan.position
-                    ? positionRecentForm(plan.position, plan.weeksBack ?? 3)
-                    : fallbackRecentStats();
+                    ? positionRecentForm(plan.position, plan.weeksBack ?? 3, 12)
+                    : fallbackRecentStats(12);
 
             // "Which QBs are trending up?" is a question about form, and the
             // Sleeper add counts alone cannot answer it — they are a popularity
@@ -692,13 +705,13 @@ async function positionRisers(position: string, recentWeeks: number): Promise<Pl
  * position has actually been worth lately, so a projection on the panel has
  * something to be measured against.
  */
-async function positionRecentForm(position: string, recentWeeks: number): Promise<PlayerStats[]> {
+async function positionRecentForm(position: string, recentWeeks: number, limit = 20): Promise<PlayerStats[]> {
     const { forms } = await positionForm(position, recentWeeks);
     return forms
         .filter((f) => f.recentGames > 0)
         .map((f) => ({ form: f, avg: f.recentPts / f.recentGames }))
         .sort((a, b) => b.avg - a.avg)
-        .slice(0, 20)
+        .slice(0, limit)
         .map(({ form, avg }) => ({
             ...form.row,
             fantasyPointsPpr: parseFloat(avg.toFixed(1)),
@@ -711,7 +724,7 @@ async function positionRecentForm(position: string, recentWeeks: number): Promis
  * in the DB. Used as a fallback when the intent is `general` or `trending`, or
  * when a specific player/opponent cannot be resolved.
  */
-async function fallbackRecentStats(): Promise<PlayerStats[]> {
+async function fallbackRecentStats(limit = 25): Promise<PlayerStats[]> {
     try {
         const latest = await prisma.nflWeeklyStat.findFirst({
             where: { season: CURRENT_SEASON, week: { gte: 1, lte: 18 } },
@@ -723,7 +736,7 @@ async function fallbackRecentStats(): Promise<PlayerStats[]> {
         return prisma.nflWeeklyStat.findMany({
             where: { season: targetSeason, week: targetWeek, fantasyPointsPpr: { gt: 0 } },
             orderBy: { fantasyPointsPpr: 'desc' },
-            take: 25,
+            take: limit,
             select: STAT_SELECT,
         }) as unknown as PlayerStats[];
     } catch { return []; }
@@ -833,7 +846,16 @@ async function planWithGemini(userMessage: string): Promise<string | null> {
  * @returns  A QueryPlan with validated intent and extracted entities.
  */
 async function classifyIntent(userMessage: string): Promise<QueryPlan> {
-    const fallback: QueryPlan = { intent: 'general', players: [], position: null, opponent: null, season: null, weeksBack: null };
+    const fallback = emptyPlan();
+
+    // The page's own openers need no classifying — see src/lib/agentIntents.ts.
+    // This is the most-travelled path in the app and it now costs nothing.
+    const shortcut = plannerShortcut(userMessage);
+    if (shortcut) {
+        console.log('[pass-1] shortcut hit — no model call');
+        return shortcut;
+    }
+
     const raw = (await planWithGroq(userMessage)) ?? (await planWithGemini(userMessage));
     if (raw === null) {
         console.error('[pass-1] no planner provider available — defaulting to general intent');
@@ -843,13 +865,7 @@ async function classifyIntent(userMessage: string): Promise<QueryPlan> {
         console.log('[pass-1] raw planner output:', raw);
         const clean = raw.replace(/```json|```/g, '').trim();
         const parsed = JSON.parse(clean) as QueryPlan;
-        const validIntents: QueryIntent[] = [
-            'top_position', 'player_vs_opponent', 'player_comparison', 'player_recent',
-            'air_yards_efficiency', 'workload_trend', 'efficiency_gap',
-            'standings', 'roster_scan', 'playoff_schedule',
-            'start_sit', 'waiver_wire', 'trade_analyzer', 'trending', 'general',
-        ];
-        if (!validIntents.includes(parsed.intent)) return fallback;
+        if (!VALID_INTENTS.includes(parsed.intent)) return fallback;
         return {
             intent: parsed.intent,
             players: Array.isArray(parsed.players) ? parsed.players : [],
@@ -1000,8 +1016,17 @@ function buildSystemPrompt(
         ? stats.map((p, i) => `${i + 1}. ${formatStatRow(p)}`).join('\n')
         : 'No stat data available for this query.';
 
-    const addsBlock  = formatTrendingRows(trendingAdds,  playerIndex, 'added');
-    const dropsBlock = formatTrendingRows(trendingDrops, playerIndex, 'dropped');
+    // Fifty names the reader did not ask about are fifty names of prompt. Only
+    // the questions that are actually about waiver activity get them.
+    const showTrending = TRENDING_INTENTS.includes(plan.intent);
+    const trendingBlock = showTrending
+        ? `--- TRENDING ADDS, LEAGUE-WIDE (last 24h) ---
+${formatTrendingRows(trendingAdds, playerIndex, 'added')}
+
+--- TRENDING DROPS, LEAGUE-WIDE (last 24h) ---
+${formatTrendingRows(trendingDrops, playerIndex, 'dropped')}
+`
+        : '';
 
     const leagueBlock = leagueCtx ? formatLeagueContext(leagueCtx) : '';
     const toolBlock   = formatAgentTools(tools);
@@ -1018,7 +1043,7 @@ ${hasMyTeam
     : missingLeague
         ? 'No roster is connected for this manager, so answer the general question well rather than refusing it: give the best options in the data and say which situations each fits. Then, in ONE closing line, mention that picking their league from the league selector at the top of the page lets you answer for their actual roster.'
         : 'This question is about the NFL rather than about one roster. Answer it from the data below.'}
-The TRENDING lists are a popularity snapshot of what the whole fantasy world is adding and dropping — they are NOT a list of every player who is playing well, and a position missing from them means nothing. If you are asked which players at a position are trending up and that position is thin in the trending list, answer from NFL STATS instead, which is ranked for exactly this question. Never reply that a position is absent from the data when a section below is about that position.
+${showTrending ? 'The TRENDING lists are a popularity snapshot of what the whole fantasy world is adding and dropping — they are NOT a list of every player who is playing well, and a position missing from them means nothing. If you are asked which players at a position are trending up and that position is thin in the trending list, answer from NFL STATS instead, which is ranked for exactly this question.\n' : ''}Never reply that a position is absent from the data when a section below is about that position.
 Do not invent players, stats or scores that are not below. If a specific number really is missing, say which one and answer with what is there.
 The NFL STATS section is pre-ranked — do not reorder it. Player labels carry games played and per-game averages.
 Projections carry a floor and a ceiling: the projection is the expectation, and the gap between floor and ceiling is the risk. Say which one matters for the call you are making.
@@ -1029,13 +1054,7 @@ ${toolBlock ? `\n${toolBlock}\n` : ''}
 --- NFL STATS ---
 ${statsBlock}
 
-${leagueBlock}
---- TRENDING ADDS, LEAGUE-WIDE (last 24h) ---
-${addsBlock}
-
---- TRENDING DROPS, LEAGUE-WIDE (last 24h) ---
-${dropsBlock}
-`;
+${leagueBlock}${trendingBlock}`;
 }
 
 /**
@@ -1094,6 +1113,53 @@ function buildDataContext(plan: QueryPlan, hasLeague: boolean): string {
 }
 
 // ── Model helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Which provider answers first.
+ *
+ * Gemini, because of what one of these prompts actually costs. A panel-backed
+ * answer runs 5,000-9,000 tokens, and Groq's free tier allows 100,000 of them
+ * a day on its largest model — roughly a dozen answers for the whole league,
+ * against Gemini's few hundred. Groq stays as the fallback, and stays first for
+ * Pass 1, where an 870-token classification is well inside every limit.
+ *
+ * Set AGENT_PRIMARY=groq to put it back in front — on a paid Groq plan it is
+ * much the faster of the two, and then the ordering here is the only thing
+ * standing in the way.
+ */
+function primaryProvider(): ModelUsed {
+    return process.env.AGENT_PRIMARY?.trim().toLowerCase() === 'groq' ? 'groq' : 'gemini';
+}
+
+/**
+ * Roughly how many tokens a string will cost.
+ *
+ * Measured against this route's own prompts, which are dense with decimals,
+ * abbreviations and player names and tokenize at about 2.4 characters each —
+ * far denser than the ~4 that English prose averages. Approximate by nature and
+ * only ever used to decide whether an attempt is worth making.
+ */
+function estimateTokens(text: string): number {
+    return Math.ceil(text.length / 2.4);
+}
+
+/**
+ * The most tokens one Groq request may carry.
+ *
+ * Groq enforces tokens-per-minute per model, and its free tier sets that below
+ * what a panel-backed prompt costs on every model except the largest: 8,000 on
+ * the gpt-oss pair, 6,000 on llama-3.1-8b. A prompt over the ceiling does not
+ * degrade, it 429s — and it does so *selectively*, answering questions about
+ * the NFL and refusing the ones about the reader's own roster, which are the
+ * questions the panels exist for. Better to skip an attempt that cannot succeed
+ * and let the other provider have it.
+ *
+ * Set AGENT_GROQ_TPM to your plan's real figure; 0 disables the check.
+ */
+function groqTpmBudget(): number {
+    const configured = Number(process.env.AGENT_GROQ_TPM);
+    return Number.isFinite(configured) && configured >= 0 ? Math.floor(configured) : 12_000;
+}
 
 function isGroqRateLimitError(err: unknown): boolean {
     if (!(err instanceof Error)) return false;
@@ -1307,8 +1373,14 @@ export async function GET(req: NextRequest): Promise<Response> {
     // already half spent.
     if (params.get('usage') === '1') {
         const { used, remaining, resetAt } = peekHourlyLimit(getClientId(req));
+        const daily = checkDailyLimit();
         return NextResponse.json(
-            { limit: HOURLY_LIMIT, used, remaining, resetAt, dailyUsed: getDailyCount() },
+            {
+                limit: HOURLY_LIMIT, used, remaining, resetAt,
+                dailyLimit:   DAILY_LIMIT,
+                dailyUsed:    daily.used,
+                dailyResetAt: daily.resetAt,
+            },
             { headers: { 'Cache-Control': 'no-store' } },
         );
     }
@@ -1334,11 +1406,30 @@ export async function GET(req: NextRequest): Promise<Response> {
     });
 }
 
-/** Intents whose answer is about the asker's own league rather than the NFL. */
+/**
+ * Intents that read the TRENDING blocks — what the wider fantasy world is
+ * adding and dropping.
+ *
+ * ~900 tokens for fifty names that, on a start/sit question, are fifty players
+ * who are not on the roster being asked about. The prompt already has to warn
+ * the model not to mistake this list for a form ranking; the cheaper fix is not
+ * to show it where it cannot help.
+ */
+const TRENDING_INTENTS: QueryIntent[] = ['waiver_wire', 'trending', 'roster_scan', 'general'];
+
+/**
+ * Intents that read the LEAGUE CONTEXT block — every roster in the league, the
+ * standings, and the NFL schedule ahead.
+ *
+ * Three, not the eight it was. That block is ~1,600 tokens and a pair of
+ * Sleeper calls, and for a start/sit or a waiver question it is entirely
+ * redundant: the matchup panel already carries the asker's roster and their
+ * opponent's, with projections, and the other ten rosters have nothing to do
+ * with which of two running backs to start. These three are the questions that
+ * are actually *about* the other rosters.
+ */
 const LEAGUE_AWARE_INTENTS: QueryIntent[] = [
     'standings', 'roster_scan', 'playoff_schedule',
-    'start_sit', 'waiver_wire', 'trade_analyzer',
-    'trending', 'player_comparison',
 ];
 
 /**
@@ -1353,6 +1444,7 @@ const LEAGUE_AWARE_INTENTS: QueryIntent[] = [
 const MY_TEAM_INTENTS: QueryIntent[] = [
     'start_sit', 'waiver_wire', 'trade_analyzer',
     'standings', 'roster_scan', 'playoff_schedule',
+    'player_comparison',
 ];
 
 /**
@@ -1412,7 +1504,41 @@ async function handlePost(req: NextRequest): Promise<Response> {
     if (!allowed) {
         return NextResponse.json(
             { error: 'Hourly prompt limit reached. Please wait before sending more prompts.', resetAt },
-            { status: 429, headers: { 'X-RateLimit-Limit': String(HOURLY_LIMIT), 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(resetAt) } },
+            {
+                status: 429,
+                headers: {
+                    'X-RateLimit-Limit':     String(HOURLY_LIMIT),
+                    'X-RateLimit-Remaining': '0',
+                    'X-RateLimit-Reset':     String(resetAt),
+                    'X-Daily-Limit':         String(DAILY_LIMIT),
+                    'X-Daily-Prompts-Used':  String(getDailyCount()),
+                    'X-Daily-Reset':         String(dailyResetAt()),
+                },
+            },
+        );
+    }
+
+    // The app's share of the provider's daily quota. Checked after the per-client
+    // window and before any provider call, so the reader who runs the app out of
+    // budget meets this message rather than a raw 429 from inside a stream.
+    const daily = checkDailyLimit();
+    if (!daily.allowed) {
+        return NextResponse.json(
+            {
+                error: 'The assistant has reached its daily limit for everyone. It resets at midnight UTC.',
+                resetAt: daily.resetAt,
+            },
+            {
+                status: 429,
+                headers: {
+                    'X-RateLimit-Limit':     String(HOURLY_LIMIT),
+                    'X-RateLimit-Remaining': String(remaining),
+                    'X-RateLimit-Reset':     String(resetAt),
+                    'X-Daily-Limit':         String(DAILY_LIMIT),
+                    'X-Daily-Prompts-Used':  String(daily.used),
+                    'X-Daily-Reset':         String(daily.resetAt),
+                },
+            },
         );
     }
 
@@ -1467,43 +1593,68 @@ async function handlePost(req: NextRequest): Promise<Response> {
 
     // Pass 2 — stream the answer.
     //
-    // Groq is primary; Gemini takes over on ANY Groq failure, not just a 429.
-    // A revoked key, a retired model ID, or a Groq outage used to take the whole
-    // assistant down even with a healthy Gemini key sitting right there.
+    // Both providers are tried in turn, primary first, and a failure of any
+    // kind moves to the next one: a revoked key, a retired model ID, a rate
+    // limit or an outage used to take the whole assistant down with a healthy
+    // key for the other provider sitting right there.
+    //
+    // Which one leads is a quota decision rather than a quality one — see
+    // primaryProvider(). Groq is additionally skipped, rather than attempted
+    // and failed, whenever the prompt is larger than its per-minute budget.
     let answer: StreamResult | null = null;
-    let modelUsed: ModelUsed = 'groq';
+    let modelUsed: ModelUsed = primaryProvider();
     let fallbackReason: string | null = null;
     const failures: string[] = [];
 
-    if (groqReady) {
-        try {
-            answer = await streamGroq(systemPrompt, messages);
-        } catch (groqErr) {
-            const message = groqErr instanceof Error ? groqErr.message : 'Groq API error';
-            console.error('[pass-2] groq error:', groqErr);
-            failures.push(`Groq: ${message}`);
-            fallbackReason = isGroqRateLimitError(groqErr) ? 'groq_rate_limit' : 'groq_error';
+    const promptTokens = estimateTokens(systemPrompt);
+    const tpmBudget = groqTpmBudget();
+    const groqOverBudget = tpmBudget > 0 && promptTokens > tpmBudget;
+
+    const order: ModelUsed[] = primaryProvider() === 'groq' ? ['groq', 'gemini'] : ['gemini', 'groq'];
+    const attempts: { provider: ModelUsed; ready: boolean; skip: string | null }[] = order.map((provider) => ({
+        provider,
+        ready: provider === 'groq' ? groqReady : geminiReady,
+        skip: provider === 'groq'
+            ? (!groqReady ? 'groq_unavailable' : groqOverBudget ? 'groq_prompt_too_large' : null)
+            : (!geminiReady ? 'gemini_unavailable' : null),
+    }));
+
+    for (const attempt of attempts) {
+        if (attempt.skip) {
+            if (attempt.skip === 'groq_prompt_too_large') {
+                console.warn(`[pass-2] skipping groq — ~${promptTokens} tokens over the ${tpmBudget} budget`);
+                failures.push(`Groq: prompt is ~${promptTokens} tokens, over the ${tpmBudget} per-minute budget`);
+            }
+            // The reason only counts as a fallback once something else answers.
+            if (!fallbackReason) fallbackReason = attempt.skip;
+            continue;
         }
-    } else {
-        fallbackReason = 'groq_unavailable';
+        try {
+            answer = attempt.provider === 'groq'
+                ? await streamGroq(systemPrompt, messages)
+                : await streamGemini(systemPrompt, messages);
+            modelUsed = attempt.provider;
+            break;
+        } catch (providerErr) {
+            const label = attempt.provider === 'groq' ? 'Groq' : 'Gemini';
+            const message = providerErr instanceof Error ? providerErr.message : `${label} API error`;
+            console.error(`[pass-2] ${attempt.provider} error:`, providerErr);
+            failures.push(`${label}: ${message}`);
+            if (!fallbackReason) {
+                fallbackReason = attempt.provider === 'groq'
+                    ? (isGroqRateLimitError(providerErr) ? 'groq_rate_limit' : 'groq_error')
+                    : 'gemini_error';
+            }
+        }
     }
 
     if (!answer) {
-        if (!geminiReady) {
-            return err(failures.length
-                ? `The AI service is unavailable — ${failures.join('; ')}`
-                : 'The AI service is unavailable — GROQ_API_KEY is not configured and there is no fallback provider.', 502);
-        }
-        try {
-            answer = await streamGemini(systemPrompt, messages);
-            modelUsed = 'gemini';
-        } catch (geminiErr) {
-            const message = geminiErr instanceof Error ? geminiErr.message : 'Gemini API error';
-            console.error('[pass-2] gemini error:', geminiErr);
-            failures.push(`Gemini: ${message}`);
-            return err(`Every AI provider failed — ${failures.join('; ')}`, 502);
-        }
+        return err(failures.length
+            ? `Every AI provider failed — ${failures.join('; ')}`
+            : 'The AI service is unavailable — no provider is configured to answer.', 502);
     }
+    // Nothing fell back if the provider that answered was the one asked first.
+    if (modelUsed === primaryProvider()) fallbackReason = null;
 
     const headers: Record<string, string> = {
         'Content-Type': 'text/plain; charset=utf-8',
@@ -1515,7 +1666,9 @@ async function handlePost(req: NextRequest): Promise<Response> {
         'X-RateLimit-Limit': String(HOURLY_LIMIT),
         'X-RateLimit-Remaining': String(remaining),
         'X-RateLimit-Reset': String(resetAt),
+        'X-Daily-Limit': String(DAILY_LIMIT),
         'X-Daily-Prompts-Used': String(dailyCount),
+        'X-Daily-Reset': String(dailyResetAt()),
         'X-Query-Intent': plan.intent,
         'X-League-Context': leagueCtx ? 'true' : 'false',
         'X-Panel-Data': [

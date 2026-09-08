@@ -26,9 +26,12 @@ jest.mock('@/auth', () => ({
 
 jest.mock('@/lib/rateLimit', () => ({
   HOURLY_LIMIT:     10,
+  DAILY_LIMIT:      50,
   getClientId:      jest.fn().mockReturnValue('test-client'),
   checkHourlyLimit: jest.fn(),
   peekHourlyLimit:  jest.fn().mockReturnValue({ used: 0, remaining: 10, resetAt: 0 }),
+  checkDailyLimit:  jest.fn(),
+  dailyResetAt:     jest.fn().mockReturnValue(1750000000000),
   getDailyCount:    jest.fn().mockReturnValue(1),
   incrementDaily:   jest.fn(),
 }));
@@ -90,8 +93,9 @@ jest.mock('@google/generative-ai', () => ({
 
 import { GET, POST } from '@/app/api/agent/route';
 import { auth } from '@/auth';
-import { checkHourlyLimit, peekHourlyLimit } from '@/lib/rateLimit';
-import { fetchTrending, fetchSleeperPlayerIndex } from '@/lib/agentContext';
+import { checkHourlyLimit, peekHourlyLimit, checkDailyLimit } from '@/lib/rateLimit';
+import { fetchTrending, fetchSleeperPlayerIndex, fetchLeagueContext } from '@/lib/agentContext';
+import { SUGGESTED_PROMPTS } from '@/lib/agentIntents';
 import { fetchAgentTools, formatAgentTools } from '@/lib/agentTools';
 import { prisma } from '@/lib/prisma';
 
@@ -102,6 +106,8 @@ const mockFetchPlayerIndex = fetchSleeperPlayerIndex as jest.MockedFunction<type
 const mockFetchTools     = fetchAgentTools as jest.MockedFunction<typeof fetchAgentTools>;
 const mockFormatTools    = formatAgentTools as jest.MockedFunction<typeof formatAgentTools>;
 const mockPeekLimit      = peekHourlyLimit as jest.MockedFunction<typeof peekHourlyLimit>;
+const mockDailyLimit     = checkDailyLimit as jest.MockedFunction<typeof checkDailyLimit>;
+const mockFetchLeagueContext = fetchLeagueContext as jest.MockedFunction<typeof fetchLeagueContext>;
 const mockStatFindFirst  = prisma.nflWeeklyStat.findFirst as jest.MockedFunction<typeof prisma.nflWeeklyStat.findFirst>;
 const mockStatFindMany   = prisma.nflWeeklyStat.findMany  as jest.MockedFunction<typeof prisma.nflWeeklyStat.findMany>;
 const mockStatGroupBy    = prisma.nflWeeklyStat.groupBy   as jest.MockedFunction<typeof prisma.nflWeeklyStat.groupBy>;
@@ -146,10 +152,16 @@ function setupHappyPath(): void {
   setupContextMocks();
 }
 
-/** The Pass 2 system prompt — everything the answering model was shown. */
+/**
+ * The Pass 2 system prompt — everything the answering model was shown.
+ *
+ * The LAST Groq call, not the second: a question the page itself offers skips
+ * Pass 1 entirely, so the answer call is sometimes the only one there is.
+ */
 function systemPromptSent(): string {
-  const pass2 = mockGroqCreate.mock.calls[1][0] as { messages: { role: string; content: string }[] };
-  return pass2.messages.find((m) => m.role === 'system')?.content ?? '';
+  const calls = mockGroqCreate.mock.calls;
+  const last = calls[calls.length - 1][0] as { messages: { role: string; content: string }[] };
+  return last.messages.find((m) => m.role === 'system')?.content ?? '';
 }
 
 /** A Pass 1 response that classifies as `intent`, with optional extracted entities. */
@@ -185,6 +197,8 @@ describe('POST /api/agent', () => {
     mockFetchTools.mockReset();
     mockFormatTools.mockReset();
     mockFormatTools.mockReturnValue('');
+    mockFetchLeagueContext.mockReset();
+    mockFetchLeagueContext.mockResolvedValue(null);
     mockStatFindFirst.mockReset();
     mockStatFindMany.mockReset();
     mockStatGroupBy.mockReset();
@@ -202,9 +216,15 @@ describe('POST /api/agent', () => {
     // provider a test exercises.
     delete process.env.GEMINI_API_KEY;
 
-    // Default: authenticated, within rate limit.
+    // Gemini answers first now, so the default happy path needs its key. Tests
+    // that are about Groq opt into being Groq-first explicitly.
+    delete process.env.AGENT_PRIMARY;
+    delete process.env.AGENT_GROQ_TPM;
+
+    // Default: authenticated, within both budgets.
     mockAuth.mockResolvedValue(fakeSession as never);
     mockCheckLimit.mockReturnValue({ allowed: true, remaining: 9, resetAt: 9999999 });
+    mockDailyLimit.mockReturnValue({ allowed: true, used: 1, remaining: 49, resetAt: 1750000000000 });
   });
 
   // WHY: No session means the request is unauthenticated — must return 401
@@ -299,44 +319,103 @@ describe('POST /api/agent', () => {
     expect((pass2Call[0] as { stream: boolean }).stream).toBe(true);   // Pass 2: streaming
   });
 
-  // WHY: When Groq returns 429 and GEMINI_API_KEY is configured, the route must
-  //      automatically retry on Gemini without returning an error to the client.
-  //      The X-Model-Used header tells the client which path was taken, and
-  //      X-Fallback-Reason explains why Groq was bypassed.
-  it('falls back to Gemini when Groq returns a 429 rate-limit error', async () => {
+  // WHY: Gemini answers first now, and that is a quota decision rather than a
+  //      quality one — a panel-backed prompt is 5,000-9,000 tokens and Groq's
+  //      free tier allows 100,000 a day, which is about a dozen answers for a
+  //      whole league. Nothing fell back, so there is no fallback reason.
+  it('answers on Gemini by default, with Groq configured and healthy', async () => {
     process.env.GROQ_API_KEY   = 'test-groq-key';
     process.env.GEMINI_API_KEY = 'test-gemini-key';
 
-    // Pass 1 succeeds (always Groq), Pass 2 throws with a 429 message.
-    const groqRateLimitErr = new Error('429 rate_limit exceeded') as Error & { status: number };
-    groqRateLimitErr.status = 429;
+    mockGroqCreate.mockResolvedValueOnce(pass1Response);   // Pass 1 stays on Groq
+    async function* geminiStream() { yield { text: () => 'Gemini answer here.' }; }
+    mockSendMessageStream.mockResolvedValueOnce({ stream: geminiStream() });
+    setupContextMocks();
 
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Model-Used')).toBe('gemini');
+    expect(res.headers.get('X-Fallback-Reason')).toBeNull();
+    // Pass 1 only — the answer did not go to Groq.
+    expect(mockGroqCreate).toHaveBeenCalledTimes(1);
+
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  // WHY: On a paid Groq plan it is much the faster of the two, and then this
+  //      ordering is the only thing in the way. One env var has to flip it.
+  it('answers on Groq first when AGENT_PRIMARY=groq', async () => {
+    process.env.GROQ_API_KEY   = 'test-groq-key';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+    process.env.AGENT_PRIMARY  = 'groq';
+    setupHappyPath();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Anything' }] }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Model-Used')).toBe('groq');
+    expect(res.headers.get('X-Fallback-Reason')).toBeNull();
+    expect(mockSendMessageStream).not.toHaveBeenCalled();
+
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  // WHY: Whichever provider leads, a 429 from it must hand off rather than
+  //      surface. X-Fallback-Reason is how the page explains the switch.
+  it('falls back to Groq when Gemini fails', async () => {
+    process.env.GROQ_API_KEY   = 'test-groq-key';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+
+    mockSendMessageStream.mockRejectedValueOnce(new Error('429 quota exceeded'));
     mockGroqCreate
-      .mockResolvedValueOnce(pass1Response)           // Pass 1: OK
-      .mockRejectedValueOnce(groqRateLimitErr);       // Pass 2: 429
-
-    // Gemini fallback streaming response.
-    async function* fakeGeminiStream() {
-      yield { text: () => 'Gemini answer here.' };
-    }
-    mockSendMessageStream.mockResolvedValueOnce({ stream: fakeGeminiStream() });
+      .mockResolvedValueOnce(pass1Response)      // Pass 1
+      .mockResolvedValueOnce(fakeGroqStream());  // Pass 2, after Gemini failed
     setupContextMocks();
 
     const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Fallback test' }] }));
 
     expect(res.status).toBe(200);
+    expect(res.headers.get('X-Model-Used')).toBe('groq');
+    expect(res.headers.get('X-Fallback-Reason')).toBe('gemini_error');
+
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  // WHY: Groq's free tier caps tokens per MINUTE below what a panel-backed
+  //      prompt costs on every model but its largest. An oversized prompt does
+  //      not degrade there, it 429s — and selectively, answering NFL questions
+  //      and refusing the roster ones. A doomed attempt is not worth the round
+  //      trip, so the prompt size decides whether Groq is tried at all.
+  it('skips Groq entirely when the prompt is over its per-minute budget', async () => {
+    process.env.GROQ_API_KEY   = 'test-groq-key';
+    process.env.GEMINI_API_KEY = 'test-gemini-key';
+    process.env.AGENT_PRIMARY  = 'groq';
+    process.env.AGENT_GROQ_TPM = '10';   // Any real prompt is over this.
+
+    mockGroqCreate.mockResolvedValueOnce(pass1Response);
+    async function* geminiStream() { yield { text: () => 'Gemini answer.' }; }
+    mockSendMessageStream.mockResolvedValueOnce({ stream: geminiStream() });
+    setupContextMocks();
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Big one' }] }));
+
+    expect(res.status).toBe(200);
     expect(res.headers.get('X-Model-Used')).toBe('gemini');
-    expect(res.headers.get('X-Fallback-Reason')).toBe('groq_rate_limit');
+    expect(res.headers.get('X-Fallback-Reason')).toBe('groq_prompt_too_large');
+    // Pass 1 only: the answer call was never attempted.
+    expect(mockGroqCreate).toHaveBeenCalledTimes(1);
 
     delete process.env.GEMINI_API_KEY;
   });
 
   // WHY: A revoked key, a retired model ID or a Groq outage is not a 429, and it
   //      used to kill the whole assistant even with a healthy Gemini key present.
-  //      Any Groq failure must hand off to Gemini, tagged groq_error.
-  it('falls back to Gemini when Groq fails with a non-rate-limit error', async () => {
+  //      Any provider failure must hand off, tagged with which one it was.
+  it('falls back to Gemini when a Groq-first deployment hits a non-rate-limit error', async () => {
     process.env.GROQ_API_KEY   = 'test-groq-key';
     process.env.GEMINI_API_KEY = 'test-gemini-key';
+    process.env.AGENT_PRIMARY  = 'groq';
 
     mockGroqCreate
       .mockResolvedValueOnce(pass1Response)                 // Pass 1: OK
@@ -357,9 +436,11 @@ describe('POST /api/agent', () => {
     delete process.env.GEMINI_API_KEY;
   });
 
-  // WHY: A Gemini-only deployment must still work. Groq is skipped entirely when
-  //      its key is absent, rather than 502-ing past a perfectly good fallback.
-  it('serves the answer from Gemini when GROQ_API_KEY is not configured', async () => {
+  // WHY: A Gemini-only deployment must work with no Groq key at all — including
+  //      Pass 1, which prefers Groq and has to fall through to Gemini for the
+  //      classification rather than silently downgrading every question to the
+  //      `general` intent. Nothing fell back on the answer: Gemini leads.
+  it('serves both passes from Gemini when GROQ_API_KEY is not configured', async () => {
     delete process.env.GROQ_API_KEY;
     process.env.GEMINI_API_KEY = 'test-gemini-key';
 
@@ -377,7 +458,7 @@ describe('POST /api/agent', () => {
     expect(res.status).toBe(200);
     expect(mockGroqCreate).not.toHaveBeenCalled();
     expect(res.headers.get('X-Model-Used')).toBe('gemini');
-    expect(res.headers.get('X-Fallback-Reason')).toBe('groq_unavailable');
+    expect(res.headers.get('X-Fallback-Reason')).toBeNull();
     expect(await res.text()).toBe('Gemini-only answer.');
 
     delete process.env.GEMINI_API_KEY;
@@ -678,6 +759,132 @@ describe('POST /api/agent', () => {
     expect(prompt).toContain('popularity snapshot');
     expect(prompt).toMatch(/answer from NFL STATS instead/);
   });
+  // ── Cost control ──────────────────────────────────────────────────────────
+  //
+  // A panel-backed prompt runs 5,000-9,000 tokens, twice per question, against
+  // free-tier quotas measured in hundreds of requests a day. These are the
+  // places that were spending more than they had to.
+
+  // WHY: The six openers the page shows are fixed strings with known intents.
+  //      Classifying them costs ~870 tokens and a request against a per-minute
+  //      quota to learn what the button already knew.
+  it('skips the classification pass for a prompt the page itself offers', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    mockGroqCreate.mockResolvedValueOnce(fakeGroqStream());  // the answer, and nothing else
+    setupContextMocks();
+    process.env.AGENT_PRIMARY = 'groq';
+
+    const res = await POST(makeReq({
+      messages: [{ role: 'user', content: SUGGESTED_PROMPTS[1].text }],
+      sleeperLeagueId: 'league-1',
+    }));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Query-Intent')).toBe('start_sit');
+    // One call: the answer. Pass 1 never happened.
+    expect(mockGroqCreate).toHaveBeenCalledTimes(1);
+  });
+
+  // WHY: A near-miss is a different question, and guessing its intent to save a
+  //      call would put the wrong data in front of the model — which costs more
+  //      than the call does.
+  it('still classifies a question that only resembles an opener', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.AGENT_PRIMARY = 'groq';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('waiver_wire'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+
+    await POST(makeReq({ messages: [{ role: 'user', content: 'Who should I start at quarterback?' }] }));
+
+    expect(mockGroqCreate).toHaveBeenCalledTimes(2);
+  });
+
+  // WHY: The app's daily budget is its copy of the provider's. Reaching ours
+  //      first is the point: past the provider's, the 429 arrives from inside a
+  //      streaming answer and the browser can only say "unavailable".
+  it('returns 429 with the daily figures once the app-wide budget is spent', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    mockDailyLimit.mockReturnValueOnce({ allowed: false, used: 50, remaining: 0, resetAt: 1750000000000 });
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Hello' }] }));
+
+    expect(res.status).toBe(429);
+    expect((await res.json() as { error: string }).error).toMatch(/daily limit for everyone/);
+    expect(res.headers.get('X-Daily-Limit')).toBe('50');
+    expect(res.headers.get('X-Daily-Prompts-Used')).toBe('50');
+    // Refused before either model call — that is the whole saving.
+    expect(mockGroqCreate).not.toHaveBeenCalled();
+  });
+
+  // WHY: ~1,600 tokens of every roster in the league, on a question about which
+  //      of two of the reader's own running backs to start. The matchup panel
+  //      already carries their roster and their opponent's, with projections.
+  it('leaves league context out of a question the panels already answer', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.AGENT_PRIMARY = 'groq';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('start_sit'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+
+    const res = await POST(makeReq({
+      messages: [{ role: 'user', content: 'Should I start my running back?' }],
+      sleeperLeagueId: 'league-1',
+    }));
+
+    expect(mockFetchLeagueContext).not.toHaveBeenCalled();
+    expect(res.headers.get('X-League-Context')).toBe('false');
+  });
+
+  // WHY: The three questions that ARE about the other rosters still need them.
+  it('still fetches league context for a standings question', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.AGENT_PRIMARY = 'groq';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('standings'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+
+    await POST(makeReq({
+      messages: [{ role: 'user', content: 'Who is in first place?' }],
+      sleeperLeagueId: 'league-1',
+    }));
+
+    expect(mockFetchLeagueContext).toHaveBeenCalled();
+  });
+
+  // WHY: ~900 tokens of fifty players who are not on the roster being asked
+  //      about. The prompt had to warn the model not to misread them; not
+  //      showing them where they cannot help is cheaper than the warning.
+  it('leaves the trending lists out of a start/sit question and keeps them for waivers', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.AGENT_PRIMARY = 'groq';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('start_sit'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+    mockFetchTrending.mockResolvedValue({
+      adds:  [{ player_id: 'a1', count: 12043, type: 'add' as const }],
+      drops: [{ player_id: 'd1', count: 900,   type: 'drop' as const }],
+    });
+    mockFetchPlayerIndex.mockResolvedValue({
+      a1: { name: 'Rising Passer', position: 'QB', team: 'WAS' },
+      d1: { name: 'Falling Back',  position: 'RB', team: 'NYG' },
+    });
+
+    await POST(makeReq({ messages: [{ role: 'user', content: 'Start or sit?' }], sleeperLeagueId: 'league-1' }));
+    expect(systemPromptSent()).not.toContain('TRENDING ADDS');
+
+    mockGroqCreate.mockReset();
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('waiver_wire'))
+      .mockResolvedValueOnce(fakeGroqStream());
+
+    await POST(makeReq({ messages: [{ role: 'user', content: 'Who do I add?' }], sleeperLeagueId: 'league-1' }));
+    expect(systemPromptSent()).toContain('Rising Passer (QB WAS)');
+  });
 });
 
 // ── GET /api/agent ────────────────────────────────────────────────────────────
@@ -687,6 +894,8 @@ describe('GET /api/agent?usage=1', () => {
     mockAuth.mockReset();
     mockPeekLimit.mockReset();
     mockCheckLimit.mockReset();
+    mockDailyLimit.mockReset();
+    mockDailyLimit.mockReturnValue({ allowed: true, used: 4, remaining: 46, resetAt: 1750000000000 });
     mockAuth.mockResolvedValue(fakeSession as never);
     mockPeekLimit.mockReturnValue({ used: 7, remaining: 3, resetAt: 1750000000000 });
   });
@@ -702,7 +911,8 @@ describe('GET /api/agent?usage=1', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      limit: 10, used: 7, remaining: 3, resetAt: 1750000000000, dailyUsed: 1,
+      limit: 10, used: 7, remaining: 3, resetAt: 1750000000000,
+      dailyLimit: 50, dailyUsed: 4, dailyResetAt: 1750000000000,
     });
   });
 

@@ -9,8 +9,9 @@
 //     The window resets automatically after one hour of inactivity.
 //
 //   Global daily counter — a single process-wide counter that resets at UTC
-//     midnight. Used for observability (logged on each response) rather than
-//     hard blocking, so commissioners can see total daily AI usage.
+//     midnight, capped at DAILY_LIMIT. It is the app's copy of the answering
+//     provider's daily quota: reaching ours first means the reader gets our
+//     message instead of a raw provider 429 from inside a streaming answer.
 //
 // Caveats:
 //   • State is in-process only — a cold start or deployment resets all counters.
@@ -29,6 +30,25 @@ interface DayBucket  { count: number; dayKey: string; }
 /** Maximum AI prompts allowed per client per 60-minute rolling window. */
 export const HOURLY_LIMIT = 15;
 
+/**
+ * Maximum AI prompts the whole app will dispatch in one UTC day.
+ *
+ * This is the app's copy of the answering provider's requests-per-day quota,
+ * and it exists so the reader meets our message rather than the provider's.
+ * Without it the daily counter was observability only: the first request past
+ * the provider's quota came back as a raw 429 from inside a streaming answer,
+ * which the browser could only report as "the assistant is unavailable".
+ *
+ * The default is deliberately below the figure Google publishes for the Gemini
+ * free tier, because that figure is assigned per project and is not the same
+ * for everyone. Read your own in AI Studio and set AGENT_DAILY_LIMIT to it —
+ * too low wastes quota, too high puts the provider's error in front of a user.
+ */
+export const DAILY_LIMIT = (() => {
+  const configured = Number(process.env.AGENT_DAILY_LIMIT);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 250;
+})();
+
 const hourlyBuckets = new Map<string, HourBucket>();
 let dailyBucket: DayBucket = { count: 0, dayKey: '' };
 
@@ -45,6 +65,29 @@ export function getDailyCount(): number {
   const key = todayKey();
   if (dailyBucket.dayKey !== key) dailyBucket = { count: 0, dayKey: key };
   return dailyBucket.count;
+}
+
+/** Unix ms of the next UTC midnight — when the daily counter rolls over. */
+export function dailyResetAt(): number {
+  const now = new Date();
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+}
+
+/**
+ * Whether the app has any of today's provider budget left.
+ *
+ * Peeks rather than spends: `incrementDaily()` is called once the request is
+ * actually being dispatched, so a request refused for some other reason does
+ * not eat a slot.
+ */
+export function checkDailyLimit(): { allowed: boolean; used: number; remaining: number; resetAt: number } {
+  const used = getDailyCount();
+  return {
+    allowed:   used < DAILY_LIMIT,
+    used,
+    remaining: Math.max(0, DAILY_LIMIT - used),
+    resetAt:   dailyResetAt(),
+  };
 }
 
 /**

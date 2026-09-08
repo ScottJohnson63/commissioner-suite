@@ -46,7 +46,10 @@ beforeEach(() => {
       configurable: true,
     });
   }
-  serverReports({ limit: 15, used: 0, remaining: 15, resetAt: Date.now() + HOUR, dailyUsed: 0 });
+  serverReports({
+    limit: 15, used: 0, remaining: 15, resetAt: Date.now() + HOUR,
+    dailyLimit: 250, dailyUsed: 0, dailyResetAt: Date.now() + 6 * HOUR,
+  });
 });
 
 afterEach(() => {
@@ -185,5 +188,56 @@ describe('useAgentUsage', () => {
     await act(async () => { jest.advanceTimersByTime(62_000); });
     expect(result.current.exhausted).toBe(false);
     expect(result.current.usage.used).toBe(0);
+  });
+  // WHY: The shared daily budget closes the composer for everyone, and it is a
+  //      different sentence from "you have used your fifteen" — a reader who has
+  //      sent two prompts should not be told they are out of their own.
+  it('reports the day as spent, separately from the reader\'s own hour', async () => {
+    serverReports({
+      limit: 15, used: 2, remaining: 13, resetAt: Date.now() + HOUR,
+      dailyLimit: 250, dailyUsed: 250, dailyResetAt: Date.now() + 3 * HOUR,
+    });
+
+    const { result } = renderHook(() => useAgentUsage());
+
+    await waitFor(() => expect(result.current.dayExhausted).toBe(true));
+    // Their own hour is barely touched; the app's day is gone.
+    expect(result.current.usage.used).toBe(2);
+    expect(result.current.usage.remaining).toBe(13);
+    expect(result.current.exhausted).toBe(true);
+  });
+
+  // WHY: The daily 429 carries no usage headers, and recording it as an hourly
+  //      one would blank a reader's own allowance that they never spent.
+  it('records a daily rejection against the day, not the hour', async () => {
+    const { result } = renderHook(() => useAgentUsage());
+    await waitFor(() => expect(result.current.usage.dailyLimit).toBe(250));
+
+    const resetAt = Date.now() + 4 * HOUR;
+    act(() => { result.current.recordRejection(resetAt, 'daily'); });
+
+    expect(result.current.dayExhausted).toBe(true);
+    expect(result.current.usage.dailyResetAt).toBe(resetAt);
+    expect(result.current.usage.used).toBe(0);
+    expect(result.current.usage.remaining).toBe(15);
+  });
+
+  // WHY: The two budgets run on different clocks — the reader's hour from their
+  //      first prompt, the app's day to UTC midnight. An hourly reset that also
+  //      zeroed the daily count would promise budget the app does not have.
+  it('keeps the day\'s count across an hourly reset', async () => {
+    serverReports({
+      limit: 15, used: 0, remaining: 15, resetAt: Date.now() + HOUR,
+      dailyLimit: 250, dailyUsed: 100, dailyResetAt: Date.now() + 5 * HOUR,
+    });
+    const { result } = renderHook(() => useAgentUsage());
+    await waitFor(() => expect(result.current.usage.dailyUsed).toBe(100));
+
+    jest.useFakeTimers();
+    act(() => { result.current.recordRejection(Date.now() + 60_000); });
+    await act(async () => { jest.advanceTimersByTime(62_000); });
+
+    expect(result.current.usage.used).toBe(0);
+    expect(result.current.usage.dailyUsed).toBe(100);
   });
 });

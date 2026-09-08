@@ -34,11 +34,21 @@ export interface AgentUsage {
   remaining: number;
   /** Unix ms at which the window rolls over. */
   resetAt:   number;
-  dailyUsed: number;
+  /** The app-wide daily budget, shared by everyone. */
+  dailyLimit:   number;
+  dailyUsed:    number;
+  dailyResetAt: number;
 }
 
 /** What the page needs before the first response tells it anything. */
 const DEFAULT_LIMIT = 15;
+const DEFAULT_DAILY_LIMIT = 250;
+
+/** Unix ms of the next UTC midnight, matching the server's daily rollover. */
+function nextUtcMidnight(): number {
+  const now = new Date();
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+}
 
 interface StoredUsage { used: number; resetAt: number; dailyUsed: number; limit: number; }
 
@@ -87,24 +97,41 @@ function readClientId(): string {
   }
 }
 
-const zero = (limit: number): AgentUsage => ({
-  limit, used: 0, remaining: limit, resetAt: Date.now() + 60 * 60 * 1000, dailyUsed: 0,
+/**
+ * A fresh hour, with the day's figures carried through.
+ *
+ * The two budgets roll over on different clocks: the hourly window is this
+ * reader's own and resets an hour after their first prompt, while the daily one
+ * is shared by everyone and resets at UTC midnight. An hourly reset that also
+ * zeroed the daily count would tell the reader the app had budget it does not.
+ */
+const zero = (prev: AgentUsage): AgentUsage => ({
+  ...prev,
+  used: 0,
+  remaining: prev.limit,
+  resetAt: Date.now() + 60 * 60 * 1000,
 });
 
 export interface UsageController {
   usage: AgentUsage;
-  /** True once the window is spent. Cleared by the reset timer. */
+  /** True once either budget is spent — the composer is closed for both. */
   exhausted: boolean;
+  /** True when it is the app-wide day that is gone, not this reader's hour. */
+  dayExhausted: boolean;
   /** The header this page must send so the count follows the browser, not the IP. */
   clientId: string;
   /** Applies the usage headers on a successful answer. */
   recordResponse: (headers: Headers) => void;
-  /** Applies a 429 — the window is spent until `resetAt`. */
-  recordRejection: (resetAt?: number) => void;
+  /** Applies a 429 — the named budget is spent until `resetAt`. */
+  recordRejection: (resetAt?: number, scope?: 'hourly' | 'daily') => void;
 }
 
 export function useAgentUsage(): UsageController {
-  const [usage, setUsage] = useState<AgentUsage>(() => zero(DEFAULT_LIMIT));
+  const [usage, setUsage] = useState<AgentUsage>(() => ({
+    limit: DEFAULT_LIMIT, used: 0, remaining: DEFAULT_LIMIT,
+    resetAt: Date.now() + 60 * 60 * 1000,
+    dailyLimit: DEFAULT_DAILY_LIMIT, dailyUsed: 0, dailyResetAt: nextUtcMidnight(),
+  }));
   const [clientId, setClientId] = useState('');
   // The window this reader is in. Held in a ref as well so the reset timer
   // below does not have to re-run every time the count changes.
@@ -124,13 +151,14 @@ export function useAgentUsage(): UsageController {
 
     const stored = readStored();
     if (stored) {
-      setUsage({
+      setUsage((u) => ({
+        ...u,
         limit:     stored.limit,
         used:      Math.min(stored.used, stored.limit),
         remaining: Math.max(0, stored.limit - stored.used),
         resetAt:   stored.resetAt,
         dailyUsed: stored.dailyUsed,
-      });
+      }));
       resetAtRef.current = stored.resetAt;
     }
 
@@ -150,13 +178,14 @@ export function useAgentUsage(): UsageController {
         // fifteen because the server restarted.
         const mine = readStored();
         const useStored = mine !== null && mine.used > server.used;
+        // The day's figures always come from the server: it is the only party
+        // that can see what everyone else has spent.
         apply(useStored
           ? {
-              limit:     server.limit,
+              ...server,
               used:      Math.min(mine.used, server.limit),
               remaining: Math.max(0, server.limit - mine.used),
               resetAt:   mine.resetAt,
-              dailyUsed: Math.max(mine.dailyUsed, server.dailyUsed),
             }
           : server);
       } catch {
@@ -176,7 +205,7 @@ export function useAgentUsage(): UsageController {
     if (due <= 0) return undefined;
     const t = setTimeout(() => {
       setUsage((u) => {
-        const fresh = zero(u.limit);
+        const fresh = zero(u);
         resetAtRef.current = fresh.resetAt;
         writeStored(fresh);
         return fresh;
@@ -186,31 +215,58 @@ export function useAgentUsage(): UsageController {
   }, [usage.resetAt]);
 
   const recordResponse = useCallback((headers: Headers) => {
-    const limit     = Number(headers.get('X-RateLimit-Limit') ?? DEFAULT_LIMIT);
-    const remaining = Number(headers.get('X-RateLimit-Remaining') ?? 0);
-    const resetAt   = Number(headers.get('X-RateLimit-Reset') ?? 0);
+    const limit      = Number(headers.get('X-RateLimit-Limit') ?? DEFAULT_LIMIT);
+    const remaining  = Number(headers.get('X-RateLimit-Remaining') ?? 0);
+    const resetAt    = Number(headers.get('X-RateLimit-Reset') ?? 0);
+    const dailyLimit = Number(headers.get('X-Daily-Limit') ?? DEFAULT_DAILY_LIMIT);
+    const dailyReset = Number(headers.get('X-Daily-Reset') ?? 0);
     apply({
       limit,
       used:      Math.max(0, limit - remaining),
       remaining: Math.max(0, remaining),
       resetAt:   resetAt > 0 ? resetAt : resetAtRef.current,
-      dailyUsed: Number(headers.get('X-Daily-Prompts-Used') ?? 0),
+      dailyLimit,
+      dailyUsed:    Number(headers.get('X-Daily-Prompts-Used') ?? 0),
+      dailyResetAt: dailyReset > 0 ? dailyReset : nextUtcMidnight(),
     });
   }, [apply]);
 
-  const recordRejection = useCallback((resetAt?: number) => {
+  /**
+   * A 429, from either budget.
+   *
+   * The daily one is not this reader's to spend down, so it is recorded as the
+   * app being out rather than as their own hour being gone — the composer says
+   * a different thing in each case, and "you have used your 15" is the wrong
+   * one when they have used two.
+   */
+  const recordRejection = useCallback((resetAt?: number, scope: 'hourly' | 'daily' = 'hourly') => {
     setUsage((u) => {
-      const next: AgentUsage = {
-        ...u,
-        used:      u.limit,
-        remaining: 0,
-        resetAt:   resetAt && resetAt > Date.now() ? resetAt : u.resetAt,
-      };
-      resetAtRef.current = next.resetAt;
+      const next: AgentUsage = scope === 'daily'
+        ? {
+            ...u,
+            dailyUsed:    Math.max(u.dailyUsed, u.dailyLimit),
+            dailyResetAt: resetAt && resetAt > Date.now() ? resetAt : u.dailyResetAt,
+          }
+        : {
+            ...u,
+            used:      u.limit,
+            remaining: 0,
+            resetAt:   resetAt && resetAt > Date.now() ? resetAt : u.resetAt,
+          };
+      if (scope !== 'daily') resetAtRef.current = next.resetAt;
       writeStored(next);
       return next;
     });
   }, []);
 
-  return { usage, exhausted: usage.remaining <= 0, clientId, recordResponse, recordRejection };
+  const dayExhausted = usage.dailyUsed >= usage.dailyLimit;
+
+  return {
+    usage,
+    exhausted: usage.remaining <= 0 || dayExhausted,
+    dayExhausted,
+    clientId,
+    recordResponse,
+    recordRejection,
+  };
 }
