@@ -1,10 +1,24 @@
 // src/app/league/ai/page.tsx
+//
+// The assistant, as a chat the page is shaped around rather than a panel that
+// happens to contain one.
+//
+// Three things drive the layout. The column is exactly as tall as the pane it
+// sits in and only the transcript scrolls, so the composer stays under the
+// thumb on a phone instead of being chased off the bottom by a long answer.
+// Answers arrive as Markdown and are rendered as Markdown — see ChatMarkdown —
+// because the raw asterisks were most of what a phone screen showed. And the
+// hour's allowance is read back from the server on load rather than assumed
+// spent-nothing; see useAgentUsage.
+
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
 import { useSleeperData } from '@/hooks/useSleeperData';
 import { LeagueSelector } from '@/components/LeagueSelector';
+import { ChatMarkdown } from '@/components/ai/ChatMarkdown';
+import { useAgentUsage } from '@/components/ai/useAgentUsage';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -12,25 +26,46 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   loading?: boolean;
+  /** Which of the league panels fed this answer, from X-Panel-Data. */
+  sources?: string[];
 }
 
 type ModelUsed = 'gemini' | 'groq' | null;
 
-const HOURLY_LIMIT = 15;
+const ALERT_DISMISSED_KEY = 'agent_alert_dismissed';
 
+/**
+ * The openers.
+ *
+ * Every one of these is a question the route now has a data source for. The
+ * old set was written before it did — "should I start or sit my running back
+ * this week?" was in it, and the assistant answered it by asking which running
+ * back was meant, because nothing in its context knew. Each of these maps to an
+ * intent that pulls the asker's own roster: the lineup ones to the matchup
+ * report, the pickup one to the waiver scan, the trade one to the trade finder,
+ * and the trending one to a form ranking rather than to Sleeper's add counts.
+ */
 const SUGGESTED_PROMPTS = [
-  'Should I start or sit my running back this week?',
-  'Who are the top waiver wire pickups right now?',
-  'Which QBs are trending up this week?',
-  'Should I trade for a receiver or focus on defense?',
+  'How does my matchup look this week?',
+  'Who should I start at flex?',
+  'Which free agents fix my weakest position?',
+  'What trade should I offer, and to who?',
+  'Which running backs are trending up right now?',
+  'Who on my bench should be starting?',
 ];
+
+const PANEL_LABEL: Record<string, string> = {
+  matchup: 'Matchup Analysis',
+  waivers: 'Waiver Wire',
+  trades:  'Trade Analyzer',
+};
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function SessionAlert({ onDismiss }: { onDismiss: () => void }) {
+function SessionAlert({ limit, onDismiss }: { limit: number; onDismiss: () => void }) {
   return (
     <div
-      className="w-full rounded-xl px-5 py-4 text-sm flex flex-col gap-2 relative"
+      className="w-full rounded-xl px-4 py-3.5 sm:px-5 sm:py-4 text-sm flex flex-col gap-2"
       style={{ background: '#1a1a1c', border: '1px solid #2e2e30' }}
       role="alert"
     >
@@ -43,7 +78,7 @@ function SessionAlert({ onDismiss }: { onDismiss: () => void }) {
         </div>
         <button
           onClick={onDismiss}
-          className="shrink-0 text-xs leading-none mt-0.5 transition-colors"
+          className="shrink-0 text-xs leading-none -m-2 p-2 transition-colors"
           style={{ color: '#555' }}
           aria-label="Dismiss"
         >
@@ -51,10 +86,10 @@ function SessionAlert({ onDismiss }: { onDismiss: () => void }) {
         </button>
       </div>
       <p style={{ color: '#888' }}>
-        You are limited to <strong style={{ color: '#e8e6df' }}>{HOURLY_LIMIT} prompts per hour</strong>.
+        You are limited to <strong style={{ color: '#e8e6df' }}>{limit} prompts per hour</strong>.
         This agent is shared — please use it sparingly so everyone can access it.
-        The agent uses <strong style={{ color: '#e8e6df' }}>Groq Llama 3.1</strong> by default and
-        automatically switches to <strong style={{ color: '#e8e6df' }}>Gemini 2.5 Flash</strong> if
+        The agent uses <strong style={{ color: '#e8e6df' }}>Groq</strong> by default and
+        automatically switches to <strong style={{ color: '#e8e6df' }}>Gemini</strong> if
         Groq is rate-limited or unavailable.
       </p>
     </div>
@@ -74,19 +109,22 @@ function FallbackToast({ reason, onDismiss }: { reason: string; onDismiss: () =>
       : 'Groq error — switched to';
 
   return (
+    // A row of the composer rather than a floating pill. Pinned to the viewport
+    // it had to guess how tall the composer was, and on a phone — where the
+    // layout lifts the whole column clear of the floating nav button — the
+    // guess landed on top of the input it was talking about.
     <div
-      className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl text-sm flex items-center gap-3 shadow-xl"
-      style={{ background: '#1e1e20', border: '1px solid #3a3a3c', color: '#e8e6df', maxWidth: '90vw' }}
+      className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs"
+      style={{ background: '#1e1e20', border: '1px solid #3a3a3c', color: '#c9c7c1' }}
       role="status"
     >
-      <span style={{ color: '#facc15' }}>⚠</span>
-      <span>
-        {message}{' '}
-        <strong style={{ color: '#e8e6df' }}>Gemini 2.5 Flash</strong>
+      <span className="shrink-0" style={{ color: '#facc15' }}>⚠</span>
+      <span className="min-w-0 flex-1">
+        {message} <strong style={{ color: '#e8e6df' }}>Gemini</strong>
       </span>
       <button
         onClick={onDismiss}
-        className="ml-1 text-xs transition-colors"
+        className="shrink-0 -m-2 p-2 leading-none transition-colors"
         style={{ color: '#555' }}
         aria-label="Dismiss"
       >
@@ -96,29 +134,27 @@ function FallbackToast({ reason, onDismiss }: { reason: string; onDismiss: () =>
   );
 }
 
+/** "resets in 42m" — the half of a rate limit a bar cannot show. */
+function resetLabel(resetAt: number): string {
+  const mins = Math.ceil((resetAt - Date.now()) / 60000);
+  if (mins <= 0) return 'resets now';
+  if (mins < 60) return `resets in ${mins}m`;
+  return 'resets in 1h';
+}
+
 function UsageBar({
-  used,
-  limit,
-  dailyUsed,
-}: {
-  used: number;
-  limit: number;
-  dailyUsed: number;
-}) {
-  const pct = Math.min(100, (used / limit) * 100);
-  const barColor =
-    pct >= 100 ? '#ef4444' : pct >= 80 ? '#facc15' : '#80ff49';
+  used, limit, dailyUsed, resetAt,
+}: { used: number; limit: number; dailyUsed: number; resetAt: number }) {
+  const pct = Math.min(100, limit > 0 ? (used / limit) * 100 : 0);
+  const barColor = pct >= 100 ? '#ef4444' : pct >= 80 ? '#facc15' : '#80ff49';
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between text-xs" style={{ color: '#555' }}>
-        <span>{used}/{limit} prompts this hour</span>
-        <span>{dailyUsed} used today</span>
+      <div className="flex items-center justify-between gap-2 text-xs" style={{ color: '#555' }}>
+        <span className="truncate">{used}/{limit} this hour · {resetLabel(resetAt)}</span>
+        <span className="shrink-0">{dailyUsed} today</span>
       </div>
-      <div
-        className="h-1 w-full rounded-full overflow-hidden"
-        style={{ background: '#1e1e20' }}
-      >
+      <div className="h-1 w-full rounded-full overflow-hidden" style={{ background: '#1e1e20' }}>
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{ width: `${pct}%`, background: barColor }}
@@ -136,11 +172,48 @@ function ModelBadge({ model, modelId }: { model: ModelUsed; modelId: string | nu
   const color = model === 'gemini' ? '#60a5fa' : '#80ff49';
   return (
     <span
-      className="text-xs px-2 py-1 rounded transition-all"
+      className="shrink-0 text-xs px-2 py-1 rounded truncate max-w-[45vw] sm:max-w-none"
       style={{ background: '#1a1a1c', color }}
       title={`Answered by ${provider}${modelId ? ` (${modelId})` : ''}`}
     >
       {label}
+    </span>
+  );
+}
+
+/** Which league panels an answer was built from — the "roped in" made visible. */
+function SourceChips({ sources }: { sources: string[] }) {
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-2">
+      {sources.map((s) => (
+        <span
+          key={s}
+          className="text-[11px] px-2 py-0.5 rounded-full"
+          style={{ background: '#16171a', border: '1px solid #26272b', color: '#7d7d78' }}
+        >
+          {PANEL_LABEL[s] ?? s}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Three dots, so a slow first token reads as work rather than as a hang. */
+function Thinking() {
+  return (
+    <span className="inline-flex items-center gap-1" style={{ color: '#555' }} aria-label="Thinking">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="w-1.5 h-1.5 rounded-full"
+          style={{
+            background: '#555',
+            animation: 'agentDot 1.2s ease-in-out infinite',
+            animationDelay: `${i * 0.18}s`,
+          }}
+        />
+      ))}
+      <style>{'@keyframes agentDot{0%,60%,100%{opacity:.25}30%{opacity:1}}'}</style>
     </span>
   );
 }
@@ -170,53 +243,59 @@ async function readErrorMessage(res: Response): Promise<string> {
 export default function AIPage() {
   useSession();
   const { sleeperUser, activeLeagueId, setActiveLeagueId } = useSleeperData();
+  const { usage, exhausted, clientId, recordResponse, recordRejection } = useAgentUsage();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Session alert (shown once on load)
-  const [showAlert, setShowAlert] = useState(true);
-
-  // Fallback toast
+  // Dismissing the notice is remembered — it says the same thing every visit,
+  // and the meter under the composer says the live half of it anyway.
+  const [showAlert, setShowAlert] = useState(false);
   const [showFallbackToast, setShowFallbackToast] = useState<string | null>(null);
 
-  // Rate-limit / usage tracking (client-side mirror of server headers)
-  const [hourlyUsed, setHourlyUsed] = useState(0);
-  const [dailyUsed, setDailyUsed] = useState(0);
   const [modelUsed, setModelUsed] = useState<ModelUsed>('groq');
   const [modelId, setModelId] = useState<string | null>(null);
-  const [rateLimited, setRateLimited] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const clientIdRef = useRef<string>('');
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages]);
 
-
+  // Read after mount, not during render: localStorage does not exist on the
+  // server, and a value read during render would be a hydration mismatch.
   useEffect(() => {
-    let id = localStorage.getItem('agent_client_id');
-    if (!id) {
-      id = crypto.randomUUID();
-      localStorage.setItem('agent_client_id', id);
-    }
-    clientIdRef.current = id;
+    let dismissed = false;
+    try { dismissed = localStorage.getItem(ALERT_DISMISSED_KEY) === '1'; } catch { /* no storage */ }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setShowAlert(!dismissed);
+  }, []);
+
+  const dismissAlert = useCallback(() => {
+    setShowAlert(false);
+    try { localStorage.setItem(ALERT_DISMISSED_KEY, '1'); } catch { /* not essential */ }
   }, []);
 
   const dismissFallbackToast = useCallback(() => setShowFallbackToast(null), []);
 
+  /** Keeps the composer one line tall until the text needs more, then grows. */
+  function resize(el: HTMLTextAreaElement): void {
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+  }
+
   async function handleSubmit(prompt?: string): Promise<void> {
     const text = (prompt ?? input).trim();
-    if (!text || loading || rateLimited) return;
+    if (!text || loading || exhausted) return;
 
     const userMessage: Message = { role: 'user', content: text };
     const pendingMessage: Message = { role: 'assistant', content: '', loading: true };
 
     setMessages((prev) => [...prev, userMessage, pendingMessage]);
     setInput('');
+    if (inputRef.current) { inputRef.current.style.height = 'auto'; }
     setLoading(true);
 
     const history = [...messages, userMessage].map((m) => ({
@@ -229,15 +308,15 @@ export default function AIPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Client-Id': clientIdRef.current,
+          'X-Client-Id': clientId,
         },
         body: JSON.stringify({ messages: history, sleeperLeagueId: activeLeagueId ?? undefined }),
       });
 
       // ── Handle rate-limit ──────────────────────────────────────────────────
       if (res.status === 429) {
-        setRateLimited(true);
         const data = (await res.json()) as { error: string; resetAt?: number };
+        recordRejection(data.resetAt);
         setMessages((prev) => {
           const updated = [...prev];
           updated[updated.length - 1] = {
@@ -258,19 +337,23 @@ export default function AIPage() {
       }
 
       // ── Parse usage headers ────────────────────────────────────────────────
-      const newModel = (res.headers.get('X-Model-Used') ?? null) as ModelUsed;
-      const fallbackReason = res.headers.get('X-Fallback-Reason');
-      const remaining = Number(res.headers.get('X-RateLimit-Remaining') ?? 0);
-      const daily = Number(res.headers.get('X-Daily-Prompts-Used') ?? 0);
-
-      setModelUsed(newModel);
+      setModelUsed((res.headers.get('X-Model-Used') ?? null) as ModelUsed);
       setModelId(res.headers.get('X-Model-Id'));
-      setHourlyUsed(HOURLY_LIMIT - remaining);
-      setDailyUsed(daily);
+      recordResponse(res.headers);
 
-      if (fallbackReason) {
-        setShowFallbackToast(fallbackReason);
+      const panels = (res.headers.get('X-Panel-Data') ?? 'none')
+        .split(',')
+        .filter((p) => p && p !== 'none');
+      if (panels.length) {
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { ...updated[updated.length - 1], sources: panels };
+          return updated;
+        });
       }
+
+      const fallbackReason = res.headers.get('X-Fallback-Reason');
+      if (fallbackReason) setShowFallbackToast(fallbackReason);
 
       // ── Stream text ────────────────────────────────────────────────────────
       const reader = res.body.getReader();
@@ -286,19 +369,19 @@ export default function AIPage() {
           const last = updated[updated.length - 1];
           updated[updated.length - 1] = {
             ...last,
-            content: (last.content as string) + chunk,
+            content: last.content + chunk,
             loading: false,
           };
           return updated;
         });
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Something went wrong';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Something went wrong';
       setMessages((prev) => {
         const updated = [...prev];
         // Preserve any text that already streamed in — a failure partway
         // through should not wipe out the answer the user was reading.
-        const partial = (updated[updated.length - 1]?.content as string) ?? '';
+        const partial = updated[updated.length - 1]?.content ?? '';
         updated[updated.length - 1] = {
           role: 'assistant',
           content: partial ? `${partial}\n\nError: ${message}` : `Error: ${message}`,
@@ -313,84 +396,72 @@ export default function AIPage() {
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>): void {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Enter sends on a real keyboard. On a phone it inserts a newline — a
+    // software keyboard's return key is where the reader reaches for one, and
+    // sending a half-written question instead is the mistake that follows.
+    const coarse = typeof window !== 'undefined'
+      && window.matchMedia?.('(pointer: coarse)').matches;
+    if (e.key === 'Enter' && !e.shiftKey && !coarse) {
       e.preventDefault();
       void handleSubmit();
     }
   }
 
-  return (
-    <main
-      className="h-full flex flex-col"
-      style={{ color: '#e8e6df' }}
-    >
-      {/* ── Fallback toast ── */}
-      {showFallbackToast && <FallbackToast reason={showFallbackToast} onDismiss={dismissFallbackToast} />}
+  const canSend = Boolean(input.trim()) && !loading && !exhausted;
 
-      {/* ── Header ── */}
+  return (
+    <main className="h-full flex flex-col min-h-0" style={{ color: '#e8e6df' }}>
+      {/* ── Header ──
+          One row on every width. The model badge moved down beside the usage
+          meter: on a phone this row is a title, a league name and a model ID,
+          and the model ID is the one of the three nobody came here for. */}
       <div
-        className="flex items-center justify-between px-4 py-4 sm:px-8 border-b shrink-0"
+        className="flex items-center justify-between gap-3 px-4 py-3 sm:px-8 sm:py-4 border-b shrink-0"
         style={{ borderColor: '#1e1e20' }}
       >
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-medium" style={{ color: '#e8e6df' }}>
+        <div className="flex items-center gap-2 min-w-0">
+          <span aria-hidden>🏈</span>
+          <span className="text-sm font-medium truncate" style={{ color: '#e8e6df' }}>
             AI Assistant
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Sleeper league selector */}
-          <LeagueSelector
-            sleeperUser={sleeperUser}
-            activeLeagueId={activeLeagueId}
-            onSelect={setActiveLeagueId}
-          />
-
-          <ModelBadge model={modelUsed} modelId={modelId} />
-        </div>
+        <LeagueSelector
+          sleeperUser={sleeperUser}
+          activeLeagueId={activeLeagueId}
+          onSelect={setActiveLeagueId}
+          className="shrink-0 max-w-[55%]"
+        />
       </div>
 
-      {/* ── Messages ── */}
-      <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-        <div className="max-w-2xl mx-auto flex flex-col gap-6">
+      {/* ── Messages ──
+          `min-h-0` is what makes this the only thing that scrolls: without it a
+          flex child refuses to shrink below its content and the whole column
+          grows instead, taking the composer off the bottom of the screen. */}
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 sm:px-8 sm:py-6">
+        <div className="max-w-2xl mx-auto flex flex-col gap-5 sm:gap-6">
 
-          {/* Session alert */}
-          {showAlert && (
-            <SessionAlert onDismiss={() => setShowAlert(false)} />
-          )}
+          {showAlert && <SessionAlert limit={usage.limit} onDismiss={dismissAlert} />}
 
           {/* Empty state */}
           {messages.length === 0 && (
-            <div className="flex flex-col items-center gap-6 mt-8">
+            <div className="flex flex-col items-center gap-6 mt-2 sm:mt-6">
               <div className="text-center">
-                <div className="text-4xl mb-3" style={{ filter: 'grayscale(0.2)' }}>
-                  🏈
-                </div>
-                <h1 className="text-xl font-medium mb-1">Fantasy Football AI</h1>
+                <h1 className="text-lg sm:text-xl font-medium mb-1">Fantasy Football AI</h1>
                 <p className="text-sm" style={{ color: '#666' }}>
-                  Ask anything about your lineup, waiver wire, or trade strategy.
+                  {activeLeagueId
+                    ? 'Ask about your lineup, the waiver wire, or a trade — it reads your roster.'
+                    : 'Pick a league above and it can answer for your actual roster.'}
                 </p>
               </div>
 
-              {/* Suggested prompts */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full">
                 {SUGGESTED_PROMPTS.map((p) => (
                   <button
                     key={p}
                     onClick={() => void handleSubmit(p)}
-                    className="text-left px-4 py-3 rounded-lg text-sm border transition-colors"
-                    style={{
-                      background: '#141415',
-                      borderColor: '#2a2a2c',
-                      color: '#888',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = '#80ff49';
-                      e.currentTarget.style.color = '#80ff49';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = '#2a2a2c';
-                      e.currentTarget.style.color = '#888';
-                    }}
+                    disabled={loading || exhausted}
+                    className="text-left px-4 py-3 rounded-xl text-sm border transition-colors disabled:opacity-50"
+                    style={{ background: '#141415', borderColor: '#2a2a2c', color: '#9a9a94' }}
                   >
                     {p}
                   </button>
@@ -403,30 +474,38 @@ export default function AIPage() {
           {messages.map((msg, i) => (
             <div
               key={i}
-              className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              className={`flex gap-2.5 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               {msg.role === 'assistant' && (
                 <div
-                  className="w-7 h-7 rounded-full flex items-center justify-center text-xs shrink-0 mt-1"
+                  className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-medium shrink-0 mt-0.5"
                   style={{ background: '#80ff49', color: '#0e0e0f' }}
+                  aria-hidden
                 >
                   AI
                 </div>
               )}
 
               <div
-                className="max-w-[80%] px-4 py-3 rounded-2xl text-sm leading-relaxed"
+                className={`text-sm leading-relaxed min-w-0 ${
+                  msg.role === 'user'
+                    ? 'max-w-[85%] px-4 py-2.5 rounded-2xl rounded-br-md'
+                    : 'max-w-[calc(100%-2.5rem)] sm:max-w-[85%]'
+                }`}
                 style={
                   msg.role === 'user'
                     ? { background: '#1e1e20', color: '#e8e6df' }
-                    : { background: 'transparent', color: '#e8e6df' }
+                    : { color: '#d8d6cf' }
                 }
               >
-                {msg.loading ? (
-                  <span style={{ color: '#555' }}>Thinking…</span>
-                ) : (
-                  <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
-                )}
+                {msg.loading
+                  ? <Thinking />
+                  : msg.role === 'user'
+                    ? <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
+                    : <ChatMarkdown text={msg.content} />}
+                {msg.role === 'assistant' && !msg.loading && msg.sources?.length
+                  ? <SourceChips sources={msg.sources} />
+                  : null}
               </div>
             </div>
           ))}
@@ -435,71 +514,92 @@ export default function AIPage() {
         </div>
       </div>
 
-      {/* ── Input area ── */}
+      {/* ── Composer ── */}
       <div
-        className="px-4 pb-6 sm:px-8"
-        style={{ borderTop: '1px solid #1e1e20', paddingTop: '1rem' }}
+        className="shrink-0 px-4 sm:px-8"
+        style={{
+          borderTop: '1px solid #1e1e20',
+          paddingTop: '0.75rem',
+          paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.75rem)',
+        }}
       >
-        <div className="max-w-2xl mx-auto flex flex-col gap-3">
-          {/* Usage bar */}
-          <UsageBar used={hourlyUsed} limit={HOURLY_LIMIT} dailyUsed={dailyUsed} />
+        <div className="max-w-2xl mx-auto flex flex-col gap-2.5">
+          {showFallbackToast && (
+            <FallbackToast reason={showFallbackToast} onDismiss={dismissFallbackToast} />
+          )}
 
-          {/* Input row */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <UsageBar
+                used={usage.used}
+                limit={usage.limit}
+                dailyUsed={usage.dailyUsed}
+                resetAt={usage.resetAt}
+              />
+            </div>
+            <ModelBadge model={modelUsed} modelId={modelId} />
+          </div>
+
           <div
-            className="flex items-end gap-3 rounded-2xl px-4 py-3"
+            className="flex items-end gap-2 rounded-2xl px-3 py-2 sm:px-4 sm:py-3"
             style={{ background: '#141415', border: '1px solid #2a2a2c' }}
           >
             <textarea
               ref={inputRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => { setInput(e.target.value); resize(e.target); }}
               onKeyDown={handleKeyDown}
               placeholder={
-                rateLimited
-                  ? 'Hourly limit reached — try again later'
-                  : 'Ask about your lineup, trades, or waiver wire…'
+                exhausted
+                  ? `Hourly limit reached — ${resetLabel(usage.resetAt)}`
+                  // Short enough to sit on one line at 16px on a small phone —
+                  // a wrapped placeholder is clipped by a one-row textarea.
+                  : 'Ask anything about your team…'
               }
-              disabled={loading || rateLimited}
+              disabled={loading || exhausted}
               rows={1}
-              className="flex-1 resize-none bg-transparent text-sm outline-none"
+              aria-label="Message the assistant"
+              // 16px on a phone, deliberately: iOS Safari zooms the whole page
+              // in on any focused field below that, and never zooms back out.
+              className="flex-1 resize-none bg-transparent outline-none text-base sm:text-sm py-1.5"
               style={{
-                color: rateLimited ? '#555' : '#e8e6df',
-                maxHeight: '120px',
+                color: exhausted ? '#555' : '#e8e6df',
+                maxHeight: '140px',
                 overflowY: 'auto',
               }}
             />
             <button
               onClick={() => void handleSubmit()}
-              disabled={!input.trim() || loading || rateLimited}
-              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm transition-colors"
+              disabled={!canSend}
+              className="shrink-0 rounded-full flex items-center justify-center transition-colors"
               style={{
-                background:
-                  !input.trim() || loading || rateLimited ? '#1e1e20' : '#80ff49',
-                color:
-                  !input.trim() || loading || rateLimited ? '#444' : '#0e0e0f',
+                width: 36,
+                height: 36,
+                background: canSend ? '#80ff49' : '#1e1e20',
+                color: canSend ? '#0e0e0f' : '#444',
               }}
               aria-label="Send"
             >
-              ↑
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" />
+              </svg>
             </button>
           </div>
 
-          <p className="text-center text-xs" style={{ color: '#333' }}>
-            AI responses may be inaccurate. Verify important decisions independently.
-          </p>
-          <p className="text-center text-xs" style={{ color: '#60a5fa' }}>
-            Trending data provided by{' '}
+          <p className="text-center text-xs leading-snug" style={{ color: '#3a3a38' }}>
+            AI responses may be inaccurate — verify important decisions.{' '}
+            Trending data by{' '}
             <a
               href="https://sleeper.com"
               target="_blank"
               rel="noopener noreferrer"
-              className="underline transition-colors"
-              style={{ color: '#60a5fa' }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = '#93c5fd'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = '#60a5fa'; }}
+              className="underline"
+              style={{ color: '#4a6a8a' }}
             >
               Sleeper
             </a>
+            .
           </p>
         </div>
       </div>

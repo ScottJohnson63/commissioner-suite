@@ -85,6 +85,36 @@ export function checkHourlyLimit(
 }
 
 /**
+ * Reads a client's current hourly usage WITHOUT consuming a token.
+ *
+ * The page needs this on load. The usage meter used to start every page at
+ * 0/15 because the browser had no memory of the window and no way to ask: the
+ * only call that knew the count was the one that spent from it, so a refresh
+ * showed a full allowance the server was not going to honour. This is the same
+ * bucket read rather than debited.
+ *
+ * A client with no bucket yet is reported as a fresh window starting now — the
+ * window does not exist until the first prompt, and `resetAt` an hour out is
+ * the truthful answer to "when does this reset" for someone who has spent
+ * nothing.
+ */
+export function peekHourlyLimit(
+  clientId: string,
+): { used: number; remaining: number; resetAt: number } {
+  const now = Date.now();
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+  const bucket = hourlyBuckets.get(clientId);
+  if (!bucket || now - bucket.windowStart >= ONE_HOUR_MS) {
+    return { used: 0, remaining: HOURLY_LIMIT, resetAt: now + ONE_HOUR_MS };
+  }
+  return {
+    used:      Math.min(HOURLY_LIMIT, bucket.count),
+    remaining: Math.max(0, HOURLY_LIMIT - bucket.count),
+    resetAt:   bucket.windowStart + ONE_HOUR_MS,
+  };
+}
+
+/**
  * Extracts a stable client identifier from the incoming request.
  *
  * Resolution order:

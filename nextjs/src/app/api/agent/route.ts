@@ -9,10 +9,11 @@
 //
 //   Pass 1 — Intent classification (Groq, llama-3.1-8b-instant, temp=0)
 //     A lightweight "planner" prompt classifies the user's question into one of
-//     twelve QueryIntent values and extracts structured entities (players,
+//     the QueryIntent values and extracts structured entities (players,
 //     position, opponent, season, weeksBack). This structured plan is then used
 //     to fetch precisely the right data from the DB — avoiding the need to dump
-//     all stats into the prompt context.
+//     all stats into the prompt context — and to decide which of the dashboard
+//     panels the answer needs.
 //
 //   Pass 2 — Answer generation (Groq primary, Gemini fallback, streaming)
 //     The final system prompt is assembled from DB stats, Sleeper trending data,
@@ -22,16 +23,23 @@
 // ── Data sources ──────────────────────────────────────────────────────────────
 //   • NflWeeklyStat DB table   — local copy of nfl_data_py stats, populated by
 //                                the Python FastAPI service on Railway/Render.
-//   • Sleeper trending API     — top adds/drops in the last 24 h (cached 10 min).
-//   • Sleeper player map       — player_id → full name (cached 24 h, stored in DB).
+//   • Sleeper trending API     — top adds/drops in the last 24 h (cached 10 min),
+//                                labelled with each player's position and team.
+//   • Sleeper player index     — player_id → name/position/team (cached 24 h, in DB).
 //   • League context           — rosters, standings, upcoming matchups from Sleeper
 //                                (fetched only for league-aware intents).
+//   • Dashboard panels         — the Matchup, Waiver and Trade routes, called
+//                                in-process for the asker's own roster. See
+//                                src/lib/agentTools.ts for why these and not a
+//                                second implementation of the same analysis.
 //
 // ── Rate limiting ────────────────────────────────────────────────────────────
 //   • Per-client: HOURLY_LIMIT prompts per rolling 60-minute window (in-memory).
 //   • Global daily counter:  logged in response headers for observability.
 //   Response headers expose limit/remaining/reset so the client can show a
-//   countdown to the user when they approach the cap.
+//   countdown to the user when they approach the cap, and GET ?usage=1 reports
+//   the same bucket without spending from it so a page reload does not draw an
+//   empty meter over a window that is already half gone.
 //
 // ── Model fallback ────────────────────────────────────────────────────────────
 //   Groq is the primary model. If Groq fails for ANY reason — rate limit, bad
@@ -74,12 +82,14 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
 import {
-  HOURLY_LIMIT, getClientId, checkHourlyLimit, getDailyCount, incrementDaily,
+  HOURLY_LIMIT, getClientId, checkHourlyLimit, peekHourlyLimit, getDailyCount, incrementDaily,
 } from '@/lib/rateLimit';
 import {
-  fetchTrending, fetchSleeperPlayerMap, fetchLeagueContext,
+  fetchTrending, fetchSleeperPlayerIndex, fetchLeagueContext,
 } from '@/lib/agentContext';
-import type { TrendingPlayer, LeagueContext } from '@/lib/agentContext';
+import type { TrendingPlayer, LeagueContext, PlayerIdentity } from '@/lib/agentContext';
+import { fetchAgentTools, formatAgentTools } from '@/lib/agentTools';
+import type { AgentTools, ToolRequest } from '@/lib/agentTools';
 import { err } from '@/lib/api';
 
 // ── Clients ───────────────────────────────────────────────────────────────────
@@ -252,7 +262,11 @@ type QueryIntent =
     | 'standings'            // Phase 2: "who is in first place / league standings"
     | 'roster_scan'          // Phase 2: "who in our league has weak RBs"
     | 'playoff_schedule'     // Phase 2: "who has easiest playoff schedule"
-    | 'trending'             // "who to pick up off waivers"
+    // Phase 3 — the three dashboard panels, answered from the panel's own data.
+    | 'start_sit'            // "should I start or sit my RB this week"
+    | 'waiver_wire'          // "who should I pick up"
+    | 'trade_analyzer'       // "who should I trade for"
+    | 'trending'             // "who is being added league-wide"
     | 'general';             // fallback
 
 interface QueryPlan {
@@ -535,7 +549,26 @@ async function executeQueryPlan(plan: QueryPlan): Promise<PlayerStats[]> {
             case 'playoff_schedule':
                 return fallbackRecentStats();
 
+            // Phase 3: the panel answers these. The stat rows alongside it are
+            // the rest of the position for comparison — a start/sit call on a
+            // bench RB reads better next to what the position is doing than
+            // next to the week's overall top 25, which is mostly quarterbacks.
+            case 'start_sit':
+            case 'waiver_wire':
+            case 'trade_analyzer':
+                return plan.position
+                    ? positionRecentForm(plan.position, plan.weeksBack ?? 3)
+                    : fallbackRecentStats();
+
+            // "Which QBs are trending up?" is a question about form, and the
+            // Sleeper add counts alone cannot answer it — they are a popularity
+            // list that on any given day may contain no quarterback at all.
+            // These are the players whose own scoring is actually rising.
             case 'trending':
+                return plan.position
+                    ? positionRisers(plan.position, plan.weeksBack ?? 2)
+                    : fallbackRecentStats();
+
             case 'general':
             default:
                 return fallbackRecentStats();
@@ -544,6 +577,133 @@ async function executeQueryPlan(plan: QueryPlan): Promise<PlayerStats[]> {
         console.error('[query-plan] execution error:', err);
         return fallbackRecentStats();
     }
+}
+
+/**
+ * The most recent week the stat table actually holds for a season.
+ *
+ * Everything below is measured backwards from here rather than from the NFL's
+ * current week: the sync runs behind live play, and a window anchored on the
+ * calendar reads empty for the days between a Sunday and the sync that follows
+ * it.
+ */
+async function latestLoadedWeek(season: number): Promise<number | null> {
+    const latest = await prisma.nflWeeklyStat.findFirst({
+        where: { season, week: { gte: 1, lte: 18 } },
+        orderBy: { week: 'desc' },
+        select: { week: true },
+    });
+    return latest?.week ?? null;
+}
+
+/** Per-player totals over a week range, used by both position queries below. */
+interface PositionForm {
+    row: PlayerStats;
+    recentPts: number;
+    recentGames: number;
+    priorPts: number;
+    priorGames: number;
+}
+
+/**
+ * Aggregates one position's scoring over the last `recentWeeks` weeks and the
+ * three weeks before them.
+ *
+ * Falls back to the previous season when the current one has no rows yet —
+ * between February and September that is every week, and a form question
+ * answered with "no data" for seven months of the year is not an answer.
+ */
+async function positionForm(
+    position: string,
+    recentWeeks: number,
+): Promise<{ forms: PositionForm[]; season: number; fromWeek: number; toWeek: number }> {
+    const pos = position.toUpperCase();
+    let season = CURRENT_SEASON;
+    let maxWeek = await latestLoadedWeek(season);
+    if (maxWeek === null) {
+        season = PREV_SEASON;
+        maxWeek = await latestLoadedWeek(season);
+    }
+    if (maxWeek === null) return { forms: [], season, fromWeek: 0, toWeek: 0 };
+
+    const recentFrom = Math.max(1, maxWeek - recentWeeks + 1);
+    const priorFrom  = Math.max(1, recentFrom - 3);
+
+    const rows = await prisma.nflWeeklyStat.findMany({
+        where: { season, position: pos, week: { gte: priorFrom, lte: maxWeek } },
+        orderBy: [{ playerId: 'asc' }, { week: 'asc' }],
+        select: STAT_SELECT,
+    });
+
+    const byPlayer = new Map<string, PositionForm>();
+    for (const r of rows) {
+        const entry = byPlayer.get(r.playerId)
+            ?? { row: r, recentPts: 0, recentGames: 0, priorPts: 0, priorGames: 0 };
+        const pts = r.fantasyPointsPpr ?? 0;
+        if ((r.week ?? 0) >= recentFrom) {
+            entry.recentPts += pts;
+            entry.recentGames += 1;
+            // Keep the most recent row as the identity — team changes mid-season.
+            entry.row = r;
+        } else {
+            entry.priorPts += pts;
+            entry.priorGames += 1;
+        }
+        byPlayer.set(r.playerId, entry);
+    }
+    return { forms: [...byPlayer.values()], season, fromWeek: priorFrom, toWeek: maxWeek };
+}
+
+/**
+ * Players at a position whose scoring is rising, steepest first.
+ *
+ * "Trending up" is the last `recentWeeks` weeks against the three before them.
+ * A player with no earlier games is kept with a zero baseline and labelled — a
+ * debut or a return from injury is exactly what the question is looking for,
+ * and dropping them would leave the list to established starters only.
+ */
+async function positionRisers(position: string, recentWeeks: number): Promise<PlayerStats[]> {
+    const { forms } = await positionForm(position, recentWeeks);
+    return forms
+        .filter((f) => f.recentGames > 0)
+        .map((f) => {
+            const recentAvg = f.recentPts / f.recentGames;
+            const priorAvg  = f.priorGames > 0 ? f.priorPts / f.priorGames : 0;
+            return { form: f, recentAvg, priorAvg, delta: recentAvg - priorAvg };
+        })
+        // A rise from nothing to nothing is not a rise. One usable game is the bar.
+        .filter((f) => f.recentAvg > 0)
+        .sort((a, b) => b.delta - a.delta)
+        .slice(0, 12)
+        .map(({ form, recentAvg, priorAvg, delta }) => ({
+            ...form.row,
+            fantasyPointsPpr: parseFloat(recentAvg.toFixed(1)),
+            playerDisplayName: `${form.row.playerDisplayName ?? form.row.playerName} `
+                + `(last ${form.recentGames}g ${recentAvg.toFixed(1)}/g vs `
+                + `${form.priorGames > 0 ? `prior ${form.priorGames}g ${priorAvg.toFixed(1)}/g` : 'no earlier games'}, `
+                + `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}/g)`,
+        }));
+}
+
+/**
+ * One position's recent scoring leaders, best first.
+ *
+ * The comparison set for a start/sit, waiver or trade answer: what this
+ * position has actually been worth lately, so a projection on the panel has
+ * something to be measured against.
+ */
+async function positionRecentForm(position: string, recentWeeks: number): Promise<PlayerStats[]> {
+    const { forms } = await positionForm(position, recentWeeks);
+    return forms
+        .filter((f) => f.recentGames > 0)
+        .map((f) => ({ form: f, avg: f.recentPts / f.recentGames }))
+        .sort((a, b) => b.avg - a.avg)
+        .slice(0, 20)
+        .map(({ form, avg }) => ({
+            ...form.row,
+            fantasyPointsPpr: parseFloat(avg.toFixed(1)),
+            playerDisplayName: `${form.row.playerDisplayName ?? form.row.playerName} (${form.recentGames}g, ${avg.toFixed(1)}/g avg)`,
+        }));
 }
 
 /**
@@ -576,7 +736,7 @@ Analyze the user's question and output ONLY a JSON object — no explanation, no
 
 Output schema:
 {
-  "intent": one of: "top_position" | "player_vs_opponent" | "player_comparison" | "player_recent" | "air_yards_efficiency" | "workload_trend" | "efficiency_gap" | "standings" | "roster_scan" | "playoff_schedule" | "trending" | "general",
+  "intent": one of: "top_position" | "player_vs_opponent" | "player_comparison" | "player_recent" | "air_yards_efficiency" | "workload_trend" | "efficiency_gap" | "standings" | "roster_scan" | "playoff_schedule" | "start_sit" | "waiver_wire" | "trade_analyzer" | "trending" | "general",
   "players": array of player display names mentioned (e.g. ["Josh Allen", "Patrick Mahomes"]),
   "position": position group if relevant ("QB" | "RB" | "WR" | "TE") or null,
   "opponent": opponent team abbreviation if mentioned (e.g. "NE", "KC", "DAL") or null,
@@ -595,10 +755,18 @@ Intent rules:
 - standings: ANY question about league standings, rankings, records, or who is winning/losing YOUR league. Examples: "who is in first place", "who has the best record", "league standings", "who is last place", "who is leading our league", "who has the most points in our league"
 - roster_scan: scanning league rosters for trade targets, weak positions, manager analysis
 - playoff_schedule: playoff weeks 15-17 matchup analysis, strength of schedule
-- trending: waiver wire, who to pick up or drop
+- start_sit: ANY lineup question about the asker's own team this week — "should I start or sit my RB", "who do I start at flex", "am I going to win this week", "how does my matchup look", "is my QB a good play". Use it even when no player is named: the asker's roster and this week's projections are looked up for them.
+- waiver_wire: who to pick up, drop, or claim; free agents; "who's available"; "who should I add"
+- trade_analyzer: trade proposals, trade targets, buy/sell, "who should I trade for", "is this trade fair"
+- trending: what the wider fantasy world is adding or dropping, "who is trending up/down", hot names. Set "position" when the question names one ("which QBs are trending up" → "QB").
 - general: anything else — only use this if no other intent fits
 
-IMPORTANT: If the question mentions "our league", "my league", "the league", "first place", "last place", or "standings", always use standings, roster_scan, or playoff_schedule — never general.`;
+Position rules:
+- Set "position" whenever the question names a position group, INCLUDING when the player is not named: "my running back" → "RB", "which QBs" → "QB", "a receiver" → "WR", "my tight end" → "TE".
+- "players" is for NAMED players only. Never invent a name from a position phrase like "my running back".
+
+IMPORTANT: If the question mentions "our league", "my league", "the league", "first place", "last place", or "standings", always use standings, roster_scan, or playoff_schedule — never general.
+IMPORTANT: "my", "I", "me", "should I" plus a lineup, waiver or trade word means the asker's own team — use start_sit, waiver_wire or trade_analyzer, never general.`;
 
 /** Pass 1 on Groq. Returns the raw model text, or null if Groq is unusable. */
 async function planWithGroq(userMessage: string): Promise<string | null> {
@@ -678,7 +846,8 @@ async function classifyIntent(userMessage: string): Promise<QueryPlan> {
         const validIntents: QueryIntent[] = [
             'top_position', 'player_vs_opponent', 'player_comparison', 'player_recent',
             'air_yards_efficiency', 'workload_trend', 'efficiency_gap',
-            'standings', 'roster_scan', 'playoff_schedule', 'trending', 'general',
+            'standings', 'roster_scan', 'playoff_schedule',
+            'start_sit', 'waiver_wire', 'trade_analyzer', 'trending', 'general',
         ];
         if (!validIntents.includes(parsed.intent)) return fallback;
         return {
@@ -780,6 +949,30 @@ ${upcomingBlock || '  No schedule data.'}
 }
 
 /**
+ * Trending rows as "Name (POS TEAM) — added 12,043x".
+ *
+ * The position is the point. Without it the model was handed ten bare names and
+ * asked which of them were quarterbacks, and answered — correctly, uselessly —
+ * that it could not tell.
+ */
+function formatTrendingRows(
+    rows: TrendingPlayer[],
+    playerIndex: Record<string, PlayerIdentity>,
+    verb: string,
+): string {
+    if (!rows.length) return 'No trending data.';
+    return rows.slice(0, 25)
+        .map((p) => {
+            const id = playerIndex[p.player_id];
+            const who = id
+                ? `${id.name} (${id.position}${id.team ? ` ${id.team}` : ''})`
+                : p.player_id;
+            return `  ${who} — ${verb} ${p.count.toLocaleString('en-US')}x`;
+        })
+        .join('\n');
+}
+
+/**
  * Assembles the full system prompt for Pass 2 (the answer-generation call).
  *
  * Sections injected:
@@ -796,43 +989,51 @@ function buildSystemPrompt(
     stats: PlayerStats[],
     trendingAdds: TrendingPlayer[],
     trendingDrops: TrendingPlayer[],
-    playerMap: Record<string, string>,
+    playerIndex: Record<string, PlayerIdentity>,
     plan: QueryPlan,
     dataContext: string,
     leagueCtx: LeagueContext | null,
+    tools: AgentTools,
     missingLeague = false,
 ): string {
     const statsBlock = stats.length
         ? stats.map((p, i) => `${i + 1}. ${formatStatRow(p)}`).join('\n')
         : 'No stat data available for this query.';
 
-    const addsBlock = trendingAdds.slice(0, 10)
-        .map((p) => `${playerMap[p.player_id] ?? p.player_id} (added ${p.count}x)`).join(', ') || 'No trending data.';
-
-    const dropsBlock = trendingDrops.slice(0, 10)
-        .map((p) => `${playerMap[p.player_id] ?? p.player_id} (dropped ${p.count}x)`).join(', ') || 'No trending data.';
+    const addsBlock  = formatTrendingRows(trendingAdds,  playerIndex, 'added');
+    const dropsBlock = formatTrendingRows(trendingDrops, playerIndex, 'dropped');
 
     const leagueBlock = leagueCtx ? formatLeagueContext(leagueCtx) : '';
+    const toolBlock   = formatAgentTools(tools);
+    const hasMyTeam   = tools.matchup !== null || tools.waivers !== null || tools.trades !== null;
 
-    return `You are an expert fantasy football analyst. Answer using ONLY the data provided below.
-Be direct. Lead with your recommendation, then support it with the stats.
-If the data is insufficient, say so clearly rather than guessing.
-Do not reference players or stats not present in the data.
-The NFL STATS section is pre-ranked — do not reorder. Player names include games played and per-game average where relevant.
-${leagueCtx ? 'League context is provided — use roster and matchup data to personalize advice.' : ''}
-${missingLeague ? 'NOTE: The user asked a league-specific question but has not connected their Sleeper account. Remind them to enter their Sleeper username using the Connect Sleeper button in the top-right corner of this page to unlock league-aware features. Still answer as helpfully as possible with the general data available.' : ''}
+    return `You are an expert fantasy football analyst talking to one manager about their own team.
+Lead with the recommendation. Then support it with the numbers, and name them.
+Keep it to a few short paragraphs or a short list — this is read on a phone.
+Format with plain Markdown: **bold** for the names and verdicts that matter, "- " for lists. No tables, no headings.
+
+HOW TO USE THE DATA:
+${hasMyTeam
+    ? 'The sections below marked "MY" are THIS manager\'s own team, pulled live from their league. "my running back", "should I start him", "who do I pick up", "who should I trade for" — all of it resolves against those sections. NEVER ask which player they mean when the position appears in MY STARTERS or MY BENCH; name the player yourself and answer. If the position appears more than once, cover each of them briefly.'
+    : missingLeague
+        ? 'No roster is connected for this manager, so answer the general question well rather than refusing it: give the best options in the data and say which situations each fits. Then, in ONE closing line, mention that picking their league from the league selector at the top of the page lets you answer for their actual roster.'
+        : 'This question is about the NFL rather than about one roster. Answer it from the data below.'}
+The TRENDING lists are a popularity snapshot of what the whole fantasy world is adding and dropping — they are NOT a list of every player who is playing well, and a position missing from them means nothing. If you are asked which players at a position are trending up and that position is thin in the trending list, answer from NFL STATS instead, which is ranked for exactly this question. Never reply that a position is absent from the data when a section below is about that position.
+Do not invent players, stats or scores that are not below. If a specific number really is missing, say which one and answer with what is there.
+The NFL STATS section is pre-ranked — do not reorder it. Player labels carry games played and per-game averages.
+Projections carry a floor and a ceiling: the projection is the expectation, and the gap between floor and ceiling is the risk. Say which one matters for the call you are making.
 
 --- DATA CONTEXT ---
 ${dataContext}
-
+${toolBlock ? `\n${toolBlock}\n` : ''}
 --- NFL STATS ---
 ${statsBlock}
 
 ${leagueBlock}
---- TRENDING ADDS (last 24h) ---
+--- TRENDING ADDS, LEAGUE-WIDE (last 24h) ---
 ${addsBlock}
 
---- TRENDING DROPS (last 24h) ---
+--- TRENDING DROPS, LEAGUE-WIDE (last 24h) ---
 ${dropsBlock}
 `;
 }
@@ -871,8 +1072,22 @@ function buildDataContext(plan: QueryPlan, hasLeague: boolean): string {
             return hasLeague
                 ? `League rosters and upcoming NFL schedule provided for playoff weeks analysis.`
                 : `No league context available — answering with general schedule data instead.`;
+        case 'start_sit':
+            return hasLeague
+                ? `The manager's own week: both projected team totals, every starter and every bench player with a floor/ceiling band, plus ${plan.position ?? 'the position'}'s recent scoring leaders league-wide for comparison.`
+                : `No roster connected — ${plan.position ?? 'skill position'} scoring leaders over the last ${plan.weeksBack ?? 3} weeks, as the general answer.`;
+        case 'waiver_wire':
+            return hasLeague
+                ? `The manager's own positional needs, ranked against their league, and the best un-rostered players available to them.`
+                : `No roster connected — recent form and league-wide add activity, as the general answer.`;
+        case 'trade_analyzer':
+            return hasLeague
+                ? `Trade proposals built from every roster in the manager's league, with what each side's starting lineup gains.`
+                : `No roster connected — recent form, as the general answer.`;
         case 'trending':
-            return `Most recent week top performers + Sleeper trending data (last 24h).`;
+            return plan.position
+                ? `${plan.position} players whose own scoring is rising, steepest first: the last ${plan.weeksBack ?? 2} weeks against the three before them. Use this list for "trending up" — the add/drop counts below are popularity, not form.`
+                : `Most recent week top performers + Sleeper add/drop activity (last 24h).`;
         default:
             return `Most recent week top performers by fantasy points (PPR).`;
     }
@@ -1082,10 +1297,26 @@ export async function GET(req: NextRequest): Promise<Response> {
     const session = await auth();
     if (!session) return err('Unauthorized', 401);
 
+    const params = new URL(req.url).searchParams;
+
+    // ?usage=1 — what this client has already spent from the current hour.
+    //
+    // Read-only: it reports the bucket without debiting it, which is what lets
+    // the page open showing the real count. Before this existed the browser had
+    // no way to ask, so every reload drew an empty meter over a window that was
+    // already half spent.
+    if (params.get('usage') === '1') {
+        const { used, remaining, resetAt } = peekHourlyLimit(getClientId(req));
+        return NextResponse.json(
+            { limit: HOURLY_LIMIT, used, remaining, resetAt, dailyUsed: getDailyCount() },
+            { headers: { 'Cache-Control': 'no-store' } },
+        );
+    }
+
     const groqReady   = getGroq()   !== null;
     const geminiReady = getGemini() !== null;
 
-    if (new URL(req.url).searchParams.get('live') !== '1') {
+    if (params.get('live') !== '1') {
         return NextResponse.json({
             ready:     groqReady || geminiReady,
             providers: { groq: groqReady, gemini: geminiReady },
@@ -1101,6 +1332,48 @@ export async function GET(req: NextRequest): Promise<Response> {
         gemini: geminiStatus,
         season: CURRENT_SEASON,
     });
+}
+
+/** Intents whose answer is about the asker's own league rather than the NFL. */
+const LEAGUE_AWARE_INTENTS: QueryIntent[] = [
+    'standings', 'roster_scan', 'playoff_schedule',
+    'start_sit', 'waiver_wire', 'trade_analyzer',
+    'trending', 'player_comparison',
+];
+
+/**
+ * Intents that are unanswerable without the asker's roster.
+ *
+ * Narrower than the list above, and the difference is the point: a trending
+ * question reads better for knowing which of those names are free in the
+ * asker's league, but it is a real question without one. Prodding someone to
+ * connect a league they did not ask about is the kind of note that gets
+ * ignored, and then ignored on the question where it mattered.
+ */
+const MY_TEAM_INTENTS: QueryIntent[] = [
+    'start_sit', 'waiver_wire', 'trade_analyzer',
+    'standings', 'roster_scan', 'playoff_schedule',
+];
+
+/**
+ * Which dashboard panels an intent needs.
+ *
+ * Each one is a Sleeper build behind two model calls, so nothing is fetched
+ * speculatively. The overlaps are deliberate: a start/sit answer is better for
+ * knowing there is a free agent who beats the player being benched, and a trade
+ * answer is better for knowing which of my positions the league has me last in.
+ */
+function toolsFor(intent: QueryIntent): ToolRequest {
+    switch (intent) {
+        case 'start_sit':        return { matchup: true, waivers: true };
+        case 'waiver_wire':      return { waivers: true, matchup: true };
+        case 'trade_analyzer':   return { trades: true, waivers: true };
+        case 'roster_scan':      return { trades: true, waivers: true };
+        case 'playoff_schedule': return { matchup: true };
+        case 'player_comparison':return { matchup: true };
+        case 'trending':         return { waivers: true };
+        default:                 return {};
+    }
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -1156,24 +1429,38 @@ async function handlePost(req: NextRequest): Promise<Response> {
     const plan = await classifyIntent(latestUserMessage);
     console.log('[pass-1] query plan:', JSON.stringify(plan));
 
-    // Fetch all context in parallel — DB stats, Sleeper trending, player map, league context
-    const [stats, { adds: trendingAdds, drops: trendingDrops }, playerMap] = await Promise.all([
+    // The Sleeper account is read from the session, not the request body: the
+    // panels below answer with one manager's roster, and which manager that is
+    // is not the browser's to nominate.
+    const sleeperUserId = session.user?.sleeperUserId ?? null;
+
+    // Fetch all context in parallel — DB stats, Sleeper trending, player index,
+    // and whichever of the three dashboard panels this question needs.
+    const [stats, { adds: trendingAdds, drops: trendingDrops }, playerIndex, tools] = await Promise.all([
         executeQueryPlan(plan),
         fetchTrending(),
-        fetchSleeperPlayerMap(),
+        fetchSleeperPlayerIndex(),
+        fetchAgentTools(body.sleeperLeagueId, sleeperUserId, toolsFor(plan.intent)),
     ]);
+    const playerMap: Record<string, string> = {};
+    for (const [id, info] of Object.entries(playerIndex)) playerMap[id] = info.name;
 
     // Phase 2: fetch league context only if sleeperLeagueId provided and intent benefits from it
-    const leagueAwareIntents: QueryIntent[] = ['standings', 'roster_scan', 'playoff_schedule', 'trending', 'player_comparison'];
-    const needsLeague = leagueAwareIntents.includes(plan.intent);
+    const needsLeague = LEAGUE_AWARE_INTENTS.includes(plan.intent);
     const leagueCtx = (body.sleeperLeagueId && needsLeague)
         ? await fetchLeagueContext(body.sleeperLeagueId, playerMap, CURRENT_SEASON)
         : null;
-    // If intent needs league context but no Sleeper ID was provided, flag it
-    const missingLeague = needsLeague && !body.sleeperLeagueId;
+    // If the question is about the asker's own team and there is nothing to
+    // answer it from — no league selected, no Sleeper account connected, or
+    // every panel failed — the model is told to answer generally and say so
+    // once, rather than asking the user which of their players they meant.
+    const hasMyTeam = tools.matchup !== null || tools.waivers !== null || tools.trades !== null;
+    const missingLeague = MY_TEAM_INTENTS.includes(plan.intent) && !hasMyTeam && leagueCtx === null;
 
-    const dataContext = buildDataContext(plan, leagueCtx !== null);
-    const systemPrompt = buildSystemPrompt(stats, trendingAdds, trendingDrops, playerMap, plan, dataContext, leagueCtx, missingLeague);
+    const dataContext = buildDataContext(plan, hasMyTeam || leagueCtx !== null);
+    const systemPrompt = buildSystemPrompt(
+        stats, trendingAdds, trendingDrops, playerIndex, plan, dataContext, leagueCtx, tools, missingLeague,
+    );
 
     incrementDaily();
     const dailyCount = getDailyCount();
@@ -1231,6 +1518,11 @@ async function handlePost(req: NextRequest): Promise<Response> {
         'X-Daily-Prompts-Used': String(dailyCount),
         'X-Query-Intent': plan.intent,
         'X-League-Context': leagueCtx ? 'true' : 'false',
+        'X-Panel-Data': [
+            tools.matchup ? 'matchup' : '',
+            tools.waivers ? 'waivers' : '',
+            tools.trades  ? 'trades'  : '',
+        ].filter(Boolean).join(',') || 'none',
     };
     if (fallbackReason) headers['X-Fallback-Reason'] = fallbackReason;
 

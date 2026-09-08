@@ -20,6 +20,7 @@ describe('rateLimit module', () => {
   let getDailyCount:   () => number;
   let incrementDaily:  () => void;
   let checkHourlyLimit: (id: string) => { allowed: boolean; remaining: number; resetAt: number };
+  let peekHourlyLimit: (id: string) => { used: number; remaining: number; resetAt: number };
   let getClientId:     (req: NextRequest) => string;
   let HOURLY_LIMIT:    number;
 
@@ -35,6 +36,7 @@ describe('rateLimit module', () => {
     getDailyCount     = mod.getDailyCount;
     incrementDaily    = mod.incrementDaily;
     checkHourlyLimit  = mod.checkHourlyLimit;
+    peekHourlyLimit   = mod.peekHourlyLimit;
     getClientId       = mod.getClientId;
     HOURLY_LIMIT      = mod.HOURLY_LIMIT;
   });
@@ -140,6 +142,64 @@ describe('rateLimit module', () => {
   // ── getClientId ──────────────────────────────────────────────────────────────
 
   // Helper that builds a minimal NextRequest-shaped stub with specific headers.
+  // ── peekHourlyLimit ────────────────────────────────────────────────────────
+  //
+  // The page calls this on load. Every one of these is a way the meter used to
+  // lie to the reader before it existed.
+
+  // WHY: Reading the count must not cost one. The page polls this on every
+  //      mount, so a debiting read would spend the allowance on page loads.
+  it('peekHourlyLimit does not consume a token', () => {
+    checkHourlyLimit('peeker');
+    expect(peekHourlyLimit('peeker').used).toBe(1);
+    expect(peekHourlyLimit('peeker').used).toBe(1);
+    expect(peekHourlyLimit('peeker').used).toBe(1);
+    // The prompt after three peeks is still the second of the hour.
+    expect(checkHourlyLimit('peeker').remaining).toBe(HOURLY_LIMIT - 2);
+  });
+
+  // WHY: This is the number the meter draws. It has to match what the next POST
+  //      will be measured against, not a count of its own.
+  it('peekHourlyLimit reports the same window checkHourlyLimit is spending from', () => {
+    for (let i = 0; i < 4; i += 1) checkHourlyLimit('spender');
+    const peeked = peekHourlyLimit('spender');
+    expect(peeked.used).toBe(4);
+    expect(peeked.remaining).toBe(HOURLY_LIMIT - 4);
+    expect(peeked.resetAt).toBe(Date.now() + 60 * 60 * 1000);
+  });
+
+  // WHY: Someone who has sent nothing has no bucket, and the honest answer for
+  //      them is a full allowance — not a zero remaining from a missing entry.
+  it('peekHourlyLimit reports a full allowance for a client with no bucket', () => {
+    const peeked = peekHourlyLimit('never-asked');
+    expect(peeked.used).toBe(0);
+    expect(peeked.remaining).toBe(HOURLY_LIMIT);
+    expect(peeked.resetAt).toBe(Date.now() + 60 * 60 * 1000);
+  });
+
+  // WHY: A window that has aged out is not this hour's window. Reporting the
+  //      old count would keep the composer disabled past the reset.
+  it('peekHourlyLimit reports a fresh window once the old one has expired', () => {
+    for (let i = 0; i < HOURLY_LIMIT; i += 1) checkHourlyLimit('expired');
+    expect(peekHourlyLimit('expired').remaining).toBe(0);
+
+    jest.advanceTimersByTime(60 * 60 * 1000 + 1);
+    expect(peekHourlyLimit('expired')).toEqual({
+      used: 0,
+      remaining: HOURLY_LIMIT,
+      resetAt: Date.now() + 60 * 60 * 1000,
+    });
+  });
+
+  // WHY: The route reports `used` straight to the page. A refused client whose
+  //      bucket kept counting past the cap would draw a bar wider than the bar.
+  it('peekHourlyLimit never reports more used than the limit', () => {
+    for (let i = 0; i < HOURLY_LIMIT + 5; i += 1) checkHourlyLimit('over');
+    const peeked = peekHourlyLimit('over');
+    expect(peeked.used).toBe(HOURLY_LIMIT);
+    expect(peeked.remaining).toBe(0);
+  });
+
   function makeReq(headers: Record<string, string>): NextRequest {
     return {
       headers: {

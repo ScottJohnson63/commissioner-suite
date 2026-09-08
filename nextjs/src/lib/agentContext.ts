@@ -18,6 +18,13 @@ export interface TrendingPlayer {
   type: 'add' | 'drop';
 }
 
+/** Name, position and team for one Sleeper player ID. */
+export interface PlayerIdentity {
+  name:     string;
+  position: string;
+  team:     string | null;
+}
+
 export interface SleeperRosterPlayer {
   playerId: string;
   name: string;
@@ -127,10 +134,17 @@ async function sleeperFetch<T>(url: string, ttlMs: number, timeoutMs = SLEEPER_T
 
 // ── Trending ──────────────────────────────────────────────────────────────────
 
+// Fifty rather than ten. The list is read by position now, and the ten names at
+// the top of a league-wide add list are routinely all one or two positions —
+// which is how "which QBs are trending up?" got answered with "none of these are
+// quarterbacks". Fifty rows is still a small prompt block once the assistant
+// filters it, and it is one Sleeper call either way.
+const TRENDING_LIMIT = 50;
+
 export async function fetchTrending(): Promise<{ adds: TrendingPlayer[]; drops: TrendingPlayer[] }> {
   const [adds, drops] = await Promise.all([
-    sleeperFetch<TrendingPlayer[]>(`${SLEEPER_BASE}/players/nfl/trending/add?lookback_hours=24&limit=20`, TRENDING_TTL_MS),
-    sleeperFetch<TrendingPlayer[]>(`${SLEEPER_BASE}/players/nfl/trending/drop?lookback_hours=24&limit=20`, TRENDING_TTL_MS),
+    sleeperFetch<TrendingPlayer[]>(`${SLEEPER_BASE}/players/nfl/trending/add?lookback_hours=24&limit=${TRENDING_LIMIT}`, TRENDING_TTL_MS),
+    sleeperFetch<TrendingPlayer[]>(`${SLEEPER_BASE}/players/nfl/trending/drop?lookback_hours=24&limit=${TRENDING_LIMIT}`, TRENDING_TTL_MS),
   ]);
   return {
     adds:  (adds  ?? []).map((p) => ({ ...p, type: 'add'  as const })),
@@ -154,6 +168,24 @@ export async function fetchSleeperPlayerMap(): Promise<Record<string, string>> {
   const names: Record<string, string> = {};
   for (const [id, info] of map) names[id] = info.name;
   return names;
+}
+
+/**
+ * The same map, with the position and team kept.
+ *
+ * Trending rows arrive from Sleeper as an ID and a count and nothing else. Sent
+ * to the model as bare names they answered "which QBs are trending up?" with
+ * "none of these are quarterbacks" — which was true of the ten names it had been
+ * shown and false of the question. A position on every row is what lets the
+ * model filter the list instead of reporting that it cannot.
+ */
+export async function fetchSleeperPlayerIndex(): Promise<Record<string, PlayerIdentity>> {
+  const map = await getPlayerMapSafe();
+  const index: Record<string, PlayerIdentity> = {};
+  for (const [id, info] of map) {
+    index[id] = { name: info.name, position: info.position, team: info.team };
+  }
+  return index;
 }
 
 // ── League context ────────────────────────────────────────────────────────────

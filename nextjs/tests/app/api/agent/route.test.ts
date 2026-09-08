@@ -28,14 +28,24 @@ jest.mock('@/lib/rateLimit', () => ({
   HOURLY_LIMIT:     10,
   getClientId:      jest.fn().mockReturnValue('test-client'),
   checkHourlyLimit: jest.fn(),
+  peekHourlyLimit:  jest.fn().mockReturnValue({ used: 0, remaining: 10, resetAt: 0 }),
   getDailyCount:    jest.fn().mockReturnValue(1),
   incrementDaily:   jest.fn(),
 }));
 
 jest.mock('@/lib/agentContext', () => ({
-  fetchTrending:         jest.fn(),
-  fetchSleeperPlayerMap: jest.fn(),
-  fetchLeagueContext:    jest.fn(),
+  fetchTrending:           jest.fn(),
+  fetchSleeperPlayerMap:   jest.fn(),
+  fetchSleeperPlayerIndex: jest.fn(),
+  fetchLeagueContext:      jest.fn(),
+}));
+
+// The three dashboard panels the route now reads for league-aware intents.
+// Mocked wholesale: each one is a live Sleeper/odds/weather build behind its
+// own route, and none of it is what these tests are about.
+jest.mock('@/lib/agentTools', () => ({
+  fetchAgentTools:  jest.fn(),
+  formatAgentTools: jest.fn().mockReturnValue(''),
 }));
 
 jest.mock('@/lib/prisma', () => ({
@@ -78,16 +88,20 @@ jest.mock('@google/generative-ai', () => ({
   })),
 }));
 
-import { POST } from '@/app/api/agent/route';
+import { GET, POST } from '@/app/api/agent/route';
 import { auth } from '@/auth';
-import { checkHourlyLimit } from '@/lib/rateLimit';
-import { fetchTrending, fetchSleeperPlayerMap } from '@/lib/agentContext';
+import { checkHourlyLimit, peekHourlyLimit } from '@/lib/rateLimit';
+import { fetchTrending, fetchSleeperPlayerIndex } from '@/lib/agentContext';
+import { fetchAgentTools, formatAgentTools } from '@/lib/agentTools';
 import { prisma } from '@/lib/prisma';
 
 const mockAuth           = auth           as jest.MockedFunction<typeof auth>;
 const mockCheckLimit     = checkHourlyLimit as jest.MockedFunction<typeof checkHourlyLimit>;
 const mockFetchTrending  = fetchTrending   as jest.MockedFunction<typeof fetchTrending>;
-const mockFetchPlayerMap = fetchSleeperPlayerMap as jest.MockedFunction<typeof fetchSleeperPlayerMap>;
+const mockFetchPlayerIndex = fetchSleeperPlayerIndex as jest.MockedFunction<typeof fetchSleeperPlayerIndex>;
+const mockFetchTools     = fetchAgentTools as jest.MockedFunction<typeof fetchAgentTools>;
+const mockFormatTools    = formatAgentTools as jest.MockedFunction<typeof formatAgentTools>;
+const mockPeekLimit      = peekHourlyLimit as jest.MockedFunction<typeof peekHourlyLimit>;
 const mockStatFindFirst  = prisma.nflWeeklyStat.findFirst as jest.MockedFunction<typeof prisma.nflWeeklyStat.findFirst>;
 const mockStatFindMany   = prisma.nflWeeklyStat.findMany  as jest.MockedFunction<typeof prisma.nflWeeklyStat.findMany>;
 const mockStatGroupBy    = prisma.nflWeeklyStat.groupBy   as jest.MockedFunction<typeof prisma.nflWeeklyStat.groupBy>;
@@ -95,7 +109,9 @@ const mockStatGroupBy    = prisma.nflWeeklyStat.groupBy   as jest.MockedFunction
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // A minimal, valid session object.
-const fakeSession = { user: { id: 'user-1', role: 'MEMBER', pendingOAuth: false } };
+const fakeSession = {
+  user: { id: 'user-1', role: 'MEMBER', pendingOAuth: false, sleeperUserId: 'sleeper-1' },
+};
 
 // The two Groq responses needed for a full round-trip:
 //   Pass 1: non-streaming JSON intent plan.
@@ -114,7 +130,8 @@ async function* fakeGroqStream() {
 // Sleeper + DB context mocks — needed by every request that reaches Pass 2.
 function setupContextMocks(): void {
   mockFetchTrending.mockResolvedValue({ adds: [], drops: [] });
-  mockFetchPlayerMap.mockResolvedValue({});
+  mockFetchPlayerIndex.mockResolvedValue({});
+  mockFetchTools.mockResolvedValue({ matchup: null, waivers: null, trades: null, errors: [] });
   // DB fallback stats query
   mockStatFindFirst.mockResolvedValue(null as never);
   mockStatFindMany.mockResolvedValue([] as never);
@@ -127,6 +144,25 @@ function setupHappyPath(): void {
     .mockResolvedValueOnce(pass1Response)        // Pass 1: intent classification
     .mockResolvedValueOnce(fakeGroqStream());    // Pass 2: streaming answer
   setupContextMocks();
+}
+
+/** The Pass 2 system prompt — everything the answering model was shown. */
+function systemPromptSent(): string {
+  const pass2 = mockGroqCreate.mock.calls[1][0] as { messages: { role: string; content: string }[] };
+  return pass2.messages.find((m) => m.role === 'system')?.content ?? '';
+}
+
+/** A Pass 1 response that classifies as `intent`, with optional extracted entities. */
+function planningAs(intent: string, extra: Record<string, unknown> = {}) {
+  return {
+    choices: [{
+      message: {
+        content: JSON.stringify({
+          intent, players: [], position: null, opponent: null, season: null, weeksBack: null, ...extra,
+        }),
+      },
+    }],
+  };
 }
 
 function makeReq(body: object): NextRequest {
@@ -145,7 +181,10 @@ describe('POST /api/agent', () => {
     mockCheckLimit.mockReset();
     mockGroqCreate.mockReset();
     mockFetchTrending.mockReset();
-    mockFetchPlayerMap.mockReset();
+    mockFetchPlayerIndex.mockReset();
+    mockFetchTools.mockReset();
+    mockFormatTools.mockReset();
+    mockFormatTools.mockReturnValue('');
     mockStatFindFirst.mockReset();
     mockStatFindMany.mockReset();
     mockStatGroupBy.mockReset();
@@ -494,5 +533,190 @@ describe('POST /api/agent', () => {
     expect(userMessages).toHaveLength(6);
     expect(userMessages[0].content).toBe('Message 5');
     expect(userMessages[5].content).toBe('Message 10');
+  });
+  // ── Phase 3: the dashboard panels ─────────────────────────────────────────
+  //
+  // The issue these come from quoted the assistant answering "should I start or
+  // sit my running back this week?" with a request to name the running back. It
+  // had no way to know: its league data was standings and bare roster lists.
+  // These pin the three panels reaching the prompt instead.
+
+  // WHY: A start/sit question is answered from the asker's own lineup. If the
+  //      panel is not fetched there is nothing to answer it with, and the model
+  //      falls back to asking the reader who they meant.
+  it('fetches the matchup and waiver panels for a start/sit question', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('start_sit', { position: 'RB' }))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+
+    const res = await POST(makeReq({
+      messages: [{ role: 'user', content: 'Should I start or sit my running back this week?' }],
+      sleeperLeagueId: 'league-1',
+    }));
+
+    expect(res.headers.get('X-Query-Intent')).toBe('start_sit');
+    expect(mockFetchTools).toHaveBeenCalledWith('league-1', 'sleeper-1', { matchup: true, waivers: true });
+  });
+
+  // WHY: Which manager's roster this is about is not the browser's to nominate.
+  //      The Sleeper ID comes off the session; the body only names the league.
+  it('takes the Sleeper user from the session, never from the request body', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('waiver_wire'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+
+    await POST(makeReq({
+      messages: [{ role: 'user', content: 'Who should I pick up?' }],
+      sleeperLeagueId: 'league-1',
+      sleeperUserId: 'somebody-else',
+    }));
+
+    expect(mockFetchTools).toHaveBeenCalledWith('league-1', 'sleeper-1', expect.anything());
+  });
+
+  // WHY: A question about the NFL at large costs no Sleeper build. Fetching all
+  //      three panels behind every prompt would put a live roster/odds/weather
+  //      round trip in front of "who were the best QBs last year".
+  it('fetches no panels for a question that is not about the reader\'s team', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('top_position', { position: 'QB', season: 2024 }))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+
+    await POST(makeReq({
+      messages: [{ role: 'user', content: 'Who were the best QBs last year?' }],
+      sleeperLeagueId: 'league-1',
+    }));
+
+    expect(mockFetchTools).toHaveBeenCalledWith('league-1', 'sleeper-1', {});
+  });
+
+  // WHY: The panel block is the answer to the start/sit question. If it does not
+  //      reach the system prompt, none of the rest of this matters.
+  it('puts the panel block in the system prompt and names it in a header', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('start_sit'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+    mockFetchTools.mockResolvedValue({
+      matchup: { week: 12 } as never, waivers: { scanned: 1 } as never, trades: null, errors: [],
+    });
+    mockFormatTools.mockReturnValue('--- MY MATCHUP — Week 12 ---\nMY STARTERS:\n  RB Real Player');
+
+    const res = await POST(makeReq({
+      messages: [{ role: 'user', content: 'Who should I start at flex?' }],
+      sleeperLeagueId: 'league-1',
+    }));
+
+    expect(res.headers.get('X-Panel-Data')).toBe('matchup,waivers');
+    expect(systemPromptSent()).toContain('MY STARTERS');
+  });
+
+  // WHY: With no roster to read, the old prompt told the model the data was
+  //      insufficient and it refused. The instruction now is to answer the
+  //      general question and mention the league selector once.
+  it('tells the model to answer generally when no roster could be read', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('start_sit'))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+
+    const res = await POST(makeReq({
+      messages: [{ role: 'user', content: 'Should I start my running back?' }],
+    }));
+
+    expect(res.headers.get('X-Panel-Data')).toBe('none');
+    const prompt = systemPromptSent();
+    expect(prompt).toContain('No roster is connected');
+    expect(prompt).toContain('league selector');
+  });
+
+  // WHY: The other failure in the issue — "none of these are quarterbacks" —
+  //      came from ten bare names with no positions on them.
+  it('labels trending rows with each player\'s position and team', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('trending', { position: 'QB' }))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+    mockFetchTrending.mockResolvedValue({
+      adds:  [{ player_id: 'a1', count: 12043, type: 'add' as const }],
+      drops: [{ player_id: 'd1', count: 900,   type: 'drop' as const }],
+    });
+    mockFetchPlayerIndex.mockResolvedValue({
+      a1: { name: 'Rising Passer', position: 'QB', team: 'WAS' },
+      d1: { name: 'Falling Back',  position: 'RB', team: 'NYG' },
+    });
+
+    await POST(makeReq({ messages: [{ role: 'user', content: 'Which QBs are trending up this week?' }] }));
+
+    const prompt = systemPromptSent();
+    expect(prompt).toContain('Rising Passer (QB WAS) — added 12,043x');
+    expect(prompt).toContain('Falling Back (RB NYG) — dropped 900x');
+  });
+
+  // WHY: "None of these are quarterbacks" was a true statement about a
+  //      popularity list read as if it were a form ranking. The prompt now says
+  //      which list answers which question.
+  it('tells the model the trending list is popularity, not form', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    mockGroqCreate
+      .mockResolvedValueOnce(planningAs('trending', { position: 'QB' }))
+      .mockResolvedValueOnce(fakeGroqStream());
+    setupContextMocks();
+
+    await POST(makeReq({ messages: [{ role: 'user', content: 'Which QBs are trending up this week?' }] }));
+
+    const prompt = systemPromptSent();
+    expect(prompt).toContain('popularity snapshot');
+    expect(prompt).toMatch(/answer from NFL STATS instead/);
+  });
+});
+
+// ── GET /api/agent ────────────────────────────────────────────────────────────
+
+describe('GET /api/agent?usage=1', () => {
+  beforeEach(() => {
+    mockAuth.mockReset();
+    mockPeekLimit.mockReset();
+    mockCheckLimit.mockReset();
+    mockAuth.mockResolvedValue(fakeSession as never);
+    mockPeekLimit.mockReturnValue({ used: 7, remaining: 3, resetAt: 1750000000000 });
+  });
+
+  function usageReq(): NextRequest {
+    return new NextRequest('http://localhost/api/agent?usage=1');
+  }
+
+  // WHY: This is what a reloaded page reads. Before it existed the browser had
+  //      no way to ask, and drew a full allowance over a spent window.
+  it('reports the client\'s current hourly usage', async () => {
+    const res = await GET(usageReq());
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      limit: 10, used: 7, remaining: 3, resetAt: 1750000000000, dailyUsed: 1,
+    });
+  });
+
+  // WHY: The page polls this on every mount. A debiting read would spend the
+  //      allowance on page loads rather than on prompts.
+  it('reads the bucket without spending from it', async () => {
+    await GET(usageReq());
+    expect(mockPeekLimit).toHaveBeenCalledTimes(1);
+    expect(mockCheckLimit).not.toHaveBeenCalled();
+  });
+
+  // WHY: Usage is per client, and a signed-out caller has none to report.
+  it('returns 401 when the caller is not signed in', async () => {
+    mockAuth.mockResolvedValueOnce(null as never);
+    expect((await GET(usageReq())).status).toBe(401);
   });
 });
