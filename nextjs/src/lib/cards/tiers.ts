@@ -36,6 +36,20 @@ export const ELIGIBLE_POSITIONS = ['QB', 'RB', 'WR', 'TE'] as const;
 export type EligiblePosition = (typeof ELIGIBLE_POSITIONS)[number];
 
 /**
+ * What each position is called in prose, plural and lower case.
+ *
+ * Here so that the Draft Deck tour can name the positions that get a card by
+ * walking ELIGIBLE_POSITIONS rather than by listing them again in a sentence.
+ * Adding a position to the list above is then one edit, not two.
+ */
+export const POSITION_LABEL: Record<EligiblePosition, string> = {
+  QB: 'quarterbacks',
+  RB: 'running backs',
+  WR: 'wide receivers',
+  TE: 'tight ends',
+};
+
+/**
  * Highest season-finish rank that still earns each tier, walked in TIER_ORDER.
  *
  * Ranks 1–5 are Hall of Fame, 6–10 Gold, 11–30 Silver, and everyone else
@@ -70,6 +84,21 @@ export const TIER_MAX_RANK: Record<Exclude<CardTier, 'BRONZE'>, number> = {
   GOLD: 10,
   SILVER: 30,
 };
+
+/**
+ * Games a player must have played to be ranked on his average.
+ *
+ * Tiers are set by points per game, which without a floor would hand a Hall of
+ * Fame card to anyone who had one big afternoon and then vanished. Nine games
+ * is half a season: enough that an average means something, low enough that a
+ * genuinely elite player who missed six weeks still competes for the top tier
+ * rather than being punished for being injured.
+ *
+ * Players below the floor still get cards — they played, so they are
+ * collectible — but they are ranked beneath everyone who cleared it, which in
+ * practice makes them Bronze.
+ */
+export const MIN_GAMES_FOR_TIER = 9;
 
 /** Cards dealt by an ordinary pack, whatever its tier. */
 export const CARDS_PER_PACK = 5;

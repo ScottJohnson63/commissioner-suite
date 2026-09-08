@@ -14,8 +14,9 @@
 //
 // On top of that sit two supplies that are not weekly: a one-off starter grant
 // the first time a member opens the game, and Sleeper bonus packs earned from
-// results. Each is counted separately, because each carries its own promise
-// about how many of its packs are Gold.
+// results. Each is counted separately, because a Gold promise counts only its
+// own supply — and only the starter grant still makes one. The ration and the
+// bonus packs are rolled straight, at GUARANTEED_GOLD_PACKS of zero.
 //
 // This replaced a formula that derived the ration from the size of the pool and
 // the number of players. The formula was defensible and nobody could tell you
@@ -26,90 +27,25 @@
 // plus the starter grant and the wildcards they pull, a single member claims
 // roughly 250 cards over a season against a pool of 1,613. See docs/CARDS.md —
 // a twelve-team league still wants the 1999+ backfill behind it.
+//
+// The numbers themselves live in ration.ts, which touches no database so that
+// the Draft Deck tour can import them. This module is the queries that spend
+// them, and re-exports them for callers that already look here.
 
 import { prisma } from '@/lib/prisma';
 import { eligiblePlayerWhere } from '@/lib/cards/eligibility';
+import {
+  PACKS_PER_WEEK, STARTER_PACKS, packsForWeek, rollWildcard,
+} from '@/lib/cards/ration';
 
-/** The weekly ration, before the wildcard. Paid from FIRST_RATION_WEEK on. */
-export const PACKS_PER_WEEK = 2;
-
-/**
- * The first week that pays a ration.
- *
- * Week 1 is the starter grant's week and pays nothing on top of it. Stated as a
- * week number rather than a boolean because the game's weeks are the NFL's, and
- * a member who joins in week 6 gets week 6's ration — this delays the ration by
- * a week of the season, not by a week of the member's membership.
- */
-export const FIRST_RATION_WEEK = 2;
-
-/**
- * Ration packs each week guaranteed to be Gold or better. Now none.
- *
- * Delivered by a pity timer rather than by dealing the week's packs up front —
- * see mustForceGold in service.ts. At a quota of zero the timer is inert:
- * mustForceGold returns false on a zero quota before it reads anything, so
- * every ration pack is genuinely rolled.
- *
- * **This was 1, and at a two-pack ration it inverted the rarity ladder.**
- *
- * The timer forces a pack whenever the supply can no longer reach its quota.
- * With two packs and a quota of one, the first pack is a free roll and the
- * second is forced unless the first already landed Gold or better — which it
- * did 15% of the time. So 85% of second ration packs were forced to Gold,
- * roughly half of every pack in the game became a Gold pack, and Gold cards
- * (19% of everything dealt) ended up commoner than Silver ones (15%). Silver is
- * the tier below Gold and was arriving less often than the tier above it.
- *
- * The guarantee was sound at the old five-pack ration, where it was a 20%
- * floor. At two packs it is a 50% floor, which is not a floor but a redesign.
- * The ration is small enough now that a member notices every pack, so the
- * honest fix is to let all of them roll and widen the Silver band instead —
- * see PACK_DROP_WEIGHT in tiers.ts, which is balanced against this being 0.
- *
- * The starter grant keeps its own quota. Five packs at a quota of two is still
- * a real floor rather than a majority, and a new member's first handful is the
- * one place a guarantee earns its distortion — see STARTER_GUARANTEED_GOLD.
- */
-export const GUARANTEED_GOLD_PACKS = 0;
-
-/**
- * The ration for one week: nothing in week 1, PACKS_PER_WEEK from week 2 on.
- *
- * The whole of the week-1 rule lives here, so every caller that sizes or
- * reports a grant goes through one function rather than each repeating the
- * comparison.
- */
-export function packsForWeek(week: number): number {
-  return week < FIRST_RATION_WEEK ? 0 : PACKS_PER_WEEK;
-}
-
-/**
- * The welcome grant: packs a member gets once, the first time they open the
- * game, and the number of those guaranteed Gold or better.
- *
- * Separate from the weekly ration in every sense — its own grant row, its own
- * counters, and its own Gold quota. A new member opening five packs of mostly
- * Bronze has nothing to field and no reason to come back; two guaranteed Golds
- * is enough to start a lineup with.
- *
- * Each supply's Gold promise counts only its own packs. A starter Gold does not
- * satisfy the week's guarantee, and neither does a Sleeper bonus — otherwise a
- * member's first week would quietly be worse than their second.
- */
-export const STARTER_PACKS = 5;
-export const STARTER_GUARANTEED_GOLD = 2;
-
-/** Faces on the wildcard die — and so the most extra packs it can grant. */
-export const WILDCARD_SIDES = 6;
-
-/**
- * Weeks in the fantasy regular season.
- *
- * Not used to size the ration any more; kept because the season-depth maths in
- * the docs and the pool warnings are stated in terms of it.
- */
-export const SEASON_WEEKS = 18;
+// The tunable numbers moved to ration.ts, which imports no Prisma, so the
+// Draft Deck tour can state them rather than retype them — see the note there.
+// Re-exported here because this is where every caller already looks for them.
+export {
+  PACKS_PER_WEEK, FIRST_RATION_WEEK, GUARANTEED_GOLD_PACKS,
+  STARTER_PACKS, STARTER_GUARANTEED_GOLD, WILDCARD_SIDES, SEASON_WEEKS,
+  packsForWeek, rollWildcard,
+} from '@/lib/cards/ration';
 
 /**
  * The game season, which tracks the NFL season the rest of the app runs on.
@@ -121,16 +57,6 @@ export const SEASON_WEEKS = 18;
  */
 export function gameSeason(): number {
   return parseInt(process.env.NFL_SEASON || String(new Date().getFullYear()), 10);
-}
-
-/**
- * Rolls the wildcard die.
- *
- * Injectable RNG for the same reason the pack odds take one: a die that cannot
- * be pinned in a test is a die nobody can check.
- */
-export function rollWildcard(rng: () => number = Math.random): number {
-  return 1 + Math.floor(rng() * WILDCARD_SIDES);
 }
 
 /**

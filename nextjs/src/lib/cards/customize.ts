@@ -29,6 +29,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { ensureGrant } from '@/lib/cards/allowance';
+import { MAX_CUSTOMIZATION_PACKS } from '@/lib/cards/ration';
 
 /**
  * Whether a card came with no portrait, and so is one the reward is for.
@@ -49,43 +50,10 @@ export function isUnillustrated(headshot: string | null | undefined): boolean {
  */
 export const PACKS_PER_CUSTOMIZATION = 1;
 
-/**
- * The most a member can earn this way in a season.
- *
- * **This number is a pool-safety limit, not a game-feel one.** Ownership is
- * exclusive, so every extra pack is cards permanently out of everyone else's
- * reach, and Silver is the tier that runs out first — 2,160 cards against a
- * dealt mix that is 28.6% Silver. A tier that empties is dropped from
- * `rollPackTier` entirely, which collapses the game back to Bronze mid-season.
- *
- * Sized against a 70% Silver ceiling for a **ten-member** league, counting
- * every supply — the ration, the starter grant, the wildcards those pull, and
- * the Sleeper bonus. Silver drained over a season, by how often a member wins
- * one of the two weekly bonuses:
- *
- *   | cap | no bonuses | 25% | 50% | 75% |
- *   |-----|-----------|-----|-----|-----|
- *   | 0   | 38%       | 46% | 54% | 62% |
- *   | 15  | 52%       | 60% | 69% | 77% |
- *   | 20  | 57%       | 65% | 73% | 82% |
- *
- * 50% is the realistic planning figure: a member wins about half their matchups
- * by definition, and 100 PPR points is a low bar. Fifteen is the largest round
- * number holding the ceiling there.
- *
- * This was briefly 6, sized when the Sleeper bonus was still a ten-card pack
- * with a Silver floor — that one pack drew 3.26 Silver against an ordinary
- * pack's 1.43 and ate most of the budget on its own. Normalising it to an
- * ordinary five-card pack is what paid for the cap being this size.
- *
- * ⚠️ **Sized for ten members.** At twelve the same cap puts Silver at 82%, past
- * the ceiling — a growing league should drop this to about 4, or find the room
- * somewhere else. The figures fold in a ×1.46 wildcard multiplier, because
- * reward packs pull dice of their own and compound.
- *
- * Raising this means re-running that arithmetic. See docs/CARDS.md.
- */
-export const MAX_CUSTOMIZATION_PACKS = 15;
+// The cap moved to ration.ts, which imports no Prisma, so the Draft Deck tour
+// can state it rather than retype it. Re-exported because this is where every
+// caller already looks for it — the arithmetic behind the number is there.
+export { MAX_CUSTOMIZATION_PACKS } from '@/lib/cards/ration';
 
 /** Longest nickname accepted. Long enough for a joke, short enough for the band. */
 export const MAX_NICKNAME_LENGTH = 32;

@@ -10,6 +10,9 @@
 
 'use client';
 
+import type { CardTier } from '@prisma/client';
+import { TIER_LABEL, TIER_MAX_RANK, TIER_ORDER } from '@/lib/cards/tiers';
+
 const INK   = '#e8e6df';
 const DIM   = '#3a3a3c';
 const FAINT = '#1e1e20';
@@ -95,32 +98,233 @@ export function CardsArt() {
   );
 }
 
+/** One colour per tier, matching the cards and the deck's tier tiles. */
+const TIER_COLOR: Record<CardTier, string> = {
+  HALL_OF_FAME: LIME,
+  GOLD:         '#e0b64a',
+  SILVER:       '#b8bcc4',
+  BRONZE:       '#a2683f',
+};
+
+/** The rank track: where it starts, how wide, and the share the ranked bands use. */
+const TRACK_X = 60;
+const TRACK_W = 252;
+const RANKED_SHARE = 0.78;
+/** Narrowest a block may be drawn and still hold its range label. */
+const BLOCK_MIN = 32;
+
 /**
- * The tier ladder, rarest first.
+ * The rank band each tier covers, walked in TIER_ORDER.
  *
- * The bar length is how common the tier is, not how good it is — the point of
- * the picture is that the shortest bar is the one worth chasing. Labels sit in
- * their own column to the left so the Hall of Fame bar can be as short as it
- * deserves without cramping its name.
+ * The last tier is open-ended — TIER_MAX_RANK has no entry for Bronze, which is
+ * what "everyone else" means — so it is labelled from its first rank up and
+ * runs to the end of the track.
+ */
+function tierBands() {
+  let first = 1;
+  return TIER_ORDER.map((tier) => {
+    const max = TIER_MAX_RANK[tier as keyof typeof TIER_MAX_RANK] as number | undefined;
+    const band = { tier, first, max, label: max === undefined ? `${first}+` : `${first}–${max}` };
+    if (max !== undefined) first = max + 1;
+    return band;
+  });
+}
+
+/**
+ * The tier ladder as a rank axis: each tier's block sits where its band falls.
+ *
+ * Rarest first, and offset — Hall of Fame starts at the left because it starts
+ * at rank 1, and every tier below begins where the one above it ended. That
+ * staircase is the point of the picture: the tiers are consecutive slices of
+ * one ranking, not four separate awards. The range sits inside its own block,
+ * in the tier's colour and bold, so the number and the thing it describes are
+ * the same object.
+ *
+ * It used to letter each tier with a point value — "Hall of Fame, 100 pts" —
+ * directly above the paragraph saying a tier is not itself worth points. Those
+ * numbers were invented: nothing in the game scores a card by its tier.
+ *
+ * Bands, widths and labels all come from TIER_MAX_RANK, so the drawing says the
+ * same thing as the rule and keeps saying it when the rule is retuned. Blocks
+ * are floored at BLOCK_MIN so a narrow band still fits its label; the ranked
+ * bands share RANKED_SHARE of the track and the open-ended tier takes the rest.
  */
 export function TierArt() {
-  const tiers = [
-    { label: 'Hall of Fame', color: LIME,      bar: 24,  pts: '100' },
-    { label: 'Gold',         color: '#e0b64a', bar: 50,  pts: '40'  },
-    { label: 'Silver',       color: '#b8bcc4', bar: 94,  pts: '15'  },
-    { label: 'Bronze',       color: '#a2683f', bar: 166, pts: '4'   },
-  ];
+  const bands = tierBands();
+  const lastRanked = Math.max(...bands.map((b) => b.max ?? 0), 1);
+  const perRank = (TRACK_W * RANKED_SHARE) / lastRanked;
+  const startX = (first: number) => TRACK_X + (first - 1) * perRank;
+  const open = bands.find((b) => b.max === undefined);
+
   return (
     <svg viewBox="0 0 320 110" width="100%" height="110" role="img"
-      aria-label="Card tiers, from Hall of Fame down to Bronze">
-      {tiers.map((t, i) => (
-        <g key={t.label} transform={`translate(24 ${14 + i * 22})`}>
-          <text x="0" y="11.5" fill={t.color} fontSize="9">{t.label}</text>
-          <rect x="76" y="1" width={t.bar} height="14" rx="3"
-            fill={`${t.color}22`} stroke={t.color} />
-          <text x={82 + t.bar} y="11.5" fill={DIM} fontSize="8">{t.pts} pts</text>
-        </g>
-      ))}
+      aria-label="Card tiers, and the season-finish ranks that earn each one">
+      {/* The open-ended tier's block dissolves at the right rather than ending
+          in a border. A rank axis has to stop somewhere and that tier does not,
+          so a hard right edge would draw it as the narrowest band on the chart
+          when it is the one that holds most of the pool. */}
+      {open && (
+        <defs>
+          <linearGradient id="ut-tier-open-fill" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0.45" stopColor={TIER_COLOR[open.tier]} stopOpacity="0.13" />
+            <stop offset="1" stopColor={TIER_COLOR[open.tier]} stopOpacity="0" />
+          </linearGradient>
+          <linearGradient id="ut-tier-open-stroke" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0.45" stopColor={TIER_COLOR[open.tier]} stopOpacity="1" />
+            <stop offset="1" stopColor={TIER_COLOR[open.tier]} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+      )}
+
+      {bands.map((b, i) => {
+        const color = TIER_COLOR[b.tier];
+        const isOpen = b.max === undefined;
+        const x = startX(b.first);
+        const width = isOpen
+          ? Math.max(BLOCK_MIN, TRACK_X + TRACK_W - x)
+          : Math.max(BLOCK_MIN, (b.max! - b.first + 1) * perRank);
+        // The open block's label sits over its solid end, not the middle of a
+        // shape whose right half has faded out.
+        const labelX = isOpen ? x + Math.min(width, BLOCK_MIN) / 2 + 4 : x + width / 2;
+        return (
+          <g key={b.tier} transform={`translate(8 ${14 + i * 22})`}>
+            <text x="0" y="11.5" fill={color} fontSize="9">{TIER_LABEL[b.tier]}</text>
+            <rect x={x} y="1" width={width} height="14" rx="3"
+              fill={isOpen ? 'url(#ut-tier-open-fill)' : `${color}22`}
+              stroke={isOpen ? 'url(#ut-tier-open-stroke)' : color} />
+            <text x={labelX} y="11.5" fill={color} fontSize="9" fontWeight="700"
+              textAnchor="middle">{b.label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+export function WildCardArt() {
+  // The pips of a six, as unit offsets within the die's face.
+  const six = [
+    [-1, -1], [-1, 0], [-1, 1],
+    [1, -1], [1, 0], [1, 1],
+  ];
+
+  return (
+    <svg viewBox="0 0 320 110" width="100%" height="110" role="img"
+      aria-label="A pack, the wildcard die it can hide, and the packs it pays out">
+      {/* The pack. */}
+      <g>
+        <rect x="40" y="26" width="52" height="62" rx="5" fill="#0a0a0b" stroke={LIME} />
+        <rect x="48" y="36" width="36" height="6" rx="3" fill={LIME} opacity="0.55" />
+        <rect x="48" y="48" width="26" height="5" rx="2.5" fill={DIM} />
+        <text x="66" y="76" fill={LIME} fontSize="9" fontWeight="700" textAnchor="middle">
+          PACK
+        </text>
+      </g>
+
+      <g stroke={DIM} strokeWidth="1.4" fill="none">
+        <path d="M106 57h34" />
+        <path d="M134 51l6 6-6 6" />
+      </g>
+
+      {/* The die, showing its best face. */}
+      <g>
+        <rect x="154" y="28" width="58" height="58" rx="10" fill="#0a0a0b" stroke={LIME} />
+        {six.map(([dx, dy]) => (
+          <circle key={`${dx},${dy}`} cx={183 + dx * 14} cy={57 + dy * 16} r="3.6" fill={LIME} />
+        ))}
+      </g>
+
+      <g stroke={DIM} strokeWidth="1.4" fill="none">
+        <path d="M226 57h34" />
+        <path d="M254 51l6 6-6 6" />
+      </g>
+
+      <text x="288" y="53" fill={INK} fontSize="12" fontWeight="700" textAnchor="middle">
+        1–6
+      </text>
+      <text x="288" y="67" fill={DIM} fontSize="8" textAnchor="middle">
+        packs
+      </text>
+    </svg>
+  );
+}
+
+/**
+ * The three numbers on a card face, circled and numbered.
+ *
+ * A demo card rather than the real PlayerCard: this is a diagram, and it has to
+ * hold callout rings and lead lines that the component has no business knowing
+ * about. It mirrors the real face's arrangement — the PPG block and the season
+ * down the top-left, the finish in the top-right — so a member can find the
+ * same three numbers on their own cards.
+ *
+ * Taller than the other art, because a card is 2:3 and a legible one does not
+ * fit in a 110px band.
+ *
+ * The badge numbers come from CARD_DETAIL_CALLOUTS' order, and the slide builds
+ * its bullets from the same array, so the ring labelled 2 and the bullet
+ * labelled 2 cannot come to mean different things.
+ */
+export const CARD_DETAIL_CALLOUTS = [
+  "Player's average Points Per Game that year",
+  "The year associated with the card's PPG",
+  "Player's rank in his position",
+] as const;
+
+/** Where each callout's ring sits, and which side its badge hangs off. */
+const CARD_DETAIL_MARKS = [
+  // Ring 1 takes in the "PPG" caption as well as the number, because the
+  // caption is what tells you the number is an average.
+  { cx: 133, cy: 40, rx: 30, ry: 18, badgeX: 52,  from: 'left'  as const },
+  { cx: 118, cy: 76, rx: 17, ry: 9,  badgeX: 52,  from: 'left'  as const },
+  { cx: 202, cy: 36, rx: 16, ry: 12, badgeX: 274, from: 'right' as const },
+];
+
+export function CardDetailArt() {
+  const GOLD = '#e0b64a';
+
+  return (
+    <svg viewBox="0 0 320 220" width="100%" height="220" role="img"
+      aria-label="A card face with its points per game, season and rank circled">
+      {/* ── The card ── */}
+      <rect x="95" y="12" width="130" height="195" rx="9" fill="#111112" stroke={GOLD} />
+      <rect x="99" y="16" width="122" height="187" rx="7" fill="#0a0a0b" />
+
+      {/* Top-left block: the headline number, then who and when. */}
+      <text x="107" y="42" fill={GOLD} fontSize="19" fontWeight="800">18.4</text>
+      <text x="108" y="51" fill={GOLD} fontSize="6" fontWeight="700" opacity="0.75">PPG</text>
+      <text x="107" y="64" fill={GOLD} fontSize="7.5" fontWeight="700">WR</text>
+      <text x="107" y="78" fill={GOLD} fontSize="7" opacity="0.7">2025</text>
+
+      {/* Top-right: where he finished at his position. */}
+      <text x="215" y="42" fill={GOLD} fontSize="13" fontWeight="800" textAnchor="end"
+        opacity="0.6">#7</text>
+
+      {/* Portrait, as a silhouette. */}
+      <circle cx="160" cy="119" r="20" fill={GOLD} opacity="0.18" />
+      <path d="M124 172c0-20 16-33 36-33s36 13 36 33z" fill={GOLD} opacity="0.18" />
+
+      {/* Name band. */}
+      <rect x="99" y="176" width="122" height="27" fill="#000" opacity="0.55" />
+      <rect x="126" y="183" width="68" height="7" rx="3.5" fill={GOLD} opacity="0.55" />
+      <rect x="146" y="195" width="28" height="5" rx="2.5" fill={DIM} />
+
+      {/* ── Callouts ── */}
+      {CARD_DETAIL_MARKS.map((m, i) => {
+        const edge = m.from === 'left' ? m.cx - m.rx : m.cx + m.rx;
+        const badgeEdge = m.from === 'left' ? m.badgeX + 9 : m.badgeX - 9;
+        return (
+          <g key={i}>
+            <ellipse cx={m.cx} cy={m.cy} rx={m.rx} ry={m.ry}
+              fill="none" stroke={LIME} strokeWidth="1.6" />
+            <line x1={badgeEdge} y1={m.cy} x2={edge} y2={m.cy}
+              stroke={LIME} strokeWidth="1.2" opacity="0.55" />
+            <circle cx={m.badgeX} cy={m.cy} r="9" fill={LIME} />
+            <text x={m.badgeX} y={m.cy + 3.5} fill="#0a0a0b" fontSize="10" fontWeight="800"
+              textAnchor="middle">{i + 1}</text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
@@ -154,44 +358,6 @@ export function DeckTabsArt({ active }: {
       <rect x="32" y="83" width="30" height="6" rx="3" fill={LIME} opacity="0.6" />
       <rect x="126" y="83" width="44" height="6" rx="3" fill={DIM} />
       <rect x="220" y="83" width="38" height="6" rx="3" fill={DIM} />
-    </svg>
-  );
-}
-
-/**
- * The Commissioner page's tab bar, with one tab lit.
- *
- * Its own art rather than a variant of DeckTabsArt: this is a different page
- * with a different title above the bar, and the point of the slide that uses it
- * is that the controls are somewhere else now.
- */
-export function CommissionerTabsArt({ active }: {
-  active: 'schedules' | 'divisions' | 'lottery' | 'draft-deck';
-}) {
-  const tabs = [
-    { id: 'schedules'  as const, label: 'Schedules',  x: 24,  w: 62 },
-    { id: 'divisions'  as const, label: 'Divisions',  x: 98,  w: 60 },
-    { id: 'lottery'    as const, label: 'Lottery',    x: 170, w: 48 },
-    { id: 'draft-deck' as const, label: 'Draft Deck', x: 230, w: 66 },
-  ];
-  return (
-    <svg viewBox="0 0 320 110" width="100%" height="110" role="img"
-      aria-label={`The ${active} tab of the Commissioner page`}>
-      <text x="24" y="24" fill={INK} fontSize="12" fontWeight="600">Commissioner</text>
-
-      {tabs.map((t) => (
-        <g key={t.id}>
-          <text x={t.x} y="52" fill={t.id === active ? INK : DIM} fontSize="11"
-            fontWeight={t.id === active ? 600 : 400}>{t.label}</text>
-          {t.id === active && <rect x={t.x - 4} y="60" width={t.w} height="2" rx="1" fill={LIME} />}
-        </g>
-      ))}
-
-      <rect x="24" y="61" width="272" height="1" fill={FAINT} />
-      <rect x="24" y="74" width="130" height="24" rx="4" fill="#0a0a0b" stroke={FAINT} />
-      <rect x="166" y="74" width="130" height="24" rx="4" fill="#0a0a0b" stroke={FAINT} />
-      <rect x="34" y="83" width="52" height="6" rx="3" fill={LIME} opacity="0.6" />
-      <rect x="176" y="83" width="64" height="6" rx="3" fill={DIM} />
     </svg>
   );
 }

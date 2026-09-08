@@ -5,8 +5,8 @@
 // One collectible card.
 //
 // Laid out the way a trading card is: the number that matters in the top-left
-// corner, the player filling the middle, and the name across a band at the
-// bottom. Everything is sized in `em` against a root font-size derived from the
+// corner, where he finished in the top-right, the player filling the middle,
+// and the name across a band at the bottom. Everything is sized in `em` against a root font-size derived from the
 // card's width, so the same component renders as a 96px thumbnail in the
 // collection grid and a 300px hero in the pack opener with no second layout.
 
@@ -257,20 +257,26 @@ export function PlayerCard({
           </span>
         </div>
 
-        {/* Jersey number worn that season, top-right. Defenses have none, and
-            neither does a player whose roster row is missing, so the slot is
-            simply left empty rather than filled with a placeholder. */}
-        {card.jerseyNumber != null && (
-          <div
-            className="absolute z-10 font-black"
-            style={{
-              top: '0.45em', right: '0.55em', fontSize: '0.95em',
-              color: tier.ink, opacity: 0.5, letterSpacing: '-0.04em',
-            }}
-          >
-            {card.jerseyNumber}
-          </div>
-        )}
+        {/* Where the player finished at his position that season, top-right.
+            This was the jersey number he wore, which looked like a stat and was
+            not one — nothing in the game reads it, and two cards a slot apart
+            in the rankings gave no hint of it. The rank is the number the
+            corner was worth spending on: it is what sets the tier (see
+            rankSeason in lib/cards/pool.ts), so the frame, the PPG in the
+            opposite corner and this all describe the same finish.
+
+            Written "#7" to match the detail view's own line, and never absent —
+            every card in the pool is ranked, so unlike the jersey number there
+            is no empty case to handle. */}
+        <div
+          className="absolute z-10 font-black"
+          style={{
+            top: '0.45em', right: '0.55em', fontSize: '0.95em',
+            color: tier.ink, opacity: 0.5, letterSpacing: '-0.04em',
+          }}
+        >
+          #{card.seasonRank}
+        </div>
 
         {/* ── Portrait ── */}
         <div className="relative flex-1 overflow-hidden" style={{ marginTop: '1.15em' }}>

@@ -89,3 +89,25 @@ describe('PlayerCard portrait', () => {
     expect(screen.getAllByText('TEN').length).toBeGreaterThan(0);
   });
 });
+
+// The top-right corner used to print the jersey number worn that season. It is
+// the season finish now — the number that sets the tier, so the frame, the PPG
+// in the opposite corner and this corner all describe the same finish.
+describe('PlayerCard corners', () => {
+  it('prints the season rank in the top right, hashed', () => {
+    render(<PlayerCard card={card({ seasonRank: 7 })} />);
+    expect(screen.getByText('#7')).toBeTruthy();
+  });
+
+  // Unlike the jersey number it replaced, a rank is never missing — every card
+  // in the pool is ranked — so there is no empty-corner case to fall back to.
+  it('shows it even for a card with no jersey number', () => {
+    render(<PlayerCard card={card({ jerseyNumber: null, seasonRank: 142 })} />);
+    expect(screen.getByText('#142')).toBeTruthy();
+  });
+
+  it('no longer prints the jersey number', () => {
+    render(<PlayerCard card={card({ jerseyNumber: 27, seasonRank: 14 })} />);
+    expect(screen.queryByText('27')).toBeNull();
+  });
+});

@@ -66,8 +66,7 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 export default function CardsPage() {
-  const { data: session, status } = useSession();
-  const isCommissioner = session?.user?.role === 'COMMISSIONER';
+  const { status } = useSession();
   const [data, setData] = useState<CollectionResponse | null>(null);
   const [busySlot, setBusySlot] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -329,7 +328,7 @@ export default function CardsPage() {
   const rewardsRemaining = Math.max(0, MAX_CUSTOMIZATION_PACKS - finished);
 
   return (
-    <Shell tab={tab} onTab={setTab} isCommissioner={isCommissioner}>
+    <Shell tab={tab} onTab={setTab}>
       {/* ── Packs ──────────────────────────────────────────────────────────
           Kept mounted rather than unmounted on a tab switch: the opener holds
           a torn pack and a half-turned reveal in local state, and looking
@@ -616,13 +615,11 @@ export default function CardsPage() {
  * rather than read from a context.
  */
 function Shell({
-  children, tab, onTab, isCommissioner,
+  children, tab, onTab,
 }: {
   children: React.ReactNode;
   tab?: Tab;
   onTab?: (t: Tab) => void;
-  /** Only the tour reads this now — see the extra slide in DraftDeckIntro. */
-  isCommissioner?: boolean;
 }) {
   const tabbed = tab !== undefined && onTab !== undefined;
 
@@ -713,7 +710,7 @@ function Shell({
 
       {/* Rendered from the shell so the tour is available in every state of the
           page — loading, signed out and errored included. */}
-      <DraftDeckIntro isCommissioner={isCommissioner ?? false} />
+      <DraftDeckIntro />
     </div>
   );
 }

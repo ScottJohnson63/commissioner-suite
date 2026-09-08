@@ -60,6 +60,34 @@ export const ROSTER_SIZE = ROSTER_SLOTS.length;
 /** Every slot id, for validating what a request asked for. */
 export const ROSTER_SLOT_IDS: readonly string[] = ROSTER_SLOTS.map((s) => s.id);
 
+/** A run of slots sharing a label, in lineup order. */
+export interface LineupGroup {
+  label: string;
+  count: number;
+}
+
+/**
+ * The lineup's shape — "one QB, two RB … three FLEX" — as counted labels.
+ *
+ * Derived from ROSTER_SLOTS rather than written down anywhere, so the Draft
+ * Deck tour describes the lineup a member actually gets. Changing the array
+ * above changes the explanation with it, which is the point: the tour's whole
+ * job is to state the rules, and a rule it states from memory is one that can
+ * go stale. See issue #43.
+ *
+ * Grouped by label rather than by accepted positions, because the label is what
+ * the member sees on the slot — RB1 and RB2 are two "RB" slots to them.
+ */
+export function lineupShape(): LineupGroup[] {
+  const groups: LineupGroup[] = [];
+  for (const slot of ROSTER_SLOTS) {
+    const last = groups[groups.length - 1];
+    if (last && last.label === slot.label) last.count += 1;
+    else groups.push({ label: slot.label, count: 1 });
+  }
+  return groups;
+}
+
 /** The slot with this id, or null if there is no such slot. */
 export function findSlot(slotId: string): RosterSlotDef | null {
   return ROSTER_SLOTS.find((s) => s.id === slotId) ?? null;
@@ -94,8 +122,8 @@ export interface FilledSlot {
 /**
  * Lays a set of slot assignments out in lineup order, including the empties.
  *
- * Returns all ten slots whether filled or not, because the UI draws an empty
- * slot as a thing you can click rather than as an absence.
+ * Returns every slot whether filled or not, because the UI draws an empty slot
+ * as a thing you can click rather than as an absence.
  */
 export function layoutRoster(
   assignments: Map<string, RosterScorable>,
