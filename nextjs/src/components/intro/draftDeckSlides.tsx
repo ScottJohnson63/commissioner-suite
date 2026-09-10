@@ -12,8 +12,8 @@
 //
 // So no number and no rule below is typed out. Every one is read from the
 // module that enforces it — tiers.ts for the bands and the games floor,
-// ration.ts for the wildcard die and the portrait cap, weeklyGame.ts for the
-// clock. Prose that depends on a value being what it is today branches on the
+// ration.ts for the wildcard die, the portrait cap and the Sleeper bonuses,
+// weeklyGame.ts for the clock. Prose that depends on a value being what it is today branches on the
 // constant rather than assuming it, so retuning the game rewrites the
 // explanation instead of falsifying it.
 //
@@ -33,7 +33,9 @@ import {
 import {
   MIN_GAMES_FOR_TIER, TIER_LABEL, TIER_MAX_RANK, TIER_ORDER, WILDCARD_PACK_TIERS,
 } from '@/lib/cards/tiers';
-import { MAX_CUSTOMIZATION_PACKS } from '@/lib/cards/ration';
+import {
+  BONUS_KINDS, HIGH_SCORE_THRESHOLD, MAX_CUSTOMIZATION_PACKS, type BonusKind,
+} from '@/lib/cards/ration';
 import {
   GAME_TIME_ZONE_LABEL, LOCK_DAY_LABEL, LOCK_HOUR, LOCK_MINUTE,
   REVEAL_DAY_LABEL, REVEAL_HOUR, clockLabel,
@@ -84,6 +86,45 @@ function wildcardFloor(): string {
 }
 
 /**
+ * How each Sleeper bonus is earned, as a clause the sentence below can join.
+ *
+ * Keyed by BonusKind rather than written out as a sentence, so a third bonus
+ * cannot be added to the game without TypeScript pointing at the line that
+ * would have gone on describing two.
+ */
+const BONUS_CLAUSE: Record<BonusKind, string> = {
+  WIN:        'win your matchup',
+  HIGH_SCORE: `score over ${HIGH_SCORE_THRESHOLD} points`,
+};
+
+/**
+ * The Sleeper bonuses in one line: what earns a pack, and how many.
+ *
+ * Built from BONUS_KINDS in order, so the sentence lists exactly the bonuses
+ * claimBonuses awards and drops one the moment the game stops awarding it. The
+ * two rules are independent — bonus.ts writes a PackBonus row per kind — so
+ * "each" is the load-bearing word: a week that wins and clears the threshold is
+ * worth one pack for each, not one pack for both.
+ *
+ * "Any of your leagues" is the other rule worth stating: the unique key on
+ * PackBonus is per member and week, so winning in four Sleeper leagues is still
+ * one win pack.
+ */
+function bonusLine(): string {
+  const clauses = BONUS_KINDS.map((kind) => BONUS_CLAUSE[kind]);
+  const earned = clauses.length > 1
+    ? `${clauses.slice(0, -1).join(', ')} or ${clauses[clauses.length - 1]}`
+    : clauses[0];
+  return `${cap(earned)} in any of your Sleeper leagues — each earns an extra`
+    + ' pack for that week.';
+}
+
+/** First letter up — the clauses above are written to be joined mid-sentence. */
+function cap(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
  * One bullet per tier: its name and the placings that earn it.
  *
  * Walked in TIER_ORDER off TIER_MAX_RANK, so each band starts where the one
@@ -126,6 +167,7 @@ export function draftDeckSlides(): IntroSlide[] {
               'Outscore the league at the end of the season.',
             ]}
           />
+          <p className="mt-3 italic">{bonusLine()}</p>
         </>
       ),
     },
