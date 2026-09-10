@@ -331,12 +331,41 @@ mid-reveal cannot strand one.
 ### Sleeper bonus packs
 
 Two rules, each worth one extra pack a week, driven by what the member actually
-did in Sleeper:
+did in Sleeper the week just gone:
 
 | Rule | Earned by |
 |------|-----------|
 | `WIN` | Winning a matchup in any of their Sleeper leagues |
 | `HIGH_SCORE` | Scoring over **100** in any of their Sleeper leagues |
+
+**Read off the week that finished, never the one in progress.** Sleeper's
+matchup endpoint reports live points, so a member ahead by 30 on Sunday
+afternoon with their opponent's running back still to play satisfied
+`didRosterWin`, and a single Thursday-night receiver could carry one league past
+100 before the rest of the roster had kicked off. Nothing revokes a `PackBonus`
+row — only a full reset clears them — so a pack paid for a lead that evaporated
+by the evening stayed in the account. That was issue #52.
+
+So the check now takes two weeks rather than one, and they are not the same
+week:
+
+| | Which week | Why |
+|---|---|---|
+| Scored | The last **completed** week | A finished result cannot be contradicted by the rest of the afternoon |
+| Credited | The **current** week's grant | Same rule as the wildcard die: packs on a grant a member can no longer reach are not a prize |
+
+The `PackBonus` row is keyed on the week that earned it, which is what makes the
+award once-per-week and is also why the change needed no backfill: rows written
+under the old live-week reading already sit under the week they were scored
+from, so a member paid early for week 3 is simply held to have week 3's packs
+and is not paid again.
+
+Two consequences worth stating out loud. In NFL week 1 nothing is earned — the
+completed week floors at 1, and there is no finished week behind it — so the
+first bonus of a season lands in week 2 for week 1's results. And a member who
+does not open the game for a fortnight loses the older week's bonus rather than
+banking it, which is the same rule the ration already follows: an allowance, not
+a balance.
 
 **"Any" is doing real work.** A member in four leagues who wins all four gets
 *one* win pack, not four. That is enforced by the unique key on
