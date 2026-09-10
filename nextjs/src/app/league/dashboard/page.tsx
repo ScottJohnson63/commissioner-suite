@@ -314,6 +314,7 @@ export default function LeagueDashboardPage() {
           trendingLoading={trendingLoading}
           trendingError={trendingError}
           onRetryTrending={fetchTrending}
+          isAuthed={isAuthed}
         />
       )}
 
