@@ -63,7 +63,7 @@ function collection(over: Partial<CollectionResponse> = {}): CollectionResponse 
       { userId: 'u1', name: 'Scott', rank: 1, cards: 5, rosterPpg: 0, deckAvgPpg: 0,
         started: 0, seasonPoints: 42.5, weeksPlayed: 1, byTier: EMPTY_TIERS, isYou: true },
     ],
-    bonus: { kinds: [], awarded: [], threshold: 120 },
+    bonus: { kinds: [], awarded: [], week: null, threshold: 120 },
     weekly: {
       week: 1, phase: 'OPEN', lockAt: '', revealAt: '', lockLabel: '', revealLabel: '',
       seasonOver: false, submitted: null, revealedWeeks: [], retired: 0,

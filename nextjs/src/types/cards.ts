@@ -119,7 +119,7 @@ export type PackKind = 'STARTER' | 'BONUS' | 'RATION';
 /** Why a member earned a bonus pack. */
 export type BonusKind = 'WIN' | 'HIGH_SCORE';
 
-/** A bonus pack earned from a Sleeper result this week. */
+/** A bonus pack earned from a Sleeper result in the week just completed. */
 export interface BonusAwardDto {
   kind: BonusKind;
   sleeperLeagueId: string | null;
@@ -232,10 +232,16 @@ export interface LeaderboardEntryDto {
 
 /** Bonus packs held this week, and what earned them. */
 export interface BonusStateDto {
-  /** Rules satisfied this week. */
+  /** Rules satisfied in the week these were scored from. */
   kinds: BonusKind[];
   /** Awards granted by the request that returned this — for a "you earned!" toast. */
   awarded: BonusAwardDto[];
+  /**
+   * The completed week the rules were read from — one behind the allowance's
+   * week, and null when no week has finished yet. Bonuses are scored on results
+   * that can no longer change; the packs themselves land on the current week.
+   */
+  week: number | null;
   /** The score a member must beat for the high-score pack. */
   threshold: number;
 }
@@ -249,7 +255,7 @@ export interface CollectionResponse {
   roster: RosterSlotDto[];
   /** The season standings, computed alongside the deck rather than separately. */
   standings: LeaderboardEntryDto[];
-  /** Sleeper bonus packs earned this week. */
+  /** Sleeper bonus packs earned from the completed week's results. */
   bonus: BonusStateDto;
   /** The weekly submission game: this week's deadline and what was submitted. */
   weekly: WeeklyStateDto;
