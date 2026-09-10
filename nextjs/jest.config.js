@@ -62,7 +62,7 @@ const config = {
         '<rootDir>/tests/components/**/*.test.tsx',
         '<rootDir>/tests/hooks/**/*.test.ts',
       ],
-      setupFiles: ['<rootDir>/tests/setup.ts'],
+      setupFiles: ['<rootDir>/tests/setup.ts', '<rootDir>/tests/setupJsdom.ts'],
       // setupFilesAfterEnv runs after Jest's test environment is ready, making
       // jest-dom's custom matchers (toBeInTheDocument etc.) available globally.
       setupFilesAfterEnv: ['<rootDir>/tests/setupDom.ts'],
