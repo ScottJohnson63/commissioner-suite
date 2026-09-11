@@ -3,8 +3,14 @@
 // src/components/AboutDialog.tsx
 //
 // What the About button at the foot of the sidebar opens: the version the
-// member is actually running, and the two places they might need to go next —
-// the issue tracker and the user's guide.
+// member is actually running, the two places they might need to go next —
+// the issue tracker and the user's guide — and the credit for the player data.
+//
+// That credit is the reason this dialog is the right home for it. The stats
+// come from nflverse under CC BY 4.0, which asks for the attribution to be
+// visible to whoever sees the work; the Stats Sync tab that used to be its
+// only mention is commissioner-only, so most members never saw it. About is
+// open to every member from the sidebar.
 //
 // It borrows CardsDialog for its chrome. That component lives under cards/
 // because the card game was the first thing to need a dialog, but it is only
@@ -12,7 +18,13 @@
 // this dialog looking like the rest of the app rather than a second style.
 
 import { CardsDialog } from '@/components/cards/CardsDialog';
-import { APP_VERSION, GITHUB_ISSUES_URL, USER_GUIDE_URL } from '@/lib/appInfo';
+import {
+  APP_VERSION,
+  CC_BY_4_URL,
+  GITHUB_ISSUES_URL,
+  NFLVERSE_DATA_URL,
+  USER_GUIDE_URL,
+} from '@/lib/appInfo';
 
 export function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
@@ -44,8 +56,45 @@ export function AboutDialog({ open, onClose }: { open: boolean; onClose: () => v
             icon={<BugIcon />}
           />
         </div>
+
+        <DataCredit />
       </div>
     </CardsDialog>
+  );
+}
+
+// ─── The nflverse credit ─────────────────────────────────────────────────────
+
+// CC BY 4.0 wants three things: the source named and linked, the licence
+// linked, and any change to the data stated. The last sentence is that third
+// one — nflverse ships raw NFL stats, and every fantasy number in the suite is
+// something we computed on top of them.
+
+function DataCredit() {
+  return (
+    <p
+      className="text-xs leading-relaxed border-t pt-4"
+      style={{ color: '#555', borderColor: '#26262a' }}
+    >
+      Player statistics from{' '}
+      <CreditLink href={NFLVERSE_DATA_URL}>nflverse</CreditLink>, licensed under{' '}
+      <CreditLink href={CC_BY_4_URL}>CC BY 4.0</CreditLink>. Fantasy points, card
+      tiers, and projections are derived by Commissioner Suite.
+    </p>
+  );
+}
+
+function CreditLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="underline underline-offset-2"
+      style={{ color: '#8a8a86' }}
+    >
+      {children}
+    </a>
   );
 }
 
