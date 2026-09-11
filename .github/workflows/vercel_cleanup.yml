@@ -1,0 +1,117 @@
+name: Prune Vercel Deployments
+
+# Vercel keeps every deployment it has ever built, and "Function Storage" is
+# billed as the total size of all the Function bundles across all of them. The
+# build output of a single deployment is over a gigabyte, so a few weeks of
+# pushes is all it takes to blow through the quota (issue #50) even though no
+# individual function is anywhere near the 250MB per-function limit.
+#
+# `vercel remove --safe` deletes a project's deployments but refuses to touch
+# any that are aliased or currently serving production, so the live production
+# site and whatever the development domain points at both survive. This is the
+# same command that was run by hand to clear the backlog the first time.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List the deployments without deleting anything'
+        type: boolean
+        required: false
+        default: false
+
+# Deleting deployments while another run is deleting them wins nothing and only
+# produces confusing "not found" errors, so let a run finish before the next.
+concurrency:
+  group: vercel-cleanup
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Prune old deployments
+    runs-on: ubuntu-latest
+    env:
+      # The CLI treats a directory as linked when these are set, which is why
+      # there is no `vercel link` step (the deploy jobs rely on the same thing).
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      # `vercel remove` takes the project *name*, which need not match the
+      # repository name — override with the VERCEL_PROJECT repository variable
+      # (Settings → Secrets and variables → Actions → Variables) if it differs.
+      VERCEL_PROJECT: ${{ vars.VERCEL_PROJECT || 'commissioner-suite' }}
+    steps:
+      # A scheduled run has nobody watching it, so fail loudly and immediately
+      # rather than letting the CLI report a confusing authentication error.
+      - name: Check credentials are present
+        run: |
+          missing=
+          [ -n "$VERCEL_TOKEN" ]      || missing="$missing VERCEL_TOKEN"
+          [ -n "$VERCEL_ORG_ID" ]     || missing="$missing VERCEL_ORG_ID"
+          [ -n "$VERCEL_PROJECT_ID" ] || missing="$missing VERCEL_PROJECT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing"
+            exit 1
+          fi
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: List current deployments
+        id: before
+        run: |
+          {
+            echo "## Deployments before"
+            echo ''
+            echo '```'
+            vercel list "$VERCEL_PROJECT" --token="$VERCEL_TOKEN" 2>&1 | head -n 60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # --safe skips deployments that are aliased or currently in production, so
+      # this never removes the live site or the development domain's build.
+      # --yes answers the confirmation prompt, which has no TTY to read from.
+      - name: Remove unaliased deployments
+        if: inputs.dry_run != true
+        run: |
+          # A project whose deployments are all aliased leaves nothing to
+          # remove, and the CLI treats that as an error. That is the healthy
+          # steady state for this workflow, so don't fail the run over it.
+          if output=$(vercel remove "$VERCEL_PROJECT" --safe --yes --token="$VERCEL_TOKEN" 2>&1); then
+            echo "$output"
+          else
+            echo "$output"
+            case "$output" in
+              *"not found"*|*"No deployments"*|*"nothing to delete"*)
+                echo "::notice::Nothing left to prune."
+                ;;
+              *)
+                echo "::error::vercel remove failed"
+                exit 1
+                ;;
+            esac
+          fi
+
+      - name: Report what is left
+        if: always()
+        # The dispatch input goes through `env:` rather than straight into the
+        # script. `${{ }}` is substituted into the shell source before it runs,
+        # so interpolating any caller-supplied value inline is a code injection
+        # waiting to happen; an environment variable is read as data.
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          {
+            echo ''
+            if [ "$DRY_RUN" = "true" ]; then
+              echo '_Dry run — nothing was deleted._'
+            else
+              echo "## Deployments after"
+              echo ''
+              echo '```'
+              vercel list "$VERCEL_PROJECT" --token="$VERCEL_TOKEN" 2>&1 | head -n 60
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
