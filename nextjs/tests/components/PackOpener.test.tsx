@@ -26,6 +26,7 @@ function card(id: string, tier: CardTier) {
     id, season: 2025, playerId: id, playerName: `Player ${id}`, position: 'WR',
     team: 'SF', tier, seasonRank: 1, fantasyPoints: 170, pointsPerGame: 10,
     gamesPlayed: 17, jerseyNumber: 12, headshot: null,
+    photoAuthor: null, photoLicense: null, photoLicenseUrl: null, photoFileUrl: null,
   };
 }
 

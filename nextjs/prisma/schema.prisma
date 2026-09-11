@@ -268,6 +268,32 @@ model NflPlayerHeadshot {
    * can be attributed if the league ever needs to.
    */
   source    HeadshotSource
+  /**
+   * Photographer, for a Wikimedia Commons portrait. Commons records this as an
+   * HTML fragment — usually a link to the uploader's user page — and it is
+   * stored here as plain text, because the card prints it rather than parsing
+   * it. Null for NFL and ESPN portraits, which carry no attribution
+   * requirement, and for a Commons file whose uploader left the field empty.
+   */
+  author     String?
+  /**
+   * The licence's short name, as Commons states it — "CC BY-SA 4.0",
+   * "Public domain". This is the half of the credit that is a legal
+   * requirement rather than a courtesy.
+   */
+  license    String?
+  /**
+   * Canonical URL of the licence deed, so the credit can link to the terms
+   * rather than naming them and leaving the reader to search.
+   */
+  licenseUrl String?
+  /**
+   * The file's description page on Commons — where the photograph, its author
+   * and its licence are all stated by the source rather than by us. CC BY-SA
+   * attribution is satisfied by linking to it, so this is what the credit on
+   * the card points at.
+   */
+  fileUrl    String?
   checkedAt DateTime       @default(now())
 }
 
@@ -579,6 +605,22 @@ model CardDefinition {
    * nfl.com headshot URL, or null for team defenses.
    */
   headshot      String?
+
+  /**
+   * The four attribution columns below are copied from `NflPlayerHeadshot` by
+   * the pool builder, exactly as `headshot` itself is, and are non-null only
+   * for the Wikimedia Commons portraits that require a credit.
+   *
+   * Denormalised rather than joined because a card is read on every deck, pack
+   * and results request and the pool is rebuilt whenever the portraits change
+   * — the same argument that already put `headshot` on this table. See
+   * resolvedHeadshots in src/lib/cards/pool.ts.
+   */
+  photoAuthor     String?
+  photoLicense    String?
+  photoLicenseUrl String?
+  /** The file's description page, which is what the credit links to. */
+  photoFileUrl    String?
 
   builtAt DateTime @default(now())
 

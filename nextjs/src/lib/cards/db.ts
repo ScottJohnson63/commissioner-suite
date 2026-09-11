@@ -19,6 +19,12 @@ export const CARD_FIELDS = {
   id: true, season: true, playerId: true, playerName: true, position: true,
   team: true, tier: true, seasonRank: true, fantasyPoints: true,
   pointsPerGame: true, gamesPlayed: true, jerseyNumber: true, headshot: true,
+  // The portrait's attribution, for the Wikimedia Commons pictures that
+  // require one. It travels with `headshot` for the same reason it is on the
+  // same table: a CC BY-SA image shown without its credit is a licence breach,
+  // so the credit must not be the field somebody forgot to select.
+  photoAuthor: true, photoLicense: true, photoLicenseUrl: true,
+  photoFileUrl: true,
 } as const;
 
 /** Prisma's error code for a unique-constraint violation. */

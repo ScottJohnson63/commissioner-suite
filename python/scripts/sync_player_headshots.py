@@ -38,12 +38,18 @@ checked — a photograph that was found once does not stop being one, while ESPN
 and Wikipedia both gain portraits for older players over time.
 
 Note on licensing: Wikimedia Commons images are freely licensed, but most are
-CC-BY-SA and carry an attribution requirement. The source is recorded per row so
-the league can attribute them if it ever publishes the cards outside itself.
+CC BY-SA and carry an attribution requirement — the photographer and the licence
+have to be named wherever the image is shown. So for a Wikipedia portrait this
+job also asks Commons who took the photograph and under what terms, and stores
+the answer beside the URL. The card prints it; see CardDetail.tsx. Without those
+columns a card could show the picture and not the credit, which is the one way
+to use a CC BY-SA file wrongly.
 
 Usage:
   python scripts/sync_player_headshots.py           # new and unresolved players
   python scripts/sync_player_headshots.py --all     # re-check every player
+  python scripts/sync_player_headshots.py --credits # attribution only, for rows
+                                                    # written before it was kept
 
 Env:
   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN — database credentials
@@ -53,12 +59,15 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
+import re
 import ssl
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from html import unescape
+from typing import NamedTuple
 
 import certifi
 import nflreadpy as nfl
@@ -117,6 +126,23 @@ WIKIPEDIA_BATCH = 50
 # hero in the pack opener with room for a high-DPI screen and nothing beyond.
 WIKIPEDIA_THUMB_PX = 500
 
+# Every free file English Wikipedia serves lives under this path on
+# upload.wikimedia.org, because it is hosted by Wikimedia Commons. Files the
+# encyclopaedia holds *locally* sit under /wikipedia/en/ instead, and those are
+# precisely the non-free ones — logos, album art, fair-use publicity shots.
+#
+# `pilicense=free` already asks the API to leave them out, and this is the check
+# that the answer is what was asked for: a portrait whose URL is not on Commons
+# is dropped rather than printed on a card the league has no licence for. It
+# costs nothing and it is the one mistake in this file that would be a legal
+# problem rather than a cosmetic one.
+COMMONS_PATH = "/wikipedia/commons/"
+
+# The three fields a credit is made of, asked for by name. Commons' unfiltered
+# extmetadata is forty-odd fields of provenance per file — categories, camera
+# settings, upload history — and this job stores three of them.
+COMMONS_METADATA = "Artist|LicenseShortName|LicenseUrl"
+
 # Words that mark a Wikipedia article as being about the right person.
 #
 # This check is what makes the lookup safe. Matching on name alone is actively
@@ -154,6 +180,60 @@ WORKERS = 16
 TIMEOUT_SECONDS = 30
 
 _CONTEXT = ssl.create_default_context(cafile=certifi.where())
+
+
+class Credit(NamedTuple):
+    """Who took a photograph and on what terms, as the card has to print it.
+
+    Every field is optional and all four are null for the nfl.com and ESPN
+    portraits, which carry no attribution requirement. For a Commons file they
+    are what CC BY-SA asks for: name the author, name the licence, and point at
+    the source. A Commons file can still be missing one — an uploader who left
+    the Artist field empty, an old public-domain scan with no licence URL — so a
+    missing field is rendered as an absence rather than treated as an error.
+    """
+
+    author: str | None = None
+    license: str | None = None
+    license_url: str | None = None
+    file_url: str | None = None
+
+
+NO_CREDIT = Credit()
+
+
+class PageImage(NamedTuple):
+    """An article's lead image: the thumbnail to store, and which file it is.
+
+    `file` is Commons' own file name, which is the key the licence lookup is
+    made on — the thumbnail URL alone cannot be turned into an API query. It
+    comes from `piprop=name`, and is recovered from the URL when that is absent,
+    which is what lets the same lookup backfill rows written before the name was
+    ever asked for.
+    """
+
+    url: str
+    file: str | None = None
+
+
+class Portrait(NamedTuple):
+    """A Wikipedia portrait and the credit that has to travel with it."""
+
+    url: str
+    credit: Credit = NO_CREDIT
+
+
+class Resolved(NamedTuple):
+    """One player's answer: what his card shows, where it came from, and whose.
+
+    `source` is "NFL", "ESPN", "WIKIPEDIA" or "NONE", matching the
+    HeadshotSource enum. The credit is empty for everything but WIKIPEDIA.
+    """
+
+    player_id: str
+    url: str | None
+    source: str
+    credit: Credit = NO_CREDIT
 
 
 def thumbnail_url(headshot: str) -> str:
@@ -226,26 +306,20 @@ def _is_footballer(description: str | None) -> bool:
     return any(word in blob for word in FOOTBALL_WORDS)
 
 
-def _wikipedia_query(titles: list[str]) -> dict | None:
+def _api(params: dict[str, str]) -> dict | None:
     """One batched Action API call, or None when it could not be completed.
 
     Retries 429 and 503 with a widening pause: Wikipedia sheds load rather than
     queueing, so a refusal means "come back", not "no such page". Returning None
     for an exhausted retry matters — see wikipedia_photos, where an unanswered
     batch must leave its players unresolved rather than marking them NONE.
+
+    Generic in `params` because this job now makes two different queries of the
+    same endpoint — the article lookup and the licence lookup — and the retry
+    policy, the user agent and the host pin are the same argument for both.
     """
-    params = {
-        "action": "query",
-        "format": "json",
-        "formatversion": "2",
-        "prop": "pageimages|description",
-        "piprop": "thumbnail",
-        "pithumbsize": str(WIKIPEDIA_THUMB_PX),
-        # Follow renames, so "Chad Johnson" reaches the article it redirects to.
-        "redirects": "1",
-        "titles": "|".join(titles),
-    }
-    url = f"{WIKIPEDIA_API}?{urllib.parse.urlencode(params)}"
+    query = {"action": "query", "format": "json", "formatversion": "2", **params}
+    url = f"{WIKIPEDIA_API}?{urllib.parse.urlencode(query)}"
     request = urllib.request.Request(
         net.require_https(url, allowed_host=WIKIPEDIA_HOST),
         headers={"User-Agent": WIKIPEDIA_USER_AGENT, "Accept": "application/json"},
@@ -269,6 +343,28 @@ def _wikipedia_query(titles: list[str]) -> dict | None:
     return None
 
 
+def _wikipedia_query(titles: list[str]) -> dict | None:
+    """The article lookup: lead image and short description, fifty titles a go.
+
+    `piprop` asks for the file's `name` as well as its thumbnail. The thumbnail
+    is what the card shows; the name is the only handle on the file itself, and
+    without it there is no way to ask Commons who took the photograph.
+    """
+    return _api(
+        {
+            "prop": "pageimages|description",
+            "piprop": "thumbnail|name",
+            "pithumbsize": str(WIKIPEDIA_THUMB_PX),
+            # Free files only. This is the API's own filter; _is_commons is the
+            # check that it did what it says — see COMMONS_PATH.
+            "pilicense": "free",
+            # Follow renames, so "Chad Johnson" reaches the article it redirects to.
+            "redirects": "1",
+            "titles": "|".join(titles),
+        }
+    )
+
+
 def _clean_thumbnail_url(url: str) -> str:
     """Strips Wikipedia's analytics query from a Commons URL.
 
@@ -280,15 +376,81 @@ def _clean_thumbnail_url(url: str) -> str:
     return url.split("?", 1)[0]
 
 
-def _thumbnails(payload: dict | None) -> dict[str, str]:
-    """Article title → thumbnail URL, for the pages in one API response.
+def _is_commons(url: str | None) -> bool:
+    """Whether a URL is a file hosted by Wikimedia Commons.
+
+    Checked on the path rather than on the whole URL, so a host that merely
+    contains the string cannot satisfy it. See COMMONS_PATH for why this is
+    worth a function: everything under it is free-licensed, and English
+    Wikipedia's own /wikipedia/en/ uploads are the fair-use ones.
+    """
+    return bool(url) and COMMONS_PATH in urllib.parse.urlsplit(url).path
+
+
+def file_name(url: str) -> str | None:
+    """Commons' file name for an upload.wikimedia.org URL, or None.
+
+    Two shapes, because the API hands back a rendering and the original lives
+    beside it:
+
+        …/commons/8/8a/Isaac_Bruce.jpg                     → Isaac_Bruce.jpg
+        …/commons/thumb/8/8a/Isaac_Bruce.jpg/500px-…jpg    → Isaac_Bruce.jpg
+
+    In the thumbnail form the original's name is the *directory* the rendering
+    sits in, not the rendering itself — "500px-Isaac_Bruce.jpg" is not a file
+    Commons has ever heard of.
+
+    This exists for the backfill, where the only record of a portrait is the
+    stored URL: the articles were queried before the file name was asked for,
+    and re-querying them would be thousands of requests to recover something the
+    URL already contains.
+    """
+    segments = [s for s in urllib.parse.urlsplit(url).path.split("/") if s]
+    if not segments:
+        return None
+    name = segments[-2] if "thumb" in segments[:-1] and len(segments) > 1 else segments[-1]
+    return urllib.parse.unquote(name) or None
+
+
+def _file_key(name: str) -> str:
+    """One spelling of a file name, so the two sides of the lookup can meet.
+
+    `piprop=name` answers with underscores ("Isaac_Bruce.jpg") and the titles
+    the licence query echoes back use spaces ("File:Isaac Bruce.jpg"), and
+    MediaWiki capitalises the first letter of either. Comparing them as they
+    arrive silently loses every credit.
+    """
+    return name.replace("_", " ").strip().lower()
+
+
+# Commons states the author as an HTML fragment — nearly always a link to the
+# uploader's user page, sometimes a whole vCard of markup.
+_TAGS = re.compile(r"<[^>]*>")
+
+
+def _plain_text(html: str | None) -> str | None:
+    """Commons' HTML fragment as the line a card can print, or None.
+
+    Tags become spaces rather than nothing: an author stated as two links would
+    otherwise come out as one run-together word. Entities are unescaped because
+    the card renders text, so a name with an ampersand in it has to arrive as an
+    ampersand and not as "&amp;".
+    """
+    if not html:
+        return None
+    collapsed = " ".join(unescape(_TAGS.sub(" ", html)).split())
+    return collapsed or None
+
+
+def _page_images(payload: dict | None) -> dict[str, PageImage]:
+    """Article title → its lead image, for the pages in one API response.
 
     Titles are lowercased because the API normalises capitalisation and follows
     redirects, so the title that comes back is often not the one that was asked
-    for. Pages that are missing, are about someone else, or simply have no lead
-    image are dropped here rather than by the caller.
+    for. Pages that are missing, are about someone else, have no lead image, or
+    whose image is not on Commons are dropped here rather than by the caller.
     """
-    found: dict[str, str] = {}
+    found: dict[str, PageImage] = {}
     if not payload:
         return found
 
@@ -296,8 +458,16 @@ def _thumbnails(payload: dict | None) -> dict[str, str]:
         if page.get("missing") or not _is_footballer(page.get("description")):
             continue
         thumbnail = (page.get("thumbnail") or {}).get("source")
-        if thumbnail:
-            found[str(page.get("title", "")).lower()] = _clean_thumbnail_url(thumbnail)
+        if not thumbnail:
+            continue
+        url = _clean_thumbnail_url(thumbnail)
+        # A locally hosted file is a non-free one — see COMMONS_PATH. Dropping
+        # it costs a card its photograph and keeps the league inside the licence.
+        if not _is_commons(url):
+            continue
+        found[str(page.get("title", "")).lower()] = PageImage(
+            url, page.get("pageimage") or file_name(url)
+        )
 
     # Redirects are reported separately, so map the requested title onto the
     # article that answered it.
@@ -309,8 +479,77 @@ def _thumbnails(payload: dict | None) -> dict[str, str]:
     return found
 
 
-def wikipedia_photos(names: dict[str, str]) -> dict[str, str]:
-    """Player id → Wikimedia portrait, for as many of `names` as have one.
+def _file_credits(payload: dict | None) -> dict[str, Credit]:
+    """File name → its attribution, for the files in one imageinfo response.
+
+    The URL of the file *itself* is checked here as well as the thumbnail's in
+    _page_images. They are the same file and so the check should be redundant —
+    which is exactly why it is cheap to make, and the only place the answer to
+    "is every stored portrait really a Commons file?" can be had from the file
+    record rather than from a rendering of it.
+    """
+    found: dict[str, Credit] = {}
+    if not payload:
+        return found
+
+    for page in payload.get("query", {}).get("pages", []) or []:
+        info = ((page.get("imageinfo") or []) or [{}])[0]
+        if not _is_commons(info.get("url")):
+            continue
+
+        meta = info.get("extmetadata") or {}
+        title = str(page.get("title", ""))
+        # Titles come back namespaced — "File:Isaac Bruce.jpg".
+        name = title.split(":", 1)[1] if ":" in title else title
+        if not name:
+            continue
+
+        found[_file_key(name)] = Credit(
+            author=_plain_text((meta.get("Artist") or {}).get("value")),
+            license=_plain_text((meta.get("LicenseShortName") or {}).get("value")),
+            license_url=(meta.get("LicenseUrl") or {}).get("value") or None,
+            # The description page, which is where CC BY-SA attribution points:
+            # the author, the licence and the photograph are all stated there by
+            # the source rather than by us.
+            file_url=info.get("descriptionurl") or None,
+        )
+
+    return found
+
+
+def credits_for(files: list[str | None]) -> dict[str, Credit]:
+    """File name → attribution, for as many of `files` as Commons describes.
+
+    Batched fifty to a request like the article lookup, and deduplicated first:
+    two brothers' articles can share a team photo, and a batch of duplicates
+    would buy nothing. Keyed by _file_key, so look them up the same way.
+    """
+    unique = list(dict.fromkeys(f for f in files if f))
+    if not unique:
+        return {}
+
+    credits: dict[str, Credit] = {}
+    for start in range(0, len(unique), WIKIPEDIA_BATCH):
+        batch = unique[start : start + WIKIPEDIA_BATCH]
+        credits.update(
+            _file_credits(
+                _api(
+                    {
+                        "prop": "imageinfo",
+                        "iiprop": "extmetadata|url",
+                        "iiextmetadatafilter": COMMONS_METADATA,
+                        "titles": "|".join(f"File:{name}" for name in batch),
+                    }
+                )
+            )
+        )
+        time.sleep(WIKIPEDIA_PAUSE_SECONDS)
+
+    return credits
+
+
+def wikipedia_photos(names: dict[str, str]) -> dict[str, Portrait]:
+    """Player id → portrait and credit, for as many of `names` as have one.
 
     Two passes, because Wikipedia's disambiguation is inconsistent: most players
     sit at their plain name, but anyone sharing it with a more famous namesake
@@ -318,11 +557,19 @@ def wikipedia_photos(names: dict[str, str]) -> dict[str, str]:
     parenthetical only for what is left keeps the request count near the
     theoretical minimum — one batch per fifty players per form.
 
+    The credits are fetched once at the end, over the files the articles
+    actually yielded, rather than per batch as the articles are read: that is
+    one pass over the distinct files instead of one per form, and it is the only
+    ordering in which a file shared by two players is asked about once.
+
     A player whose batch could not be fetched at all is simply absent from the
     result, which the caller treats as unresolved rather than as "no photograph".
+    A player whose *credit* could not be fetched keeps his portrait with an
+    empty credit — the picture is still free, and the next run fills the credit
+    in. See backfill_credits.
     """
     remaining = dict(names)
-    photos: dict[str, str] = {}
+    images: dict[str, PageImage] = {}
 
     for form in WIKIPEDIA_TITLE_FORMS:
         if not remaining:
@@ -335,16 +582,23 @@ def wikipedia_photos(names: dict[str, str]) -> dict[str, str]:
 
         for start in range(0, len(ordered), WIKIPEDIA_BATCH):
             batch = ordered[start : start + WIKIPEDIA_BATCH]
-            found = _thumbnails(_wikipedia_query([title for _, title in batch]))
+            found = _page_images(_wikipedia_query([title for _, title in batch]))
             for player_id, title in batch:
-                thumbnail = found.get(title.lower())
-                if thumbnail:
-                    photos[player_id] = thumbnail
+                image = found.get(title.lower())
+                if image:
+                    images[player_id] = image
             time.sleep(WIKIPEDIA_PAUSE_SECONDS)
 
-        remaining = {p: n for p, n in remaining.items() if p not in photos}
+        remaining = {p: n for p, n in remaining.items() if p not in images}
 
-    return photos
+    credits = credits_for([image.file for image in images.values()])
+    return {
+        player_id: Portrait(
+            image.url,
+            credits.get(_file_key(image.file), NO_CREDIT) if image.file else NO_CREDIT,
+        )
+        for player_id, image in images.items()
+    }
 
 
 def players_to_check(check_all: bool) -> list[dict[str, str | None]]:
@@ -398,10 +652,12 @@ def player_index() -> tuple[dict[str, str], dict[str, str]]:
     )
 
 
-def resolve(
-    player: dict[str, str | None], by_gsis: dict[str, str]
-) -> tuple[str, str | None, str]:
-    """One player's (id, url, source) from the two per-player CDN lookups.
+def resolve(player: dict[str, str | None], by_gsis: dict[str, str]) -> Resolved:
+    """One player's answer from the two per-player CDN lookups.
+
+    No credit on either: nfl.com's and ESPN's portraits are the league's and the
+    network's own, used here as the feeds publish them, and neither carries an
+    attribution requirement the way a Commons file does.
 
     Wikipedia is deliberately not tried here. It is batched fifty players to a
     request, which does not fit a function called once per player from a thread
@@ -411,18 +667,16 @@ def resolve(
 
     photo = nfl_photo(player["headshot"])
     if photo:
-        return player_id, photo, "NFL"
+        return Resolved(player_id, photo, "NFL")
 
     photo = espn_photo(by_gsis.get(player_id))
     if photo:
-        return player_id, photo, "ESPN"
+        return Resolved(player_id, photo, "ESPN")
 
-    return player_id, None, "NONE"
+    return Resolved(player_id, None, "NONE")
 
 
-def apply_wikipedia(
-    resolved: list[tuple[str, str | None, str]], names: dict[str, str]
-) -> list[tuple[str, str | None, str]]:
+def apply_wikipedia(resolved: list[Resolved], names: dict[str, str]) -> list[Resolved]:
     """Fills in NONE rows from Wikipedia, leaving everything else untouched.
 
     Runs last because it is the weakest source: an article portrait is whatever
@@ -432,7 +686,7 @@ def apply_wikipedia(
     """
     unresolved = {
         player_id: names[player_id]
-        for player_id, _, source in resolved
+        for player_id, _, source, _ in resolved
         if source == "NONE" and player_id in names
     }
     if not unresolved:
@@ -440,35 +694,130 @@ def apply_wikipedia(
 
     print(f"Asking Wikipedia about {len(unresolved)} player(s) with no CDN photo…")
     photos = wikipedia_photos(unresolved)
-    print(f"  recovered {len(photos)}")
+    credited = sum(1 for p in photos.values() if p.credit.author or p.credit.license)
+    print(f"  recovered {len(photos)}, {credited} with an attribution")
 
     return [
-        (player_id, photos[player_id], "WIKIPEDIA")
-        if source == "NONE" and player_id in photos
-        else (player_id, url, source)
-        for player_id, url, source in resolved
+        Resolved(
+            row.player_id,
+            photos[row.player_id].url,
+            "WIKIPEDIA",
+            photos[row.player_id].credit,
+        )
+        if row.source == "NONE" and row.player_id in photos
+        else row
+        for row in resolved
     ]
 
 
-def upsert(resolved: list[tuple[str, str | None, str]]) -> int:
-    """Writes one row per player, keyed on playerId."""
+def upsert(resolved: list[Resolved]) -> int:
+    """Writes one row per player, keyed on playerId.
+
+    The credit columns are written on every row, including the null-everywhere
+    ones: a player whose portrait moves from Wikipedia to a new nfl.com headshot
+    must lose the credit along with the picture, and leaving the old columns
+    behind would attribute a league photograph to a Commons uploader.
+    """
     sql = (
-        'INSERT INTO "NflPlayerHeadshot" (id, "playerId", "url", "source", "checkedAt") '
-        "VALUES (lower(hex(randomblob(16))), ?, ?, ?, CURRENT_TIMESTAMP) "
+        'INSERT INTO "NflPlayerHeadshot" '
+        '(id, "playerId", "url", "source", "author", "license", "licenseUrl", '
+        '"fileUrl", "checkedAt") '
+        "VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
         'ON CONFLICT ("playerId") DO UPDATE SET '
         '"url" = excluded."url", "source" = excluded."source", '
+        '"author" = excluded."author", "license" = excluded."license", '
+        '"licenseUrl" = excluded."licenseUrl", "fileUrl" = excluded."fileUrl", '
         '"checkedAt" = CURRENT_TIMESTAMP'
     )
-    return turso.execute_chunked(sql, resolved, label="headshot rows")
+    rows = [(r.player_id, r.url, r.source, *r.credit) for r in resolved]
+    return turso.execute_chunked(sql, rows, label="headshot rows")
+
+
+def uncredited_wikipedia_rows() -> list[dict[str, str | None]]:
+    """Stored Wikipedia portraits with no attribution recorded against them."""
+    return turso.query(
+        'SELECT "playerId", "url" FROM "NflPlayerHeadshot" '
+        "WHERE \"source\" = 'WIKIPEDIA' AND \"url\" IS NOT NULL "
+        'AND "author" IS NULL AND "license" IS NULL'
+    )
+
+
+def backfill_credits() -> None:
+    """Fills in the attribution for portraits stored before it was kept.
+
+    The portraits themselves are not touched. Every row this reads already holds
+    a picture somebody's card is showing, and re-resolving it could only take it
+    away — a Wikipedia article that has since lost its lead image would turn a
+    card back into a team logo for no reason but a missing credit.
+
+    The file name is recovered from the stored URL rather than by asking
+    Wikipedia for the articles again: the URL already contains it (see
+    file_name), so this costs one request per fifty files instead of one per
+    fifty players per title form, and it cannot be thrown off by an article that
+    has been renamed since.
+
+    It also answers the question the URL check exists for. Every stored URL is
+    counted against COMMONS_PATH and the total is reported, so "page images only
+    returns freely licensed files" is a measurement rather than an assumption.
+    """
+    rows = uncredited_wikipedia_rows()
+    if not rows:
+        print("Nothing to backfill — every Wikipedia portrait has a credit.")
+        return
+
+    urls = {str(r["playerId"]): str(r["url"]) for r in rows}
+    off_commons = [p for p, url in urls.items() if not _is_commons(url)]
+    if off_commons:
+        # Not dropped here: this job backfills credits, and deleting somebody's
+        # card portrait is a decision for whoever reads this line.
+        print(
+            f"⚠ {len(off_commons)} stored portrait(s) are not on Wikimedia Commons "
+            f"and may not be freely licensed — e.g. {urls[off_commons[0]]}"
+        )
+    else:
+        print(f"✓ All {len(urls)} stored Wikipedia portraits are Commons files.")
+
+    files = {player_id: file_name(url) for player_id, url in urls.items()}
+    print(f"Asking Commons about {len(set(filter(None, files.values())))} file(s)…")
+    credits = credits_for(list(files.values()))
+
+    updates = [
+        (*credits[_file_key(name)], player_id)
+        for player_id, name in files.items()
+        if name and _file_key(name) in credits
+    ]
+    if not updates:
+        print("No attribution came back — nothing written.")
+        return
+
+    written = turso.execute_chunked(
+        'UPDATE "NflPlayerHeadshot" SET "author" = ?, "license" = ?, '
+        '"licenseUrl" = ?, "fileUrl" = ? WHERE "playerId" = ?',
+        updates,
+        label="credit rows",
+    )
+    print(
+        f"✓ Backfilled {written} credit(s); {len(urls) - len(updates)} portrait(s) "
+        "still have none. Rebuild the card pool to carry them onto the cards."
+    )
 
 
 def main() -> None:
-    check_all = "--all" in sys.argv[1:]
-    if [a for a in sys.argv[1:] if a != "--all"]:
+    args = sys.argv[1:]
+    check_all = "--all" in args
+    backfill = "--credits" in args
+    if [a for a in args if a not in ("--all", "--credits")] or (check_all and backfill):
         raise SystemExit(__doc__)
 
     # Fail on a missing credential now, not after the player table has downloaded.
     localenv.require("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN")
+
+    if backfill:
+        # No syncrun record: this writes no portraits, so counting it as a
+        # headshot run would put a zero-portrait entry in a log that is read to
+        # answer "when were the pictures last checked".
+        backfill_credits()
+        return
 
     with syncrun.record(syncrun.NFL_WEEKLY) as run:
         players = players_to_check(check_all)
@@ -486,8 +835,13 @@ def main() -> None:
         resolved = apply_wikipedia(resolved, names)
 
         counts = {"NFL": 0, "ESPN": 0, "WIKIPEDIA": 0, "NONE": 0}
-        for _, _, source in resolved:
-            counts[source] += 1
+        for row in resolved:
+            counts[row.source] += 1
+
+        # Reported separately from the Wikipedia count because the gap between
+        # the two is the licence risk: a Commons portrait with no credit is one
+        # a card cannot legally show. See backfill_credits, which closes it.
+        credited = sum(1 for r in resolved if r.credit.author or r.credit.license)
 
         written = upsert(resolved)
         run.note(
@@ -496,6 +850,7 @@ def main() -> None:
             from_nfl=counts["NFL"],
             from_espn=counts["ESPN"],
             from_wikipedia=counts["WIKIPEDIA"],
+            attributed=credited,
             no_photo=counts["NONE"],
         )
         run.count(written)
@@ -503,8 +858,9 @@ def main() -> None:
         print(
             f"✓ Headshot sync complete — {counts['NFL']} from nfl.com, "
             f"{counts['ESPN']} recovered from ESPN, "
-            f"{counts['WIKIPEDIA']} from Wikipedia, {counts['NONE']} with no "
-            f"photograph anywhere (those cards show their team logo)."
+            f"{counts['WIKIPEDIA']} from Wikipedia ({credited} with an "
+            f"attribution), {counts['NONE']} with no photograph anywhere "
+            f"(those cards show their team logo)."
         )
 
 

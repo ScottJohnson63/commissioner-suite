@@ -215,14 +215,35 @@ async function jerseysForSeason(season: number): Promise<Map<string, number>> {
  * "checked": either a URL verified to be a photograph, possibly recovered from
  * ESPN, or null meaning nobody has one and the card should show its team logo.
  *
+ * The four attribution columns come along with the URL. Most Wikimedia
+ * portraits are CC BY-SA, which requires the photographer and the licence to be
+ * named wherever the image is shown — so the credit has to reach the card, and
+ * the card reads CardDefinition. Copying it here rather than joining on every
+ * read is the same argument that already put `headshot` on that table: the pool
+ * is rebuilt whenever the portraits change, and a card is read on every deck,
+ * pack and results request.
+ *
  * Empty when sync_player_headshots.py has not been run, in which case the raw
  * column is used as before — a stale portrait must never cost a member a card.
  */
-async function resolvedHeadshots(): Promise<Map<string, string | null>> {
+async function resolvedHeadshots(): Promise<Map<string, ResolvedPortrait>> {
   const rows = await prisma.nflPlayerHeadshot.findMany({
-    select: { playerId: true, url: true },
+    select: {
+      playerId: true, url: true,
+      author: true, license: true, licenseUrl: true, fileUrl: true,
+    },
   });
-  return new Map(rows.map((r) => [r.playerId, r.url]));
+  return new Map(rows.map((r) => [r.playerId, r]));
+}
+
+/** One row of NflPlayerHeadshot: the portrait, and whose it is. */
+interface ResolvedPortrait {
+  url: string | null;
+  /** Non-null only for the Wikimedia Commons portraits that require a credit. */
+  author: string | null;
+  license: string | null;
+  licenseUrl: string | null;
+  fileUrl: string | null;
 }
 
 export interface PoolBuildResult {
@@ -256,6 +277,8 @@ export async function rebuildCardPool(): Promise<PoolBuildResult> {
     team: string | null; tier: CardTier; seasonRank: number;
     fantasyPoints: number; gamesPlayed: number; pointsPerGame: number;
     jerseyNumber: number | null; headshot: string | null;
+    photoAuthor: string | null; photoLicense: string | null;
+    photoLicenseUrl: string | null; photoFileUrl: string | null;
   }[] = [];
 
   const portraits = await resolvedHeadshots();
@@ -271,6 +294,7 @@ export async function rebuildCardPool(): Promise<PoolBuildResult> {
 
     for (const card of ranked) {
       const id = idFor.get(`${season}:${card.playerId}`);
+      const portrait = portraits.get(card.playerId);
       rows.push({
         ...(id ? { id } : {}),
         season,
@@ -293,10 +317,17 @@ export async function rebuildCardPool(): Promise<PoolBuildResult> {
         // The resolved portrait wins whenever the player has been checked,
         // including when the answer was "there is no photograph" — that null is
         // what sends the card to its team logo instead of nfl.com's silhouette.
-        // `has` rather than `??`, so a deliberate null is not read as a miss.
-        headshot:      portraits.has(card.playerId)
-          ? portraits.get(card.playerId)!
-          : card.headshot,
+        // `portrait` is undefined rather than null for an unchecked player, so
+        // a deliberate null is not read as a miss.
+        headshot:      portrait ? portrait.url : card.headshot,
+        // Null on everything but a Wikimedia portrait, and null again the
+        // moment one is replaced by an nfl.com headshot — the credit belongs to
+        // the picture, so it must never outlive it. See upsert() in
+        // python/scripts/sync_player_headshots.py, which writes it the same way.
+        photoAuthor:     portrait?.author ?? null,
+        photoLicense:    portrait?.license ?? null,
+        photoLicenseUrl: portrait?.licenseUrl ?? null,
+        photoFileUrl:    portrait?.fileUrl ?? null,
       });
     }
   }
