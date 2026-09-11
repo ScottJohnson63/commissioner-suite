@@ -27,7 +27,8 @@ const PENDING_ALLOWED = new Set(['/auth/connect-sleeper', '/auth/redirect']);
  * The dashboard is public so the Statistics and News tabs can be browsed by
  * anyone; the page itself hides every other tab until there is a session. The
  * data behind those two tabs (/api/nfl/*, /api/news, /api/trending) is
- * unauthenticated already.
+ * unauthenticated already — /api/nfl/leaders is the one that reads the session
+ * at all, and only to decide whether the members-only headshot column goes out.
  *
  * `/` is here only because it redirects to the dashboard — the app opens there
  * rather than on a login wall. The sign-in form is at /login.
