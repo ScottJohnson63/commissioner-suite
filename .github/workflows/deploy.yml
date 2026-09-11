@@ -10,8 +10,9 @@ name: Deploy to Vercel (production)
 # It is a button instead: Actions → Deploy to Vercel (production) → Run
 # workflow. Nothing reaches production until someone asks for it (issue #72).
 #
-# The development domain is unaffected — that still builds automatically from
-# `beta` and PRs targeting it, via the `deploy-dev` job in ci.yaml.
+# The development domain is the automatic one instead: the `deploy-dev` job in
+# ci.yaml rebuilds it on every push to main, so main is always visible
+# somewhere without a merge putting it in front of members.
 
 on:
   workflow_dispatch:
