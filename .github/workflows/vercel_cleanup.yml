@@ -96,10 +96,16 @@ jobs:
 
       - name: Report what is left
         if: always()
+        # The dispatch input goes through `env:` rather than straight into the
+        # script. `${{ }}` is substituted into the shell source before it runs,
+        # so interpolating any caller-supplied value inline is a code injection
+        # waiting to happen; an environment variable is read as data.
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           {
             echo ''
-            if [ "${{ inputs.dry_run }}" = "true" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
               echo '_Dry run — nothing was deleted._'
             else
               echo "## Deployments after"
