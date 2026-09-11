@@ -1,17 +1,24 @@
 // src/lib/rateLimit.ts
 //
-// In-process rate-limiting for the AI agent route.
+// In-process rate-limiting.
 //
-// Two independent, in-memory buckets guard against runaway LLM costs:
+// The building block is a fixed-window bucket map (`createFixedWindowLimiter`):
+// N requests per client per rolling window, counted in memory. Two features use
+// it, and each owns its own limiter so their counts never share a bucket:
 //
-//   Per-client hourly bucket — keyed by IP (or x-client-id header).
+//   AI agent, per client — keyed by IP (or x-client-id header).
 //     Each client is allowed HOURLY_LIMIT prompts per rolling 60-minute window.
 //     The window resets automatically after one hour of inactivity.
 //
-//   Global daily counter — a single process-wide counter that resets at UTC
-//     midnight, capped at DAILY_LIMIT. It is the app's copy of the answering
-//     provider's daily quota: reaching ours first means the reader gets our
-//     message instead of a raw provider 429 from inside a streaming answer.
+//   AI agent, global daily counter — a single process-wide counter that resets
+//     at UTC midnight, capped at DAILY_LIMIT. It is the app's copy of the
+//     answering provider's daily quota: reaching ours first means the reader
+//     gets our message instead of a raw provider 429 from inside a streaming
+//     answer. Not a fixed-window bucket — it is one counter for everyone.
+//
+//   Client error reports — keyed by IP alone, because POST /api/errors is open
+//     to signed-out visitors and writes a database row per call.
+//     See ERROR_REPORT_LIMIT.
 //
 // Caveats:
 //   • State is in-process only — a cold start or deployment resets all counters.
@@ -21,11 +28,95 @@
 
 import type { NextRequest } from 'next/server';
 
-/** Rolling count + window-start timestamp for a single client. */
-interface HourBucket { count: number; windowStart: number; }
+// ── Fixed-window limiter ──────────────────────────────────────────────────────
 
-/** Global daily prompt counter — resets at UTC midnight. */
-interface DayBucket  { count: number; dayKey: string; }
+/** Rolling count + window-start timestamp for a single client. */
+interface Bucket { count: number; windowStart: number; }
+
+/** The answer to "may this request proceed?", with the state behind it. */
+export interface LimitVerdict { allowed: boolean; remaining: number; resetAt: number; }
+
+/** The same state, read without spending from it. */
+export interface LimitUsage { used: number; remaining: number; resetAt: number; }
+
+/** A bucket map: `limit` requests per client per `windowMs`. */
+export interface FixedWindowLimiter {
+  readonly limit: number;
+  readonly windowMs: number;
+  /** Consumes one token when the client is under the limit. */
+  check(clientId: string): LimitVerdict;
+  /** Reads a client's current usage without consuming a token. */
+  peek(clientId: string): LimitUsage;
+  /** How many buckets are currently held — what the sweep below keeps bounded. */
+  size(): number;
+}
+
+/**
+ * Builds an independent in-memory limiter.
+ *
+ * Each call owns its own bucket map, so two features sharing this module cannot
+ * spend from each other's allowance.
+ *
+ * Expired buckets are swept once per window rather than left to accumulate: the
+ * error reporter is keyed by an IP header that an abusive caller can vary at
+ * will, and without the sweep every distinct value would hold a bucket for the
+ * life of the process.
+ */
+export function createFixedWindowLimiter(limit: number, windowMs: number): FixedWindowLimiter {
+  const buckets = new Map<string, Bucket>();
+  let lastSweep = Date.now();
+
+  const isExpired = (bucket: Bucket, now: number): boolean =>
+    now - bucket.windowStart >= windowMs;
+
+  function sweep(now: number): void {
+    if (now - lastSweep < windowMs) return;
+    lastSweep = now;
+    for (const [key, bucket] of buckets) {
+      if (isExpired(bucket, now)) buckets.delete(key);
+    }
+  }
+
+  return {
+    limit,
+    windowMs,
+
+    check(clientId: string): LimitVerdict {
+      const now = Date.now();
+      sweep(now);
+      let bucket = buckets.get(clientId);
+      if (!bucket || isExpired(bucket, now)) {
+        bucket = { count: 0, windowStart: now };
+        buckets.set(clientId, bucket);
+      }
+      const resetAt = bucket.windowStart + windowMs;
+      if (bucket.count >= limit) return { allowed: false, remaining: 0, resetAt };
+      bucket.count += 1;
+      return { allowed: true, remaining: Math.max(0, limit - bucket.count), resetAt };
+    },
+
+    peek(clientId: string): LimitUsage {
+      const now = Date.now();
+      const bucket = buckets.get(clientId);
+      if (!bucket || isExpired(bucket, now)) {
+        return { used: 0, remaining: limit, resetAt: now + windowMs };
+      }
+      return {
+        used:      Math.min(limit, bucket.count),
+        remaining: Math.max(0, limit - bucket.count),
+        resetAt:   bucket.windowStart + windowMs,
+      };
+    },
+
+    size(): number {
+      return buckets.size;
+    },
+  };
+}
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+// ── AI agent ──────────────────────────────────────────────────────────────────
 
 /** Maximum AI prompts allowed per client per 60-minute rolling window. */
 export const HOURLY_LIMIT = 15;
@@ -49,7 +140,12 @@ export const DAILY_LIMIT = (() => {
   return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 250;
 })();
 
-const hourlyBuckets = new Map<string, HourBucket>();
+/** The agent's per-client hourly allowance. */
+const agentHourly = createFixedWindowLimiter(HOURLY_LIMIT, ONE_HOUR_MS);
+
+/** Global daily prompt counter — resets at UTC midnight. */
+interface DayBucket  { count: number; dayKey: string; }
+
 let dailyBucket: DayBucket = { count: 0, dayKey: '' };
 
 /** Returns today's date in YYYY-MM-DD format (UTC), used as the daily reset key. */
@@ -109,22 +205,8 @@ export function incrementDaily(): void {
  *           `remaining` — tokens left in the current window after this call.
  *           `resetAt` — Unix-ms timestamp when the window expires.
  */
-export function checkHourlyLimit(
-  clientId: string,
-): { allowed: boolean; remaining: number; resetAt: number } {
-  const now = Date.now();
-  const ONE_HOUR_MS = 60 * 60 * 1000;
-  let bucket = hourlyBuckets.get(clientId);
-  if (!bucket || now - bucket.windowStart >= ONE_HOUR_MS) {
-    bucket = { count: 0, windowStart: now };
-    hourlyBuckets.set(clientId, bucket);
-  }
-  const remaining = Math.max(0, HOURLY_LIMIT - bucket.count);
-  const resetAt = bucket.windowStart + ONE_HOUR_MS;
-  if (bucket.count >= HOURLY_LIMIT) return { allowed: false, remaining: 0, resetAt };
-  bucket.count += 1;
-  hourlyBuckets.set(clientId, bucket);
-  return { allowed: true, remaining: remaining - 1, resetAt };
+export function checkHourlyLimit(clientId: string): LimitVerdict {
+  return agentHourly.check(clientId);
 }
 
 /**
@@ -141,21 +223,46 @@ export function checkHourlyLimit(
  * the truthful answer to "when does this reset" for someone who has spent
  * nothing.
  */
-export function peekHourlyLimit(
-  clientId: string,
-): { used: number; remaining: number; resetAt: number } {
-  const now = Date.now();
-  const ONE_HOUR_MS = 60 * 60 * 1000;
-  const bucket = hourlyBuckets.get(clientId);
-  if (!bucket || now - bucket.windowStart >= ONE_HOUR_MS) {
-    return { used: 0, remaining: HOURLY_LIMIT, resetAt: now + ONE_HOUR_MS };
-  }
-  return {
-    used:      Math.min(HOURLY_LIMIT, bucket.count),
-    remaining: Math.max(0, HOURLY_LIMIT - bucket.count),
-    resetAt:   bucket.windowStart + ONE_HOUR_MS,
-  };
+export function peekHourlyLimit(clientId: string): LimitUsage {
+  return agentHourly.peek(clientId);
 }
+
+// ── Client error reports ──────────────────────────────────────────────────────
+
+/**
+ * Error reports accepted from one IP per ERROR_REPORT_WINDOW_MS.
+ *
+ * POST /api/errors cannot require a session — the whole point is to catch the
+ * crash that a signed-out visitor hit on the public dashboard — and it writes a
+ * database row per call, so the limit is the only thing standing between that
+ * endpoint and an unbounded flood of rows.
+ *
+ * The number is set for the worst honest case rather than the typical one: a
+ * page whose render loop throws can fire a handful of reports a second for a
+ * few seconds before the visitor gives up and closes the tab. Twenty per ten
+ * minutes covers that and still leaves a determined single IP writing orders of
+ * magnitude fewer rows than it could before.
+ */
+export const ERROR_REPORT_LIMIT = 20;
+
+/** The window ERROR_REPORT_LIMIT is counted over. */
+export const ERROR_REPORT_WINDOW_MS = 10 * 60 * 1000;
+
+const errorReports = createFixedWindowLimiter(ERROR_REPORT_LIMIT, ERROR_REPORT_WINDOW_MS);
+
+/**
+ * Checks whether `clientIp` may file another error report, consuming one slot
+ * when it may.
+ *
+ * Key this with `getClientIp()`, not `getClientId()`: the latter honours a
+ * request header the caller sets, which on an open endpoint is a bypass rather
+ * than an identity.
+ */
+export function checkErrorReportLimit(clientIp: string): LimitVerdict {
+  return errorReports.check(clientIp);
+}
+
+// ── Identifying the caller ────────────────────────────────────────────────────
 
 /**
  * Extracts a stable client identifier from the incoming request.
@@ -165,6 +272,11 @@ export function peekHourlyLimit(
  *   2. `x-forwarded-for`     — first IP in the proxy chain (set by Vercel/CDN).
  *   3. `'unknown'`           — fallback when neither header is present.
  *
+ * The `x-client-id` preference is what the agent's usage meter is keyed on, and
+ * it means a caller can choose their own bucket. That is a fair trade where the
+ * route is already behind a session; on an unauthenticated route, prefer
+ * `getClientIp()`.
+ *
  * @param req  The incoming Next.js request.
  * @returns    A trimmed string identifying the client.
  */
@@ -172,6 +284,27 @@ export function getClientId(req: NextRequest): string {
   return (
     req.headers.get('x-client-id')?.trim() ||
     req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    'unknown'
+  );
+}
+
+/**
+ * The caller's IP as the edge saw it, for limits that must not be self-assigned.
+ *
+ * `NextRequest.ip` was removed in Next 15, so the proxy's own headers are the
+ * only source: `x-forwarded-for`'s first hop, then `x-real-ip`. Both are
+ * spoofable by anything talking to the origin directly, but on Vercel the CDN
+ * rewrites them, and unlike `x-client-id` they are not a documented knob the
+ * browser is expected to set.
+ *
+ * Callers with neither header share the `'unknown'` bucket. That is deliberate:
+ * an unidentifiable flood is rate-limited as one caller rather than waved
+ * through as many.
+ */
+export function getClientIp(req: NextRequest): string {
+  return (
+    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    req.headers.get('x-real-ip')?.trim() ||
     'unknown'
   );
 }
