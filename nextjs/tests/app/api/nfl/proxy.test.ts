@@ -10,11 +10,24 @@ jest.mock('@/lib/prisma', () => ({
   },
 }));
 
+// The route reads the session to decide whether the headshot column goes out.
+// Importing the real @/auth would pull NextAuth's whole provider config in.
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
+
 import { prisma } from '@/lib/prisma';
+import { auth } from '@/auth';
 
 const mockQueryRaw = prisma.$queryRawUnsafe as jest.MockedFunction<
   typeof prisma.$queryRawUnsafe
 >;
+const mockAuth = auth as unknown as jest.MockedFunction<
+  () => Promise<{ user?: unknown } | null>
+>;
+
+/** Signs the caller in (or out) for the next request. */
+function session(signedIn: boolean) {
+  mockAuth.mockResolvedValue(signedIn ? { user: { id: 'u1' } } : null);
+}
 
 function makeRequest(path: string): NextRequest {
   return new NextRequest(`http://localhost:3000/api/nfl/${path}`);
@@ -35,6 +48,10 @@ const mockLeaders = [
 describe('GET /api/nfl/leaders', () => {
   beforeEach(() => {
     mockQueryRaw.mockReset();
+    mockAuth.mockReset();
+    // Most cases here are about the SQL, not the session; sign in by default so
+    // the headshot tests below are the ones that speak about it.
+    session(true);
   });
 
   it('returns aggregated leaders for the requested stat', async () => {
@@ -180,5 +197,95 @@ describe('GET /api/nfl/leaders', () => {
     });
 
     expect(res.status).toBe(404);
+  });
+
+  // ── Headshots are members-only (issue #56) ─────────────────────────────────
+  // The Statistics tab is public, and so is this route. Hiding the picture in
+  // the component is not the same as not serving it, so these pin the wire.
+
+  const withHeadshot = [{ ...mockLeaders[0], headshot: 'https://static.www.nfl.com/brady.png' }];
+
+  it('withholds the headshot from a signed-out caller', async () => {
+    session(false);
+    mockQueryRaw.mockResolvedValueOnce(withHeadshot as never);
+
+    const res = await GET(makeRequest('leaders?season=2025'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    const body = await res.json() as { headshot: string | null }[];
+    expect(body[0].headshot).toBeNull();
+    // Everything else still goes out — only the picture is members-only.
+    expect(JSON.stringify(body)).not.toContain('nfl.com');
+  });
+
+  it('serves the headshot to a signed-in caller', async () => {
+    session(true);
+    mockQueryRaw.mockResolvedValueOnce(withHeadshot as never);
+
+    const res = await GET(makeRequest('leaders?season=2025'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    const body = await res.json() as { headshot: string | null }[];
+    expect(body[0].headshot).toBe('https://static.www.nfl.com/brady.png');
+  });
+
+  it('leaves the rest of the row intact for a signed-out caller', async () => {
+    session(false);
+    mockQueryRaw.mockResolvedValueOnce(withHeadshot as never);
+
+    const res = await GET(makeRequest('leaders?season=2025'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    const body = await res.json() as Record<string, unknown>[];
+    expect(body[0]).toMatchObject({
+      playerId: '4046',
+      playerDisplayName: 'Tom Brady',
+      position: 'QB',
+      team: 'TB',
+      statValue: 4200,
+      gamesPlayed: 17,
+    });
+  });
+
+  it('treats a failed session lookup as signed out rather than 500ing', async () => {
+    // The leaderboard answering signed-out visitors is the whole point of the
+    // endpoint, so a broken session check must not take the public tab down.
+    mockAuth.mockRejectedValue(new Error('AUTH_SECRET missing'));
+    mockQueryRaw.mockResolvedValueOnce(withHeadshot as never);
+
+    const res = await GET(makeRequest('leaders?season=2025'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { headshot: string | null }[];
+    expect(body[0].headshot).toBeNull();
+  });
+
+  it('forbids a shared cache from replaying a signed-in response', async () => {
+    session(true);
+    mockQueryRaw.mockResolvedValueOnce(withHeadshot as never);
+
+    const res = await GET(makeRequest('leaders?season=2025'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    // Without this the gate is only as good as the nearest CDN.
+    expect(res.headers.get('Cache-Control')).toBe('private, no-store');
+  });
+
+  it('does not look up a session for the seasons endpoint', async () => {
+    // /api/nfl/seasons carries no headshot, so it should not pay for a session.
+    (prisma as unknown as { $queryRaw: jest.Mock }).$queryRaw =
+      jest.fn(async () => [{ season: 2025 }]) as never;
+
+    await GET(makeRequest('seasons'), {
+      params: Promise.resolve({ path: ['seasons'] }),
+    });
+
+    expect(mockAuth).not.toHaveBeenCalled();
   });
 });

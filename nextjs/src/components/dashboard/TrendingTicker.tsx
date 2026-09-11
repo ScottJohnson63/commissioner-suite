@@ -14,10 +14,17 @@ export function TrendingTicker({
   adds,
   drops,
   loading,
+  showHeadshots = false,
 }: {
   adds: TrendingPlayer[];
   drops: TrendingPlayer[];
   loading: boolean;
+  /**
+   * Player headshots are for signed-in members only. Left off, every player
+   * falls back to the initial the broken-image path already draws, so the row
+   * keeps its shape and nothing shifts when a visitor signs in.
+   */
+  showHeadshots?: boolean;
 }) {
   const items = useMemo<TickerItem[]>(() => {
     const out: TickerItem[] = [];
@@ -137,22 +144,25 @@ export function TrendingTicker({
                   #{p.rank}
                 </span>
                 <div className="relative shrink-0" style={{ width: 22, height: 22 }}>
-                  <Image
-                    src={SLEEPER_THUMB(p.player_id)}
-                    alt={p.name ?? p.player_id}
-                    width={22}
-                    height={22}
-                    className="rounded-full object-cover"
-                    style={{ width: 22, height: 22, background: '#1e1e20' }}
-                    onError={(e) => {
-                      e.currentTarget.style.display = 'none';
-                      const sib = e.currentTarget.nextElementSibling as HTMLElement | null;
-                      if (sib) sib.style.display = 'flex';
-                    }}
-                  />
+                  {showHeadshots && (
+                    <Image
+                      src={SLEEPER_THUMB(p.player_id)}
+                      alt={p.name ?? p.player_id}
+                      width={22}
+                      height={22}
+                      className="rounded-full object-cover"
+                      style={{ width: 22, height: 22, background: '#1e1e20' }}
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none';
+                        const sib = e.currentTarget.nextElementSibling as HTMLElement | null;
+                        if (sib) sib.style.display = 'flex';
+                      }}
+                    />
+                  )}
                   <div className="rounded-full items-center justify-center text-[9px] font-medium"
                     style={{
-                      display: 'none', width: 22, height: 22, background: '#1e1e20',
+                      display: showHeadshots ? 'none' : 'flex',
+                      width: 22, height: 22, background: '#1e1e20',
                       color: '#555', position: 'absolute', top: 0, left: 0,
                     }}>
                     {p.name ? p.name.charAt(0).toUpperCase() : '?'}

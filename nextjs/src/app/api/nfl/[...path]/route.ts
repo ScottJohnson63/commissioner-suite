@@ -14,11 +14,15 @@
 //               ALLOWED_STAT_COLS may be queried (SQL injection prevention —
 //               the column name is interpolated directly into a raw query
 //               because Prisma does not support dynamic aggregate columns).
+//               The endpoint itself is public — the Statistics tab is one of
+//               the two a signed-out visitor may browse — but the headshot
+//               column is members-only and comes back null without a session.
 //
 // Reads the Turso DB only; no external API calls happen on the request path.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { auth } from '@/auth';
 import { ok, err } from '@/lib/api';
 // The allowlist lives with the stat catalog so the API and the Statistics
 // dropdown can never disagree about which columns exist.
@@ -83,6 +87,19 @@ export async function GET(
           return err(`Invalid stat column: ${rawStat}`, 400);
         }
 
+        // Headshots are for signed-in members only. The Statistics tab already
+        // declines to draw them for a signed-out visitor, but that tab is
+        // public and so is this route, so a URL that goes over the wire is
+        // still one devtools pane away from anyone. Nulling the column here is
+        // what makes it never served rather than merely never shown.
+        //
+        // A session lookup that throws must not take the leaderboard down with
+        // it — answering signed-out visitors is this endpoint's job — so a
+        // failure counts as signed out, which is the safe direction to fail.
+        const isAuthed = await auth()
+          .then((session) => !!session?.user)
+          .catch(() => false);
+
         // Position is always a short all-caps abbreviation — safe to inline
         // after stripping non-alpha chars.
         const safePosClause = pos && /^[A-Z]{1,3}$/.test(pos)
@@ -120,14 +137,25 @@ export async function GET(
           limit,
         );
 
-        // Turso may return bigint for COUNT(*) — normalise
+        // Turso may return bigint for COUNT(*) — normalise. The headshot goes
+        // out only to a member; everyone else gets the same null the table
+        // already renders a grey circle for, so the signed-out response is a
+        // shape the client has always handled.
         const normalised = rows.map((r) => ({
           ...r,
+          headshot:    isAuthed ? r.headshot : null,
           statValue:   typeof r.statValue   === 'bigint' ? Number(r.statValue)   : r.statValue,
           gamesPlayed: typeof r.gamesPlayed === 'bigint' ? Number(r.gamesPlayed) : r.gamesPlayed,
         }));
 
-        return ok(normalised);
+        // The body now varies by session, so it must never land in a shared
+        // cache — a member's response replayed to a signed-out visitor would
+        // hand over the very URLs the gate above withholds. Route handlers are
+        // dynamic by default and reading the session keeps them that way; this
+        // header is for everything between us and the browser.
+        const res = ok(normalised);
+        res.headers.set('Cache-Control', 'private, no-store');
+        return res;
       }
 
       default:
