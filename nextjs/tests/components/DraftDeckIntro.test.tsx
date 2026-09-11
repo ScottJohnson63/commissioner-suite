@@ -27,7 +27,9 @@ import { CARD_DETAIL_CALLOUTS } from '@/components/intro/IntroArt';
 import {
   MIN_GAMES_FOR_TIER, TIER_LABEL, TIER_MAX_RANK, TIER_ORDER, WILDCARD_PACK_TIERS,
 } from '@/lib/cards/tiers';
-import { MAX_CUSTOMIZATION_PACKS } from '@/lib/cards/ration';
+import {
+  BONUS_KINDS, HIGH_SCORE_THRESHOLD, MAX_CUSTOMIZATION_PACKS,
+} from '@/lib/cards/ration';
 import {
   GAME_TIME_ZONE_LABEL, LOCK_DAY_LABEL, LOCK_HOUR, LOCK_MINUTE,
   REVEAL_DAY_LABEL, REVEAL_HOUR, clockLabel,
@@ -226,6 +228,25 @@ describe('DraftDeckIntro — the rules it states', () => {
 
     const lowest = WILDCARD_PACK_TIERS[WILDCARD_PACK_TIERS.length - 1];
     expect(wildcard).toContain(`Each ${TIER_LABEL[lowest]} or better pack`);
+  });
+
+  // Issue #54: the tour said nothing about the Sleeper bonuses, so the two
+  // packs a member can earn from a finished week were a rule only the code
+  // knew. Composed from BONUS_KINDS and the threshold, so a retuned or removed
+  // bonus fails here rather than lying on the overview slide.
+  it('states the Sleeper bonuses the game actually awards', async () => {
+    const user = userEvent.setup();
+    renderTour();
+    const overview = await slideText(user, SLIDES[0]);
+
+    expect(overview).toContain('Win your matchup');
+    expect(overview).toContain(`score over ${HIGH_SCORE_THRESHOLD} points`);
+    // "Any" is the rule: winning in four Sleeper leagues is still one pack.
+    expect(overview).toContain('in any of your Sleeper leagues');
+    // The bonuses are independent — a week that does both is worth one pack
+    // for each, which is what "each" says and "both" would not.
+    expect(overview).toContain('each earns an extra pack');
+    expect(BONUS_KINDS).toHaveLength(2);
   });
 
   it('states the portrait reward cap from the constant that enforces it', async () => {
