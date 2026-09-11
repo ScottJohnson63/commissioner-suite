@@ -1,0 +1,150 @@
+name: Deploy to Vercel (production)
+
+# Production used to deploy itself: the `deploy` job in ci.yaml ran on every
+# push to `main` once the rest of the pipeline was green. That makes a release
+# a side effect of merging, with no moment where someone decides the build is
+# one they actually want in front of members — and it hands Vercel a fresh set
+# of retained Function bundles for every merge, which is what "Function
+# Storage" bills for (issue #50).
+#
+# It is a button instead: Actions → Deploy to Vercel (production) → Run
+# workflow. Nothing reaches production until someone asks for it (issue #72).
+#
+# The development domain is unaffected — that still builds automatically from
+# `beta` and PRs targeting it, via the `deploy-dev` job in ci.yaml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_ci_check:
+        description: 'Deploy even if CI has not passed for this commit'
+        type: boolean
+        required: false
+        default: false
+
+# A production deploy is not worth racing against itself, and a half-finished
+# one must not be discarded in favour of a newer request — let a run finish.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Vercel
+    runs-on: ubuntu-latest
+    # `actions: read` is what the CI-verdict lookup below needs; a repository
+    # whose default token is read-only for contents alone would 404 on it.
+    permissions:
+      contents: read
+      actions: read
+    env:
+      # The CLI treats a directory as linked when these are set, which is why
+      # there is no `vercel link` step (the other Vercel jobs rely on the same).
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      # `workflow_dispatch` offers every branch and tag in the picker, and the
+      # job it replaced could only ever fire for `main`. Making the trigger
+      # manual was not meant to also widen what may become production.
+      - name: Check the ref is main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Production deploys run from main; this run is on $GITHUB_REF."
+            exit 1
+          fi
+
+      - name: Check credentials are present
+        run: |
+          missing=
+          [ -n "$VERCEL_TOKEN" ]      || missing="$missing VERCEL_TOKEN"
+          [ -n "$VERCEL_ORG_ID" ]     || missing="$missing VERCEL_ORG_ID"
+          [ -n "$VERCEL_PROJECT_ID" ] || missing="$missing VERCEL_PROJECT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing"
+            exit 1
+          fi
+
+      # The old job sat behind `needs: [code-count, project-check,
+      # dependency-check, semgrep-sast, test]`, so a red commit could not reach
+      # production. A manual trigger has no such edge, so look the pipeline up
+      # instead: the CI run for this exact commit must have finished green.
+      #
+      # The input goes through `env:` rather than being pasted into the script —
+      # an expression expands before the shell parses the line, so interpolating
+      # a caller-supplied value inline is a code injection waiting to happen.
+      - name: Check CI passed for this commit
+        env:
+          SKIP_CI_CHECK: ${{ inputs.skip_ci_check }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$SKIP_CI_CHECK" = "true" ]; then
+            echo "::warning::CI check skipped by request — deploying $GITHUB_SHA unverified."
+            exit 0
+          fi
+
+          # Newest first, so the first completed run is the current verdict for
+          # this commit (a re-run supersedes the original).
+          conclusion=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=1" \
+            --jq '.workflow_runs[0].conclusion // empty')
+
+          case "$conclusion" in
+            success)
+              echo "CI Pipeline succeeded for $GITHUB_SHA."
+              ;;
+            '')
+              echo "::error::No completed CI Pipeline run found for $GITHUB_SHA. Wait for it to finish, or re-run with 'Deploy even if CI has not passed'."
+              exit 1
+              ;;
+            *)
+              echo "::error::CI Pipeline concluded '$conclusion' for $GITHUB_SHA. Fix it, or re-run with 'Deploy even if CI has not passed'."
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Deploy to Vercel
+        id: deploy
+        run: |
+          # The CLI puts progress on stderr and the deployment URL on stdout,
+          # but takes the last line rather than the whole of it: a notice about
+          # a newer CLI version arriving on stdout would otherwise be spliced
+          # into the URL reported below.
+          url=$(vercel deploy --prod --yes --token="$VERCEL_TOKEN" | tail -n 1)
+
+          case "$url" in
+            https://*)
+              ;;
+            *)
+              echo "::error::Expected a deployment URL from vercel deploy, got: ${url:-nothing}"
+              exit 1
+              ;;
+          esac
+
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed $url"
+
+      - name: Summarise the deployment
+        if: always()
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
+          SKIP_CI_CHECK: ${{ inputs.skip_ci_check }}
+        run: |
+          {
+            echo "## Production Deployment"
+            echo ""
+            echo "| | |"
+            echo "|--|--|"
+            echo "| Build | ${DEPLOYMENT_URL:-not deployed} |"
+            echo "| Commit | $GITHUB_SHA |"
+            echo "| Requested by | @$GITHUB_ACTOR |"
+            if [ "$SKIP_CI_CHECK" = "true" ]; then
+              echo "| CI check | skipped |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
