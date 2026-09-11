@@ -1,1 +1,8 @@
 node_modules
+
+# Local SQLite databases — never commit; they carry real user rows and
+# password hashes (see issue #63).
+*.db
+*.db-journal
+*.db-shm
+*.db-wal

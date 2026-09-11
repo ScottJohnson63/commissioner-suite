@@ -9,16 +9,36 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaLibSql } from '@prisma/adapter-libsql';
 import bcrypt from 'bcryptjs';
 
+/**
+ * The commissioner password has no default: a fallback baked into this file
+ * would be a published credential, since the repo is public. Refuse to seed
+ * rather than create an account everyone can sign in to.
+ */
+function requireAdminPassword(): string {
+  const password = process.env.ADMIN_PASSWORD;
+  if (password) return password;
+
+  console.error('');
+  console.error('✗ ADMIN_PASSWORD is not set.');
+  console.error('');
+  console.error('  Seeding will not create a commissioner with a default password.');
+  console.error('  Set ADMIN_PASSWORD to a strong, unique value and re-run, e.g.:');
+  console.error('');
+  console.error('    ADMIN_PASSWORD=\'<your-password>\' npm run seed');
+  console.error('');
+  process.exit(1);
+}
+
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME ?? 'admin';
+const ADMIN_PASSWORD = requireAdminPassword();
+const ADMIN_NAME     = process.env.ADMIN_NAME     ?? 'Admin';
+const ADMIN_EMAIL    = process.env.ADMIN_EMAIL     ?? 'admin@commissioner-suite.local';
+
 const adapter = new PrismaLibSql({
   url:       process.env.TURSO_DATABASE_URL!,
   authToken: process.env.TURSO_AUTH_TOKEN,
 });
 const prisma = new PrismaClient({ adapter });
-
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME ?? 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? 'Commissioner1!';
-const ADMIN_NAME     = process.env.ADMIN_NAME     ?? 'Admin';
-const ADMIN_EMAIL    = process.env.ADMIN_EMAIL     ?? 'admin@commissioner-suite.local';
 
 async function main() {
   const existing = await prisma.user.findUnique({ where: { username: ADMIN_USERNAME } });
@@ -47,10 +67,13 @@ async function main() {
   console.log('');
   console.log('✓ Admin commissioner created');
   console.log('  Username :', ADMIN_USERNAME);
-  console.log('  Password :', ADMIN_PASSWORD);
+  console.log('  Password : (the value of ADMIN_PASSWORD)');
   console.log('  Email    :', ADMIN_EMAIL);
   console.log('');
-  console.log('  → The Sleeper username field is bypassed for commissioners — enter anything.');
+  console.log('  → Sign-in re-checks Sleeper league membership for every account,');
+  console.log('    commissioners included. This username must resolve to a Sleeper');
+  console.log('    user who belongs to a league registered in the database, or the');
+  console.log('    login will be rejected.');
   console.log('');
 }
 

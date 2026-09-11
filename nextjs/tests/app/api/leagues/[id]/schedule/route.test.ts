@@ -1,17 +1,22 @@
 // tests/app/api/leagues/[id]/schedule/route.test.ts
 //
-// Tests for GET + POST /api/leagues/[id]/schedule.
-// Mocks @/lib/prisma, @/lib/scheduler/engine, and @/lib/audit.
+// Tests for GET + POST + DELETE /api/leagues/[id]/schedule.
+// Mocks @/auth, @/lib/prisma, @/lib/scheduler/engine, and @/lib/audit.
+//
+// POST and DELETE are commissioner-only; GET only needs a session (the
+// schedule is league-internal but every member may read it).
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { NextRequest } from 'next/server';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
+
 jest.mock('@/lib/prisma', () => ({
   prisma: {
     league:   { findFirst: jest.fn() },
-    schedule: { findFirst: jest.fn(), create: jest.fn(), delete: jest.fn() },
+    schedule: { findFirst: jest.fn(), create: jest.fn(), delete: jest.fn(), findMany: jest.fn() },
   },
 }));
 
@@ -33,7 +38,8 @@ jest.mock('@/lib/sleeper/liveNames', () => ({
   teamNameResolver: jest.fn(),
 }));
 
-import { GET, POST } from '@/app/api/leagues/[id]/schedule/route';
+import { GET, POST, DELETE } from '@/app/api/leagues/[id]/schedule/route';
+import { auth } from '@/auth';
 import { fetchLeagueData } from '@/lib/sleeper/sync';
 import { teamNameResolver } from '@/lib/sleeper/liveNames';
 import { prisma } from '@/lib/prisma';
@@ -41,6 +47,7 @@ import { generateSchedule } from '@/lib/scheduler/engine';
 import { writeAuditLog } from '@/lib/audit';
 import { ScheduleError } from '@/lib/scheduler/types';
 
+const mockAuth              = auth                    as jest.MockedFunction<typeof auth>;
 const mockLeagueFindFirst   = prisma.league.findFirst as jest.MockedFunction<typeof prisma.league.findFirst>;
 const mockFetchLeagueData   = fetchLeagueData         as jest.MockedFunction<typeof fetchLeagueData>;
 const mockScheduleFindFirst = prisma.schedule.findFirst as jest.MockedFunction<typeof prisma.schedule.findFirst>;
@@ -57,6 +64,14 @@ function makeParams(id: string) {
 
 function makeReq(id: string, method = 'GET'): NextRequest {
   return new NextRequest(`http://localhost/api/leagues/${id}/schedule`, { method });
+}
+
+function signedInAs(role: string) {
+  mockAuth.mockResolvedValue({ user: { role } } as never);
+}
+
+function signedOut() {
+  mockAuth.mockResolvedValue(null as never);
 }
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -110,12 +125,34 @@ const fakeSchedule = {
 
 describe('GET /api/leagues/[id]/schedule', () => {
   beforeEach(() => {
+    mockAuth.mockReset();
     mockLeagueFindFirst.mockReset();
     mockScheduleFindFirst.mockReset();
     mockTeamNameResolver.mockReset();
+    signedInAs('COMMISSIONER');
     mockLeagueFindFirst.mockResolvedValue(fakeLeague as never);
     // Default: Sleeper agrees with the database, so names pass through.
     mockTeamNameResolver.mockResolvedValue((_id, stored) => stored);
+  });
+
+  // WHY: The schedule is league-internal data and the page that shows it is
+  //      behind the login wall, so a signed-out caller gets nothing back.
+  it('returns 401 when the caller is not signed in', async () => {
+    signedOut();
+
+    const res = await GET(makeReq('lg1'), makeParams('lg1'));
+    expect(res.status).toBe(401);
+    expect(mockLeagueFindFirst).not.toHaveBeenCalled();
+  });
+
+  // WHY: Reading the schedule is not a commissioner action — every member of
+  //      the league needs to see who they play.
+  it('lets a MEMBER read the schedule', async () => {
+    signedInAs('MEMBER');
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSavedSchedule as never);
+
+    const res = await GET(makeReq('lg1'), makeParams('lg1'));
+    expect(res.status).toBe(200);
   });
 
   // WHY: If a schedule exists, return it with 200 so the UI can display the grid.
@@ -181,16 +218,38 @@ describe('GET /api/leagues/[id]/schedule', () => {
 
 describe('POST /api/leagues/[id]/schedule', () => {
   beforeEach(() => {
+    mockAuth.mockReset();
     mockLeagueFindFirst.mockReset();
     mockFetchLeagueData.mockReset();
     mockScheduleCreate.mockReset();
     mockGenerateSchedule.mockReset();
     mockAuditLog.mockReset();
 
+    signedInAs('COMMISSIONER');
     mockLeagueFindFirst.mockResolvedValue(fakeLeague as never);
     mockGenerateSchedule.mockReturnValue(fakeSchedule as never);
     mockScheduleCreate.mockResolvedValue(fakeSavedSchedule as never);
     mockAuditLog.mockResolvedValue(undefined);
+  });
+
+  // WHY: Generating a schedule rewrites the season for every member and can
+  //      trigger a Sleeper sync, so an anonymous caller must be stopped before
+  //      any of that runs.
+  it('returns 403 when the caller is not signed in', async () => {
+    signedOut();
+
+    const res = await POST(makeReq('lg1', 'POST'), makeParams('lg1'));
+    expect(res.status).toBe(403);
+    expect(mockGenerateSchedule).not.toHaveBeenCalled();
+  });
+
+  // WHY: Members read the schedule; only the commissioner replaces it.
+  it('returns 403 for a non-commissioner', async () => {
+    signedInAs('MEMBER');
+
+    const res = await POST(makeReq('lg1', 'POST'), makeParams('lg1'));
+    expect(res.status).toBe(403);
+    expect(mockGenerateSchedule).not.toHaveBeenCalled();
   });
 
   // WHY: Happy path — valid league triggers schedule generation, DB save,
@@ -241,5 +300,37 @@ describe('POST /api/leagues/[id]/schedule', () => {
       'lg1',
       expect.objectContaining({ type: 'schedule' }),
     );
+  });
+});
+
+// ── DELETE tests ──────────────────────────────────────────────────────────────
+
+describe('DELETE /api/leagues/[id]/schedule', () => {
+  beforeEach(() => {
+    mockAuth.mockReset();
+    mockLeagueFindFirst.mockReset();
+    mockAuditLog.mockReset();
+
+    signedInAs('COMMISSIONER');
+    mockLeagueFindFirst.mockResolvedValue(fakeLeague as never);
+  });
+
+  // WHY: This drops every schedule for the league and all of its matchups.
+  //      An anonymous caller must never reach the delete.
+  it('returns 403 when the caller is not signed in', async () => {
+    signedOut();
+
+    const res = await DELETE(makeReq('lg1', 'DELETE'), makeParams('lg1'));
+    expect(res.status).toBe(403);
+    expect(mockLeagueFindFirst).not.toHaveBeenCalled();
+  });
+
+  // WHY: A member who disliked their fixtures must not be able to wipe them.
+  it('returns 403 for a non-commissioner', async () => {
+    signedInAs('MEMBER');
+
+    const res = await DELETE(makeReq('lg1', 'DELETE'), makeParams('lg1'));
+    expect(res.status).toBe(403);
+    expect(mockLeagueFindFirst).not.toHaveBeenCalled();
   });
 });

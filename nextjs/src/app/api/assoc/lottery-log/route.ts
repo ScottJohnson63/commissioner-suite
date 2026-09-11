@@ -19,6 +19,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
 import { findLeagueIdByAnyId } from '@/lib/league';
+import { requireCommissioner } from '@/lib/apiAuth';
 
 /** A single team's outcome from the lottery simulation. */
 interface LotteryResult {
@@ -31,6 +32,11 @@ interface LotteryResult {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // The lottery log is presented as the transparent record of the draw — a
+  // forged entry would be indistinguishable from a real one.
+  const denied = await requireCommissioner();
+  if (denied) return denied;
+
   const body = await req.json() as { leagueId?: string; results?: LotteryResult[]; rerun?: boolean };
 
   if (!body.leagueId || !Array.isArray(body.results)) {
