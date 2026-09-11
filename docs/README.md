@@ -36,3 +36,14 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Data credits
+
+Player statistics from [nflverse](https://github.com/nflverse/nflverse-data),
+licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+Fantasy points, card tiers, and projections are derived by Commissioner Suite —
+nflverse publishes the raw NFL stats, and every fantasy figure in the suite is
+computed on top of them.
+
+The same credit is shown to every member in the app, under the About button at
+the foot of the sidebar.

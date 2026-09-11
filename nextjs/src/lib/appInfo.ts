@@ -30,3 +30,14 @@ export const GITHUB_ISSUES_URL = `${GITHUB_REPO_URL}/issues`;
  * `${GITHUB_REPO_URL}/blob/main/docs/USER_GUIDE.md` once that file exists.
  */
 export const USER_GUIDE_URL = `${GITHUB_REPO_URL}/tree/main/docs`;
+
+/**
+ * Where the player stats come from. nflverse publishes them under CC BY 4.0,
+ * which asks for visible credit, a link to the licence, and a note when the
+ * data has been changed — so both links are constants rather than markup, and
+ * the About dialog says outright that the fantasy figures are ours, not theirs.
+ */
+export const NFLVERSE_DATA_URL = 'https://github.com/nflverse/nflverse-data';
+
+/** The licence nflverse publishes that data under. */
+export const CC_BY_4_URL = 'https://creativecommons.org/licenses/by/4.0/';
