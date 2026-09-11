@@ -5,12 +5,14 @@
 // Records the final draft order in the audit log. No DB table stores draft
 // order — it is reconstructed from the audit log whenever displayed.
 //
-// Mocks: @/lib/audit (writeAuditLog)
+// Mocks: @/auth, @/lib/audit (writeAuditLog)
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { NextRequest } from 'next/server';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
+
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
 jest.mock('@/lib/audit', () => ({
   writeAuditLog: jest.fn(),
@@ -23,9 +25,11 @@ jest.mock('@/lib/prisma', () => ({
 }));
 
 import { POST } from '@/app/api/assoc/draft-order/route';
+import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 
+const mockAuth            = auth                   as jest.MockedFunction<typeof auth>;
 const mockLeagueFindFirst = prisma.league.findFirst as jest.MockedFunction<typeof prisma.league.findFirst>;
 
 const mockWriteAuditLog = writeAuditLog as jest.MockedFunction<typeof writeAuditLog>;
@@ -38,6 +42,10 @@ function makeReq(body: object): NextRequest {
     body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function signedInAs(role: string) {
+  mockAuth.mockResolvedValue({ user: { role } } as never);
 }
 
 // A valid draft pick record matching the DraftPick interface.
@@ -54,11 +62,32 @@ const validPick = {
 
 describe('POST /api/assoc/draft-order', () => {
   beforeEach(() => {
+    mockAuth.mockReset();
+    signedInAs('COMMISSIONER');
     mockLeagueFindFirst.mockReset();
     mockLeagueFindFirst.mockResolvedValue(null as never);
     mockWriteAuditLog.mockReset();
     // Default: writeAuditLog resolves without error.
     mockWriteAuditLog.mockResolvedValue(undefined);
+  });
+
+  // WHY: The audit log is the league's permanent record of who picks when.
+  //      An anonymous caller must not be able to forge an entry in it.
+  it('returns 403 when the caller is not signed in', async () => {
+    mockAuth.mockResolvedValue(null as never);
+
+    const res = await POST(makeReq({ leagueId: 'l1', draftOrder: [validPick] }));
+    expect(res.status).toBe(403);
+    expect(mockWriteAuditLog).not.toHaveBeenCalled();
+  });
+
+  // WHY: A member could otherwise log a draft order of their own choosing.
+  it('returns 403 for a non-commissioner', async () => {
+    signedInAs('MEMBER');
+
+    const res = await POST(makeReq({ leagueId: 'l1', draftOrder: [validPick] }));
+    expect(res.status).toBe(403);
+    expect(mockWriteAuditLog).not.toHaveBeenCalled();
   });
 
   // WHY: A request without leagueId cannot be attributed to any league in the

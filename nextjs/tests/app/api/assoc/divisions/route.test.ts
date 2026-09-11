@@ -1,12 +1,14 @@
 // tests/app/api/assoc/divisions/route.test.ts
 //
 // Tests for POST /api/assoc/divisions.
-// Mocks @/lib/prisma and @/lib/audit.
+// Mocks @/auth, @/lib/prisma and @/lib/audit.
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { NextRequest } from 'next/server';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
+
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
@@ -18,9 +20,11 @@ jest.mock('@/lib/prisma', () => ({
 jest.mock('@/lib/audit', () => ({ writeAuditLog: jest.fn() }));
 
 import { POST } from '@/app/api/assoc/divisions/route';
+import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 
+const mockAuth            = auth                   as jest.MockedFunction<typeof auth>;
 const mockLeagueFindFirst = prisma.league.findFirst as jest.MockedFunction<typeof prisma.league.findFirst>;
 const mockTeamUpdateMany   = prisma.team.updateMany   as jest.MockedFunction<typeof prisma.team.updateMany>;
 const mockAuditLog         = writeAuditLog            as jest.MockedFunction<typeof writeAuditLog>;
@@ -35,6 +39,10 @@ function makePost(body: Record<string, unknown>): NextRequest {
   });
 }
 
+function signedInAs(role: string) {
+  mockAuth.mockResolvedValue({ user: { role } } as never);
+}
+
 const fakeStandings = [
   { rosterId: 1, name: 'Team A', rank: 1, wins: 10, losses: 3, pointsFor: 1500, pointsAgainst: 1200, division: 1 },
   { rosterId: 2, name: 'Team B', rank: 2, wins: 9,  losses: 4, pointsFor: 1400, pointsAgainst: 1100, division: 2 },
@@ -44,13 +52,35 @@ const fakeStandings = [
 
 describe('POST /api/assoc/divisions', () => {
   beforeEach(() => {
+    mockAuth.mockReset();
     mockLeagueFindFirst.mockReset();
     mockTeamUpdateMany.mockReset();
     mockAuditLog.mockReset();
 
+    signedInAs('COMMISSIONER');
+
     mockLeagueFindFirst.mockResolvedValue({ id: 'lg1', name: 'Test', season: 2025 } as never);
     mockTeamUpdateMany.mockResolvedValue({ count: 1 } as never);
     mockAuditLog.mockResolvedValue(undefined);
+  });
+
+  // WHY: Division assignments reshape the standings for the whole league, so
+  //      an anonymous caller must never reach the update.
+  it('returns 403 when the caller is not signed in', async () => {
+    mockAuth.mockResolvedValue(null as never);
+
+    const res = await POST(makePost({ leagueId: 'lg1', standings: fakeStandings }));
+    expect(res.status).toBe(403);
+    expect(mockTeamUpdateMany).not.toHaveBeenCalled();
+  });
+
+  // WHY: Members see the Divisions tab but only the commissioner sets it.
+  it('returns 403 for a non-commissioner', async () => {
+    signedInAs('MEMBER');
+
+    const res = await POST(makePost({ leagueId: 'lg1', standings: fakeStandings }));
+    expect(res.status).toBe(403);
+    expect(mockTeamUpdateMany).not.toHaveBeenCalled();
   });
 
   // WHY: Happy path — a valid leagueId and standings array triggers updateMany

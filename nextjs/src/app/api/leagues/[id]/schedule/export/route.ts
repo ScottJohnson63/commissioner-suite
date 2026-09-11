@@ -6,11 +6,19 @@ import { writeAuditLog } from '@/lib/audit';
 import { err } from '@/lib/api';
 import { findLeagueByAnyId } from '@/lib/league';
 import { teamNameResolver } from '@/lib/sleeper/liveNames';
+import { requireSession } from '@/lib/apiAuth';
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  // Same data as GET /api/leagues/[id]/schedule, so the same bar: leaving this
+  // open would just be the other door into the schedule. It also writes an
+  // EXPORT entry to the audit log, which no anonymous caller should be able
+  // to fill.
+  const denied = await requireSession();
+  if (denied) return denied;
+
   const { id } = await params;
 
   // Resolve by DB id or Sleeper league id — matches the schedule route's behaviour.
