@@ -6,12 +6,14 @@
 // The route delegates entirely to prisma.matchup.update — its only logic is
 // catching the "not found" Prisma error and returning 404.
 //
-// Mocks: @/lib/prisma (matchup.update)
+// Mocks: @/auth, @/lib/prisma (matchup.update)
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { NextRequest } from 'next/server';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
+
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
@@ -22,8 +24,10 @@ jest.mock('@/lib/prisma', () => ({
 }));
 
 import { PATCH } from '@/app/api/matchups/[id]/route';
+import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 
+const mockAuth   = auth                 as jest.MockedFunction<typeof auth>;
 const mockUpdate = prisma.matchup.update as jest.MockedFunction<typeof prisma.matchup.update>;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -42,11 +46,37 @@ function makeParams(id: string) {
   return { params: Promise.resolve({ id }) };
 }
 
+function signedInAs(role: string) {
+  mockAuth.mockResolvedValue({ user: { role } } as never);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('PATCH /api/matchups/[id]', () => {
   beforeEach(() => {
+    mockAuth.mockReset();
     mockUpdate.mockReset();
+    signedInAs('COMMISSIONER');
+  });
+
+  // WHY: Anyone on the internet could otherwise rewrite a published fixture —
+  //      move a matchup to another week, or swap in a different opponent.
+  it('returns 403 when the caller is not signed in', async () => {
+    mockAuth.mockResolvedValue(null as never);
+
+    const res = await PATCH(makeReq({ week: 3 }), makeParams('matchup-1'));
+    expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  // WHY: Correcting the schedule is the commissioner's job; a member must not
+  //      be able to edit their own matchup.
+  it('returns 403 for a non-commissioner', async () => {
+    signedInAs('MEMBER');
+
+    const res = await PATCH(makeReq({ week: 3 }), makeParams('matchup-1'));
+    expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   // WHY: A successful update should return the full updated matchup record.

@@ -22,9 +22,15 @@ import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
 import { findLeagueByAnyId } from '@/lib/league';
+import { requireCommissioner } from '@/lib/apiAuth';
 import type { StandingEntry } from '@/app/api/assoc/standings/route';
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // Reassigns every team's division, which reshapes the standings for the
+  // whole league. Commissioner only.
+  const denied = await requireCommissioner();
+  if (denied) return denied;
+
   const body = await req.json() as { leagueId?: string; standings?: StandingEntry[] };
 
   if (!body.leagueId || !Array.isArray(body.standings) || body.standings.length === 0) {

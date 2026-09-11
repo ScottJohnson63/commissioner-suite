@@ -5,12 +5,14 @@
 // Records the outcome of a draft lottery simulation in the audit log.
 // Each lottery run — including re-runs — is permanently logged for transparency.
 //
-// Mocks: @/lib/audit (writeAuditLog)
+// Mocks: @/auth, @/lib/audit (writeAuditLog)
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { NextRequest } from 'next/server';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
+
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
 jest.mock('@/lib/audit', () => ({
   writeAuditLog: jest.fn(),
@@ -23,9 +25,11 @@ jest.mock('@/lib/prisma', () => ({
 }));
 
 import { POST } from '@/app/api/assoc/lottery-log/route';
+import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 
+const mockAuth            = auth                   as jest.MockedFunction<typeof auth>;
 const mockLeagueFindFirst = prisma.league.findFirst as jest.MockedFunction<typeof prisma.league.findFirst>;
 
 const mockWriteAuditLog = writeAuditLog as jest.MockedFunction<typeof writeAuditLog>;
@@ -38,6 +42,10 @@ function makeReq(body: object): NextRequest {
     body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function signedInAs(role: string) {
+  mockAuth.mockResolvedValue({ user: { role } } as never);
 }
 
 // A valid lottery result record matching the LotteryResult interface.
@@ -54,10 +62,31 @@ const validResult = {
 
 describe('POST /api/assoc/lottery-log', () => {
   beforeEach(() => {
+    mockAuth.mockReset();
+    signedInAs('COMMISSIONER');
     mockLeagueFindFirst.mockReset();
     mockLeagueFindFirst.mockResolvedValue(null as never);
     mockWriteAuditLog.mockReset();
     mockWriteAuditLog.mockResolvedValue(undefined);
+  });
+
+  // WHY: The lottery log is presented as the transparent record of the draw —
+  //      a forged entry would be indistinguishable from a real one.
+  it('returns 403 when the caller is not signed in', async () => {
+    mockAuth.mockResolvedValue(null as never);
+
+    const res = await POST(makeReq({ leagueId: 'l1', results: [validResult] }));
+    expect(res.status).toBe(403);
+    expect(mockWriteAuditLog).not.toHaveBeenCalled();
+  });
+
+  // WHY: The team with the best odds must not be able to log its own result.
+  it('returns 403 for a non-commissioner', async () => {
+    signedInAs('MEMBER');
+
+    const res = await POST(makeReq({ leagueId: 'l1', results: [validResult] }));
+    expect(res.status).toBe(403);
+    expect(mockWriteAuditLog).not.toHaveBeenCalled();
   });
 
   // WHY: Missing leagueId means the audit entry can't be associated with a
