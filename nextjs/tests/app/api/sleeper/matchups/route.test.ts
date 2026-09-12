@@ -21,10 +21,15 @@ jest.mock('@/lib/sleeper/client', () => ({
   sleeperGet: jest.fn(),
 }));
 
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
+
 import { GET } from '@/app/api/sleeper/matchups/route';
 import { sleeperGet } from '@/lib/sleeper/client';
+import { auth } from '@/auth';
+import { MEMBER, PLAYER, SIGNED_OUT } from '../../../../helpers/session';
 
 const mockSleeperGet = sleeperGet as jest.MockedFunction<typeof sleeperGet>;
+const mockAuth = auth as jest.MockedFunction<typeof auth>;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -72,6 +77,14 @@ function setupHappyPath(): void {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+// Every guarded handler here is tested for what it does *past* the guard, so
+// a member is signed in for every test by default. The guard itself is
+// exercised in the "auth" describe at the bottom of the file.
+beforeEach(() => {
+  mockAuth.mockReset();
+  mockAuth.mockResolvedValue(MEMBER as never);
+});
 
 describe('GET /api/sleeper/matchups', () => {
   beforeEach(() => {
@@ -146,5 +159,21 @@ describe('GET /api/sleeper/matchups', () => {
 
     const res = await GET(makeReq({ leagueId: freshLeagueId(), week: '5' }));
     expect(res.status).toBe(502);
+  });
+});
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+describe('GET /api/sleeper/matchups — auth', () => {
+  it('turns a signed-out caller away', async () => {
+    mockAuth.mockResolvedValue(SIGNED_OUT as never);
+    const res = await GET(makeReq({ leagueId: 'l1', week: '5' }));
+    expect(res.status).toBe(401);
+  });
+
+  it('lets a PLAYER through — any signed-in account may read a league\'s matchups', async () => {
+    mockAuth.mockResolvedValue(PLAYER as never);
+    const res = await GET(makeReq({}));
+    expect(res.status).toBe(400);
   });
 });

@@ -9,6 +9,9 @@
 // The rebuild is the step that connects the game to the stat syncs: after a
 // season is backfilled or a weekly sync corrects a number, this is what turns
 // that into cards. It is safe to run at any time — collections survive it.
+//
+// AUTH: GET  user
+// AUTH: POST commissioner
 
 import { NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';

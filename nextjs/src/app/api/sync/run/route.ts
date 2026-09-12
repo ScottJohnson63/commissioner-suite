@@ -14,6 +14,8 @@
 // Workflow dispatch needs GITHUB_SYNC_TOKEN (a PAT or fine-grained token with
 // `actions: write`) and GITHUB_REPOSITORY ("owner/repo"). Without them the
 // endpoint says so plainly rather than silently reporting success.
+//
+// AUTH: POST commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';

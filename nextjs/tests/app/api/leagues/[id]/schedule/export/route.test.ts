@@ -85,13 +85,22 @@ describe('GET /api/leagues/[id]/schedule/export', () => {
   });
 
   // WHY: This is the other door into the schedule, and it writes an EXPORT
-  //      entry to the audit log on the way out. Signed-out callers get neither.
-  it('returns 401 when the caller is not signed in', async () => {
+  //      entry to the audit log on the way out. Signed-out callers get neither,
+  //      and neither does a PLAYER — the bar matches the schedule read itself.
+  it('returns 403 when the caller is not signed in', async () => {
     mockAuth.mockResolvedValue(null as never);
 
     const res = await GET(makeReq('lg1'), makeParams('lg1'));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
     expect(mockLeagueFindFirst).not.toHaveBeenCalled();
+    expect(mockAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 for a PLAYER', async () => {
+    signedInAs('PLAYER');
+
+    const res = await GET(makeReq('lg1'), makeParams('lg1'));
+    expect(res.status).toBe(403);
     expect(mockAuditLog).not.toHaveBeenCalled();
   });
 

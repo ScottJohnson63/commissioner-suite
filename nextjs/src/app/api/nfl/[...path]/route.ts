@@ -19,6 +19,10 @@
 //               column is members-only and comes back null without a session.
 //
 // Reads the Turso DB only; no external API calls happen on the request path.
+//
+// AUTH: GET public — the Statistics tab is browsable signed out; the auth()
+//      call below only nulls the members-only headshot column, it does not
+//      gate
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';

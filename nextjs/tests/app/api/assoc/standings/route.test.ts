@@ -21,13 +21,18 @@ jest.mock('@/lib/sleeper/client', () => ({
   sleeperGet: jest.fn(),
 }));
 
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
+
 import { GET } from '@/app/api/assoc/standings/route';
 import { prisma } from '@/lib/prisma';
 import { sleeperGet } from '@/lib/sleeper/client';
+import { auth } from '@/auth';
+import { COMMISSIONER, MEMBER, PLAYER, SIGNED_OUT } from '../../../../helpers/session';
 
 const mockLeagueFindFirst      = prisma.league.findFirst         as jest.MockedFunction<typeof prisma.league.findFirst>;
 const mockSleeperRankingFindMany = prisma.sleeperRanking.findMany as jest.MockedFunction<typeof prisma.sleeperRanking.findMany>;
 const mockSleeperGet             = sleeperGet                     as jest.MockedFunction<typeof sleeperGet>;
+const mockAuth = auth as jest.MockedFunction<typeof auth>;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -66,6 +71,14 @@ const fakeRosters = [
 ];
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+// Every guarded handler here is tested for what it does *past* the guard, so
+// a member is signed in for every test by default. The guard itself is
+// exercised in the "auth" describe at the bottom of the file.
+beforeEach(() => {
+  mockAuth.mockReset();
+  mockAuth.mockResolvedValue(MEMBER as never);
+});
 
 describe('GET /api/assoc/standings', () => {
   beforeEach(() => {
@@ -137,5 +150,33 @@ describe('GET /api/assoc/standings', () => {
 
     const champion = body.standings.find((s) => s.rank === 1);
     expect(champion?.isChampion).toBe(true);
+  });
+});
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+describe('GET /api/assoc/standings — auth', () => {
+  // A sibling describe, so the suite's own resets above do not reach here.
+  beforeEach(() => { mockLeagueFindFirst.mockClear(); });
+
+  it('turns a signed-out caller away', async () => {
+    mockAuth.mockResolvedValue(SIGNED_OUT as never);
+    const res = await GET(makeGet('lg1'));
+    expect(res.status).toBe(403);
+    // The guard runs before anything else, so no league lookup happened.
+    expect(mockLeagueFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('turns a PLAYER away — last season\'s standings are a commissioner-tab read', async () => {
+    mockAuth.mockResolvedValue(PLAYER as never);
+    const res = await GET(makeGet('lg1'));
+    expect(res.status).toBe(403);
+  });
+
+  it('lets a commissioner through', async () => {
+    mockAuth.mockResolvedValue(COMMISSIONER as never);
+    mockLeagueFindFirst.mockResolvedValue(null as never);
+    const res = await GET(makeGet('lg1'));
+    expect(res.status).not.toBe(403);
   });
 });

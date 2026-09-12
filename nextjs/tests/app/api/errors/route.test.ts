@@ -231,22 +231,32 @@ describe('POST /api/errors', () => {
 describe('GET /api/errors', () => {
   beforeEach(() => {
     mockFindMany.mockReset();
-    mockAuth.mockResolvedValue({ user: { id: 'u1', role: 'MEMBER' } } as never);
+    mockAuth.mockResolvedValue({ user: { id: 'u1', role: 'COMMISSIONER' } } as never);
   });
 
   // WHY: The log carries stack traces, usernames and the URLs visitors were on.
   //      The route's header used to claim it was admin-only; nothing enforced
-  //      that, so an anonymous caller could read all of it.
-  it('returns 401 when the caller is signed out', async () => {
+  //      that, so an anonymous caller could read all of it. /log, the only page
+  //      that reads it, shows nothing to anyone but admin, so the route is now
+  //      as narrow as the API's roles allow.
+  it('returns 403 when the caller is signed out', async () => {
     mockAuth.mockResolvedValueOnce(null as never);
 
     const res = await GET(new NextRequest('http://localhost/api/errors'));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
     expect(mockFindMany).not.toHaveBeenCalled();
   });
 
-  // WHY: The GET endpoint returns recent error logs for debugging to a caller
-  //      with a session.
+  it('returns 403 for a member, who has no /log page to read it from', async () => {
+    mockAuth.mockResolvedValueOnce({ user: { id: 'u1', role: 'MEMBER' } } as never);
+
+    const res = await GET(new NextRequest('http://localhost/api/errors'));
+    expect(res.status).toBe(403);
+    expect(mockFindMany).not.toHaveBeenCalled();
+  });
+
+  // WHY: The GET endpoint returns recent error logs for debugging to a
+  //      commissioner.
   it('returns 200 with error log entries', async () => {
     const fakeLogs = [{ id: 'e1', message: 'Error 1', createdAt: new Date() }];
     mockFindMany.mockResolvedValueOnce(fakeLogs as never);

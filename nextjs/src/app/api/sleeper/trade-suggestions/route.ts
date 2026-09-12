@@ -9,6 +9,8 @@
 // never the right one to trade.
 //
 // GET /api/sleeper/trade-suggestions?leagueId=&userId=&season=
+//
+// AUTH: GET session
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -34,6 +36,7 @@ import type {
   StatWindow, TradePlayer, TradeProposal, TradeSuggestionsResponse,
 } from '@/types/suggestions';
 import { ok, err } from '@/lib/api';
+import { requireSession } from '@/lib/apiAuth';
 
 export type { TradePlayer, TradeProposal, TradeSuggestionsResponse };
 
@@ -75,6 +78,9 @@ function toTradePlayer(p: DepthPlayer, band?: PlayerValue): TradePlayer {
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
+  const denied = await requireSession();
+  if (denied) return denied;
+
   const { searchParams } = req.nextUrl;
   const leagueId = searchParams.get('leagueId')?.trim();
   const userId   = searchParams.get('userId')?.trim();

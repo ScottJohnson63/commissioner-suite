@@ -1,13 +1,16 @@
 // src/app/api/sleeper/user/route.ts
 //
 // Proxies Sleeper user + league lookups server-side so API calls
-// don't originate from the browser. No auth required — Sleeper's
-// user API is public.
+// don't originate from the browser. Sleeper's user API is public, but the
+// fan-out to it is ours to pay for, so the proxy asks for a session.
+//
+// AUTH: GET session
 
 import { NextRequest, NextResponse } from 'next/server';
 import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
 import type { SleeperUser, SleeperLeagueRaw } from '@/lib/sleeper/types';
 import { ok, err } from '@/lib/api';
+import { requireSession } from '@/lib/apiAuth';
 
 const CURRENT_SEASON = parseInt(process.env.NFL_SEASON ?? String(new Date().getFullYear()), 10);
 
@@ -21,6 +24,9 @@ interface SleeperLeague {
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
+    const denied = await requireSession();
+    if (denied) return denied;
+
     const { searchParams } = req.nextUrl;
     const username = searchParams.get('username')?.trim().toLowerCase();
     const userId = searchParams.get('userId')?.trim();

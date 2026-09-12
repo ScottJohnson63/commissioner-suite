@@ -15,15 +15,17 @@
 //
 // The `detail` column is stored as a JSON string; this handler parses it back
 // to an object before returning so clients receive structured data.
+//
+// AUTH: GET session
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { auth } from '@/auth';
 import { ok, err } from '@/lib/api';
+import { requireSession } from '@/lib/apiAuth';
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  const session = await auth();
-  if (!session) return err('Unauthorized', 401);
+  const denied = await requireSession();
+  if (denied) return denied;
 
   const { searchParams } = req.nextUrl;
   const leagueId = searchParams.get('leagueId') ?? undefined;

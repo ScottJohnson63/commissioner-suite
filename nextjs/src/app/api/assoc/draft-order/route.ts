@@ -16,6 +16,8 @@
 //
 // Each pick captures the team name, roster ID, and where the pick originated
 // (lottery winner vs. inverse-standings placement) for full transparency.
+//
+// AUTH: POST commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { writeAuditLog } from '@/lib/audit';

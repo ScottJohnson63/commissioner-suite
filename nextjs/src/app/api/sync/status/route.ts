@@ -8,6 +8,9 @@
 // "Last run" comes from the SyncRun table, which every sync job writes to —
 // including the Python jobs on GitHub Actions. "Next run" is computed from the
 // cron strings in src/lib/syncSchedule.ts, so no GitHub API call is needed.
+//
+// AUTH: GET inline — the response carries isCommissioner, so the handler needs
+//      the session itself, not just a yes/no
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';

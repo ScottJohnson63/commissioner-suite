@@ -16,6 +16,8 @@
 //
 // The operation is audited under the GENERATE action type so it appears in the
 // activity log alongside schedule generation and lottery events.
+//
+// AUTH: POST commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';

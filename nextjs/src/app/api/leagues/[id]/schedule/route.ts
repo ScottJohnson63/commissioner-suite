@@ -1,4 +1,7 @@
 // src/app/api/leagues/[id]/schedule/route.ts
+//
+// AUTH: GET         member
+// AUTH: POST,DELETE commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -9,7 +12,7 @@ import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
 import { leagueWhere } from '@/lib/league';
 import { teamNameResolver } from '@/lib/sleeper/liveNames';
-import { requireCommissioner, requireSession } from '@/lib/apiAuth';
+import { requireCommissioner, requireMember } from '@/lib/apiAuth';
 
 type LeagueWithTeams = NonNullable<Awaited<ReturnType<typeof findLeague>>>;
 
@@ -126,7 +129,7 @@ export async function GET(
   // the only page that asks for it (/league/commissioner) is behind the login
   // wall already, so a session is required to match. See issue #62 for the
   // wider read-route audit.
-  const denied = await requireSession();
+  const denied = await requireMember();
   if (denied) return denied;
 
   const { id } = await params;

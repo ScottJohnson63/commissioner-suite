@@ -10,6 +10,9 @@
 //
 // GET requires a session but no particular role — every signed-in user needs
 // the list to know which league context their other calls are in.
+//
+// AUTH: GET  session
+// AUTH: POST commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';

@@ -65,6 +65,8 @@ jest.mock('@/lib/prisma', () => ({
   },
 }));
 
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
+
 import { GET } from '@/app/api/sleeper/trade-suggestions/route';
 import { sleeperGet } from '@/lib/sleeper/client';
 import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
@@ -72,12 +74,15 @@ import { prisma } from '@/lib/prisma';
 import { clearStatsSeasonCache } from '@/lib/statsSeason';
 import { clearGsisXrefCache } from '@/lib/sleeper/gsisXref';
 import { clearWindowRowsCache } from '@/lib/formWindow';
+import { auth } from '@/auth';
+import { MEMBER, PLAYER, SIGNED_OUT } from '../../../../helpers/session';
 
 const mockSleeperGet   = sleeperGet   as jest.MockedFunction<typeof sleeperGet>;
 const mockGetPlayerMap = getPlayerMapSafe as jest.MockedFunction<typeof getPlayerMapSafe>;
 const mockGroupBy      = prisma.nflWeeklyStat.groupBy as jest.MockedFunction<typeof prisma.nflWeeklyStat.groupBy>;
 const mockFindMany     = prisma.nflWeeklyStat.findMany as jest.MockedFunction<typeof prisma.nflWeeklyStat.findMany>;
 const mockAggregate    = prisma.nflWeeklyStat.aggregate as jest.MockedFunction<typeof prisma.nflWeeklyStat.aggregate>;
+const mockAuth = auth as jest.MockedFunction<typeof auth>;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -161,6 +166,14 @@ function setupHappyPath(): void {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+// Every guarded handler here is tested for what it does *past* the guard, so
+// a member is signed in for every test by default. The guard itself is
+// exercised in the "auth" describe at the bottom of the file.
+beforeEach(() => {
+  mockAuth.mockReset();
+  mockAuth.mockResolvedValue(MEMBER as never);
+});
 
 describe('GET /api/sleeper/trade-suggestions', () => {
   beforeEach(() => {
@@ -900,5 +913,26 @@ describe('GET /api/sleeper/trade-suggestions — projected values', () => {
     expect(json.valueBasis).toBe('season-points');
     expect(json.proposals).toEqual([]);
     expect(json.noTradesReason).toBe('no-stats');
+  });
+});
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+describe('GET /api/sleeper/trade-suggestions — auth', () => {
+  // A sibling describe, so the suite's own resets above do not reach here.
+  beforeEach(() => { mockSleeperGet.mockClear(); });
+
+  it('turns a signed-out caller away before any trade finding', async () => {
+    mockAuth.mockResolvedValue(SIGNED_OUT as never);
+    const { leagueId, userId } = freshIds();
+    const res = await GET(makeReq(leagueId, userId));
+    expect(res.status).toBe(401);
+    expect(mockSleeperGet).not.toHaveBeenCalled();
+  });
+
+  it('lets a PLAYER through — the Trades tab is open to anyone signed in', async () => {
+    mockAuth.mockResolvedValue(PLAYER as never);
+    const res = await GET(new NextRequest('http://localhost/api/sleeper/trade-suggestions'));
+    expect(res.status).toBe(400);
   });
 });

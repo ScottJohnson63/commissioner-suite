@@ -10,6 +10,8 @@
 // the same modules so the two panels cannot drift apart.
 //
 // GET /api/sleeper/waiver-suggestions?leagueId=&userId=&season=&week=
+//
+// AUTH: GET session
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -35,6 +37,7 @@ import type {
   WaiverSuggestion, WaiverSuggestionsResponse, StatWindow, PositionNeed,
 } from '@/types/suggestions';
 import { ok, err } from '@/lib/api';
+import { requireSession } from '@/lib/apiAuth';
 
 export type { WaiverSuggestion, WaiverSuggestionsResponse };
 
@@ -217,6 +220,9 @@ function median(values: number[]): number {
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
+  const denied = await requireSession();
+  if (denied) return denied;
+
   const { searchParams } = req.nextUrl;
   const leagueId = searchParams.get('leagueId')?.trim();
   const userId   = searchParams.get('userId')?.trim();

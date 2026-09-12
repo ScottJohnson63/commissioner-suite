@@ -14,10 +14,15 @@ jest.mock('@/lib/sleeper/client', () => ({
   sleeperGet: jest.fn(),
 }));
 
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
+
 import { GET } from '@/app/api/sleeper/user/route';
 import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
+import { auth } from '@/auth';
+import { MEMBER, PLAYER, SIGNED_OUT } from '../../../../helpers/session';
 
 const mockSleeperGet = sleeperGet as jest.MockedFunction<typeof sleeperGet>;
+const mockAuth = auth as jest.MockedFunction<typeof auth>;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +51,14 @@ function makeGet(qs: string): NextRequest {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+// Every guarded handler here is tested for what it does *past* the guard, so
+// a member is signed in for every test by default. The guard itself is
+// exercised in the "auth" describe at the bottom of the file.
+beforeEach(() => {
+  mockAuth.mockReset();
+  mockAuth.mockResolvedValue(MEMBER as never);
+});
 
 describe('GET /api/sleeper/user', () => {
   beforeEach(() => {
@@ -127,5 +140,22 @@ describe('GET /api/sleeper/user', () => {
 
     const res = await GET(makeGet('?userId=uid-42'));
     expect(res.status).toBe(502);
+  });
+});
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+describe('GET /api/sleeper/user — auth', () => {
+  it('turns a signed-out caller away', async () => {
+    mockAuth.mockResolvedValue(SIGNED_OUT as never);
+    const res = await GET(makeGet('username=someone'));
+    expect(res.status).toBe(401);
+  });
+
+  it('lets a PLAYER through — the dashboard needs this for anyone signed in', async () => {
+    mockAuth.mockResolvedValue(PLAYER as never);
+    const res = await GET(makeGet(''));
+    // 400 for the missing identifier, which is past the guard: the point.
+    expect(res.status).toBe(400);
   });
 });

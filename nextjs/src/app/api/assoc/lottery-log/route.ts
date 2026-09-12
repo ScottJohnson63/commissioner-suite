@@ -14,6 +14,8 @@
 //   leagueId — internal league ID
 //   results  — one entry per team, with ticket count and the assigned pick
 //   rerun    — true if this is a re-run of a previously logged lottery
+//
+// AUTH: POST commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { writeAuditLog } from '@/lib/audit';

@@ -65,3 +65,25 @@ export async function requireUser(): Promise<
   if (!userId) return { denied: err('Unauthorized', 401) };
   return { denied: null, userId, role: session.user.role };
 }
+
+/**
+ * Rejects anyone below MEMBER: signed-out callers and PLAYERs.
+ *
+ * PLAYER is the base role — the card game and the public dashboard tabs, and
+ * nothing else (see the role table in src/app/api/users/[id]/route.ts). The
+ * commissioner page's reads sit above that line: a PLAYER has no Schedules,
+ * Lottery or Divisions tab to call them from, so a request for one is either a
+ * stale client or somebody poking at the URL.
+ *
+ * 403 rather than 401 for a signed-out caller, matching requireCommissioner:
+ * "you are not allowed here" is the same answer whether the reason is no
+ * session or the wrong role, and the two guards reading alike is worth more
+ * than the distinction.
+ *
+ * @returns A 403 response to return from the handler, or null when the caller
+ *          is a member or a commissioner and the handler should proceed.
+ */
+export async function requireMember(): Promise<NextResponse | null> {
+  const role = (await auth())?.user?.role;
+  return role === 'MEMBER' || role === 'COMMISSIONER' ? null : err('Forbidden', 403);
+}
