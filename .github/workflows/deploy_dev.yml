@@ -1,0 +1,184 @@
+name: Deploy to Vercel (development)
+
+# The development domain used to follow a branch on its own: the `deploy-dev`
+# job in ci.yaml rebuilt it for every push to `beta` and every PR targeting it,
+# and earlier on this branch that was repointed at `main`. Either way a merge
+# deployed, and every build hands Vercel another set of retained Function
+# bundles — the thing "Function Storage" bills for (issue #50).
+#
+# Both environments are buttons now (issue #72). Actions → Deploy to Vercel
+# (development) → Run workflow puts the current main on the dev domain;
+# production is the same gesture, one workflow over. Nothing deploys unless
+# somebody asks for it.
+#
+# The domain is dev-commissioner-suite.vercel.app unless the repository
+# variable DEV_DOMAIN says otherwise (Settings → Secrets and variables →
+# Actions → Variables) — moving the dev environment to a different host is then
+# a settings change rather than a commit. Whichever it resolves to must already
+# be attached to the Vercel project: `vercel alias set` assigns a domain the
+# account owns, it does not register a new one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_ci_check:
+        description: 'Deploy even if CI has not passed for this commit'
+        type: boolean
+        required: false
+        default: false
+
+# One domain means one deploy at a time. The job this replaces cancelled a
+# running build when a newer push arrived, because the newer commit was the one
+# that should end up holding the domain; a run now happens because somebody
+# asked for it, so let it finish rather than discarding it for the next.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy-dev:
+    name: Deploy to Vercel (development)
+    runs-on: ubuntu-latest
+    # `actions: read` is what the CI-verdict lookup below needs; a repository
+    # whose default token is read-only for contents alone would 404 on it.
+    permissions:
+      contents: read
+      actions: read
+    env:
+      DEV_DOMAIN: ${{ vars.DEV_DOMAIN || 'dev-commissioner-suite.vercel.app' }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      # The dev domain tracks main. `workflow_dispatch` offers every branch and
+      # tag in the picker, and making the trigger manual was not meant to also
+      # change what the dev environment is a view of.
+      - name: Check the ref is main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::The development domain deploys from main; this run is on $GITHUB_REF."
+            exit 1
+          fi
+
+      - name: Check credentials are present
+        run: |
+          missing=
+          [ -n "$VERCEL_TOKEN" ]      || missing="$missing VERCEL_TOKEN"
+          [ -n "$VERCEL_ORG_ID" ]     || missing="$missing VERCEL_ORG_ID"
+          [ -n "$VERCEL_PROJECT_ID" ] || missing="$missing VERCEL_PROJECT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing"
+            exit 1
+          fi
+
+      # The job this replaces sat behind `needs: [code-count, project-check,
+      # dependency-check, semgrep-sast, test]`, so a red commit could not take
+      # the dev domain. A manual trigger has no such edge, so look the pipeline
+      # up instead: the CI run for this exact commit must have finished green.
+      #
+      # The input goes through `env:` rather than being pasted into the script —
+      # an expression expands before the shell parses the line, so interpolating
+      # a caller-supplied value inline is a code injection waiting to happen.
+      - name: Check CI passed for this commit
+        env:
+          SKIP_CI_CHECK: ${{ inputs.skip_ci_check }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$SKIP_CI_CHECK" = "true" ]; then
+            echo "::warning::CI check skipped by request — deploying $GITHUB_SHA unverified."
+            exit 0
+          fi
+
+          # Newest first, so the first completed run is the current verdict for
+          # this commit (a re-run supersedes the original).
+          conclusion=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=1" \
+            --jq '.workflow_runs[0].conclusion // empty')
+
+          case "$conclusion" in
+            success)
+              echo "CI Pipeline succeeded for $GITHUB_SHA."
+              ;;
+            '')
+              echo "::error::No completed CI Pipeline run found for $GITHUB_SHA. Wait for it to finish, or re-run with 'Deploy even if CI has not passed'."
+              exit 1
+              ;;
+            *)
+              echo "::error::CI Pipeline concluded '$conclusion' for $GITHUB_SHA. Fix it, or re-run with 'Deploy even if CI has not passed'."
+              exit 1
+              ;;
+          esac
+
+      # Pinned to a commit rather than `@v4`: a tag is a mutable pointer the
+      # action's owner can repoint, which is how the trivy-action and
+      # kics-github-action supply-chain attacks reached their callers. This SHA
+      # is what `v4` resolves to today (v4.4.0), so nothing about the step
+      # changes — it just can't be changed underneath us.
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The variable goes through the environment rather than being pasted into
+      # the script — an expression expands before the shell parses the line, so
+      # a stray quote in a setting would otherwise rewrite the command.
+      - name: Report the development domain
+        run: |
+          echo "Deploying to https://$DEV_DOMAIN"
+          if [ -z "$DEV_DOMAIN_VAR" ]; then
+            echo "(the built-in default — set the DEV_DOMAIN variable to override)"
+          else
+            echo "(from the DEV_DOMAIN repository variable)"
+          fi
+        env:
+          DEV_DOMAIN_VAR: ${{ vars.DEV_DOMAIN }}
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      # A preview build rather than --prod: production belongs to deploy.yml.
+      # Preview builds read the Preview environment's variables in the Vercel
+      # project, which is where the dev database and NEXTAUTH_URL live.
+      - name: Build a preview deployment
+        id: deploy
+        run: |
+          # The CLI puts progress on stderr and the deployment URL on stdout,
+          # but takes the last line rather than the whole of it: a notice about
+          # a newer CLI version arriving on stdout would otherwise be spliced
+          # into the URL handed to `alias set` below.
+          url=$(vercel deploy --yes --token="$VERCEL_TOKEN" | tail -n 1)
+
+          case "$url" in
+            https://*)
+              ;;
+            *)
+              echo "::error::Expected a deployment URL from vercel deploy, got: ${url:-nothing}"
+              exit 1
+              ;;
+          esac
+
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Built $url"
+
+      - name: Point the development domain at this build
+        run: vercel alias set "$DEPLOYMENT_URL" "$DEV_DOMAIN" --token="$VERCEL_TOKEN"
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
+
+      - name: Summarise the deployment
+        if: always()
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
+          SKIP_CI_CHECK: ${{ inputs.skip_ci_check }}
+        run: |
+          {
+            echo "## Development Deployment"
+            echo ""
+            echo "| | |"
+            echo "|--|--|"
+            echo "| Domain | https://$DEV_DOMAIN |"
+            echo "| Build | ${DEPLOYMENT_URL:-not built} |"
+            echo "| Commit | $GITHUB_SHA |"
+            echo "| Requested by | @$GITHUB_ACTOR |"
+            if [ "$SKIP_CI_CHECK" = "true" ]; then
+              echo "| CI check | skipped |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

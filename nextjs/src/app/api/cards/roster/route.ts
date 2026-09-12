@@ -10,6 +10,8 @@
 //
 // One slot per request. A lineup change is a single decision and this keeps the
 // failure modes small — a partial write of ten slots has no good answer.
+//
+// AUTH: PUT user
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';

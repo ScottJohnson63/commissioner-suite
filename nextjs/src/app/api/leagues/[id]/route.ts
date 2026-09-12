@@ -11,6 +11,8 @@
 // newest-dependency-first and are individually idempotent. A partial failure
 // leaves orphaned children rather than a dangling parent, which is the safer
 // half to be left holding.
+//
+// AUTH: DELETE commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';

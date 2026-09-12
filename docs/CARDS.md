@@ -28,7 +28,7 @@ condensed to a points total, a position finish, and a tier.
 | Eligible positions | QB, RB, WR, TE |
 | Season window | Regular season only (`seasonType = 'REG'`) |
 | Source table | `NflWeeklyStat`, summed per player per season |
-| Image | `NflPlayerHeadshot`, resolved by `sync_player_headshots.py` — nfl.com where it holds a real photograph, then ESPN, then Wikimedia Commons, null where nobody does |
+| Image | `NflPlayerHeadshot`, resolved by `sync_player_headshots.py` — nfl.com where it holds a real photograph, then ESPN, then Wikimedia Commons, null where nobody does. A Commons portrait carries its photographer and licence, which the card credits |
 | Jersey number | `NflSeasonRoster`, synced by `sync_nfl_rosters.py` |
 | Current pool | **13,491 cards** across 1999–2025 |
 
@@ -331,12 +331,41 @@ mid-reveal cannot strand one.
 ### Sleeper bonus packs
 
 Two rules, each worth one extra pack a week, driven by what the member actually
-did in Sleeper:
+did in Sleeper the week just gone:
 
 | Rule | Earned by |
 |------|-----------|
 | `WIN` | Winning a matchup in any of their Sleeper leagues |
 | `HIGH_SCORE` | Scoring over **100** in any of their Sleeper leagues |
+
+**Read off the week that finished, never the one in progress.** Sleeper's
+matchup endpoint reports live points, so a member ahead by 30 on Sunday
+afternoon with their opponent's running back still to play satisfied
+`didRosterWin`, and a single Thursday-night receiver could carry one league past
+100 before the rest of the roster had kicked off. Nothing revokes a `PackBonus`
+row — only a full reset clears them — so a pack paid for a lead that evaporated
+by the evening stayed in the account. That was issue #52.
+
+So the check now takes two weeks rather than one, and they are not the same
+week:
+
+| | Which week | Why |
+|---|---|---|
+| Scored | The last **completed** week | A finished result cannot be contradicted by the rest of the afternoon |
+| Credited | The **current** week's grant | Same rule as the wildcard die: packs on a grant a member can no longer reach are not a prize |
+
+The `PackBonus` row is keyed on the week that earned it, which is what makes the
+award once-per-week and is also why the change needed no backfill: rows written
+under the old live-week reading already sit under the week they were scored
+from, so a member paid early for week 3 is simply held to have week 3's packs
+and is not paid again.
+
+Two consequences worth stating out loud. In NFL week 1 nothing is earned — the
+completed week floors at 1, and there is no finished week behind it — so the
+first bonus of a season lands in week 2 for week 1's results. And a member who
+does not open the game for a fortnight loses the older week's bonus rather than
+banking it, which is the same rule the ration already follows: an allowance, not
+a balance.
 
 **"Any" is doing real work.** A member in four leagues who wins all four gets
 *one* win pack, not four. That is enforced by the unique key on
@@ -966,11 +995,50 @@ row per player:
    source `NONE`. That null is a result, not a gap — it is what sends the card to
    its team logo.
 
-⚠️ **Licensing.** Wikimedia images are freely licensed but most are CC-BY-SA and
-carry an attribution requirement. `NflPlayerHeadshot.source` records which
-provider each URL came from, so the league can attribute them if the cards are
-ever published outside it. The API's `utm_*` tracking query is stripped before
-the URL is stored, so rendering a card sends no campaign beacon to Wikimedia.
+⚠️ **Licensing.** Wikimedia images are freely licensed but most are CC BY-SA,
+which is free to show and **not free to show uncredited** — the photographer and
+the licence have to be named wherever the image appears. So the sync asks
+Commons who took each photograph and under what terms, and stores the answer
+beside the URL in four columns: `author`, `license`, `licenseUrl` and `fileUrl`.
+`source` still records which provider the URL came from; these say what is owed
+for it.
+
+* The file name comes from `piprop=name` on the article query — the thumbnail
+  URL alone is not a handle Commons answers questions about — and the credit
+  from `prop=imageinfo&iiprop=extmetadata|url` over the distinct files, fifty to
+  a request. `Artist` arrives as an HTML fragment, usually a link to the
+  uploader's user page, and is stored as plain text because the card prints it.
+* Every portrait is checked to be **on Commons** (`/wikipedia/commons/`) rather
+  than hosted locally by English Wikipedia, whose local uploads under
+  `/wikipedia/en/` are precisely the non-free ones — logos, album art, fair-use
+  publicity shots. A portrait that fails it is dropped rather than printed on a
+  card the league has no licence for.
+
+  ⚠️ **`pilicense=free` is not sufficient, and this was measured.** The API's
+  free-files filter is its own default and was assumed to make the path check
+  redundant. Run against the real table, the check found **7 of 256** stored
+  portraits were `/wikipedia/en/` fair-use uploads that the filter had passed —
+  Jerry Porter's among them. Those cards were showing pictures the league has no
+  licence for. The path is what actually separates a usable portrait from an
+  unusable one; treat the API filter as a hint.
+* A picture whose credit could not be fetched keeps its portrait and gains the
+  credit on a later run. `sync_player_headshots.py --credits` reconciles the
+  stored rows with all of the above, in two steps: it **resets any portrait that
+  is not a Commons file** to `source = 'NONE'` — clearing the URL and the credit
+  together, so the card falls back to its team logo and an ordinary run looks
+  for a free portrait again — and then backfills the credit for everything that
+  remains, recovering each file name from the stored URL rather than re-querying
+  thousands of articles.
+* The pool builder copies the four columns onto `CardDefinition` beside
+  `headshot`, so a card carries its own credit and the read path gains no join.
+  `CardDetail` prints it as "Photo: {author}, {licence}", the author linking to
+  the file's description page — which is what satisfies CC BY-SA — and the
+  licence to its deed. It is hidden the moment a member's own upload replaces
+  the portrait, because crediting a Commons photographer for somebody else's
+  photograph is worse than no credit at all.
+
+The API's `utm_*` tracking query is stripped before the URL is stored, so
+rendering a card sends no campaign beacon to Wikimedia.
 
 nfl.com is preferred where it has a real picture: 1400×1000 against ESPN's
 600×436. The aspect ratios are near-identical (1.40 vs 1.38) and both are
@@ -1178,6 +1246,27 @@ npx tsx prisma/apply-migration.ts 20260902000000_weekly_lineup_game
 It is additive only — two `CREATE TABLE`s and their indexes, every statement
 `IF NOT EXISTS` — so running it twice is a no-op and nothing existing is read,
 altered or dropped.
+
+### Portrait credits
+
+`prisma/migrations/20260911000000_headshot_photo_credit` adds the four
+attribution columns to `NflPlayerHeadshot` and their copies on
+`CardDefinition`, applied the same way:
+
+```bash
+npx tsx prisma/apply-migration.ts 20260911000000_headshot_photo_credit
+```
+
+Eight `ALTER TABLE … ADD COLUMN`s, which rewrite no rows and read nothing. Not
+re-runnable, though: SQLite has no `ADD COLUMN IF NOT EXISTS`, so a second run
+stops on "duplicate column name" having changed nothing.
+
+Afterwards, fill the columns and carry them onto the cards:
+
+```bash
+python scripts/sync_player_headshots.py --credits   # from python/
+npx tsx prisma/rebuild-pool.ts                      # from nextjs/
+```
 
 ## UI notes
 

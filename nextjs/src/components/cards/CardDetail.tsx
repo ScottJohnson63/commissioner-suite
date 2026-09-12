@@ -23,7 +23,7 @@ import { PlayerCard } from '@/components/cards/PlayerCard';
 import { TIER_STYLE } from '@/components/cards/tierStyles';
 import { TIER_LABEL } from '@/lib/cards/tiers';
 import { MAX_NICKNAME_LENGTH } from '@/lib/cards/customize';
-import type { CustomizeResponse, OwnedCardDto, RosterSlotDto } from '@/types/cards';
+import type { CardDto, CustomizeResponse, OwnedCardDto, RosterSlotDto } from '@/types/cards';
 
 /**
  * Longest edge of an uploaded portrait, in px.
@@ -65,6 +65,57 @@ async function downscale(file: File): Promise<Blob> {
   );
   if (!blob) throw new Error('Could not read that image');
   return blob;
+}
+
+/**
+ * The photographer and licence, for a portrait that requires them.
+ *
+ * Most of the Wikimedia Commons pictures the headshot sync falls back to are
+ * CC BY-SA, which is free to use and not free to use *uncredited* — naming the
+ * author, naming the licence and linking to the source is the condition. This
+ * is where the game meets it. The detail view rather than the card face because
+ * the credit has to be legible and its links have to be clickable, and neither
+ * is true of a 96px thumbnail in a grid.
+ *
+ * Renders nothing at all for the nfl.com and ESPN portraits, which carry no
+ * such requirement, and for cards with no picture.
+ *
+ * @param card    The card whose portrait is on screen.
+ * @param showing Whether the picture shown is the pool's own. False once an
+ *                owner's upload has replaced it — at which point crediting a
+ *                Commons photographer for it would be a false statement about
+ *                a photograph they did not take.
+ */
+function PhotoCredit({ card, showing }: { card: CardDto; showing: boolean }) {
+  if (!showing || (!card.photoAuthor && !card.photoLicense)) return null;
+
+  const link = { color: '#777', textDecoration: 'underline' };
+  // The author links to the file's description page, which is where Commons
+  // states the photograph, its author and its terms — that link is what
+  // satisfies the attribution. The licence links to its own deed where one was
+  // recorded. Either falls back to plain text rather than to a dead link.
+  const author = card.photoAuthor && (
+    card.photoFileUrl
+      ? <a href={card.photoFileUrl} target="_blank" rel="noopener noreferrer" style={link}>
+          {card.photoAuthor}
+        </a>
+      : <span>{card.photoAuthor}</span>
+  );
+  const license = card.photoLicense && (
+    card.photoLicenseUrl
+      ? <a href={card.photoLicenseUrl} target="_blank" rel="noopener noreferrer" style={link}>
+          {card.photoLicense}
+        </a>
+      : <span>{card.photoLicense}</span>
+  );
+
+  return (
+    <div className="text-[10px] text-center leading-snug" style={{ color: '#555' }}>
+      Photo: {author}
+      {author && license ? ', ' : ''}
+      {license}
+    </div>
+  );
 }
 
 export function CardDetail({
@@ -207,6 +258,10 @@ export function CardDetail({
           {previewCard.nickname ? `${card.playerName} · ` : ''}
           {card.position} · {card.season} · {TIER_LABEL[card.tier]} #{card.seasonRank}
         </div>
+        {/* Read off `previewCard`, so the credit disappears the moment a
+            member picks a file — before the save, at the same instant the
+            picture it credits leaves the screen. */}
+        <PhotoCredit card={card} showing={!previewCard.customImage} />
       </div>
 
       {/* ── The form ── */}

@@ -19,6 +19,7 @@ function owned(over: Partial<OwnedCardDto> = {}): OwnedCardDto {
     id: 'c1', season: 2003, playerId: 'p1', playerName: 'Jamal Lewis', position: 'RB',
     team: 'BAL', tier: 'GOLD', seasonRank: 7, fantasyPoints: 300, pointsPerGame: 18.8,
     gamesPlayed: 16, jerseyNumber: 31, headshot: null,
+    photoAuthor: null, photoLicense: null, photoLicenseUrl: null, photoFileUrl: null,
     nickname: null, customImage: null, eligibleForReward: true, isContributed: false,
     retiredWeek: null, retiredPoints: 0,
     ...over,

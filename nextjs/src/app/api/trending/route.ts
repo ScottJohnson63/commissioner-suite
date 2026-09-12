@@ -1,4 +1,7 @@
 // src/app/api/trending/route.ts
+//
+// AUTH: GET public — aggregate add/drop counts straight from Sleeper, shown on
+//      the public dashboard
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';

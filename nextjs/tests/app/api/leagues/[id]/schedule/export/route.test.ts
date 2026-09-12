@@ -1,12 +1,14 @@
 // tests/app/api/leagues/[id]/schedule/export/route.test.ts
 //
 // Tests for GET /api/leagues/[id]/schedule/export.
-// Mocks @/lib/prisma and @/lib/audit.
+// Mocks @/auth, @/lib/prisma and @/lib/audit.
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { NextRequest } from 'next/server';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
+
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
@@ -23,10 +25,12 @@ jest.mock('@/lib/sleeper/liveNames', () => ({
 }));
 
 import { GET } from '@/app/api/leagues/[id]/schedule/export/route';
+import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { writeAuditLog } from '@/lib/audit';
 import { teamNameResolver } from '@/lib/sleeper/liveNames';
 
+const mockAuth              = auth                      as jest.MockedFunction<typeof auth>;
 const mockLeagueFindFirst  = prisma.league.findFirst   as jest.MockedFunction<typeof prisma.league.findFirst>;
 const mockScheduleFindFirst = prisma.schedule.findFirst as jest.MockedFunction<typeof prisma.schedule.findFirst>;
 const mockAuditLog          = writeAuditLog             as jest.MockedFunction<typeof writeAuditLog>;
@@ -40,6 +44,10 @@ function makeParams(id: string) {
 
 function makeReq(id: string): NextRequest {
   return new NextRequest(`http://localhost/api/leagues/${id}/schedule/export`);
+}
+
+function signedInAs(role: string) {
+  mockAuth.mockResolvedValue({ user: { role } } as never);
 }
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -64,14 +72,45 @@ const fakeSchedule = {
 
 describe('GET /api/leagues/[id]/schedule/export', () => {
   beforeEach(() => {
+    mockAuth.mockReset();
     mockLeagueFindFirst.mockReset();
     mockScheduleFindFirst.mockReset();
     mockAuditLog.mockReset();
     mockTeamNameResolver.mockReset();
+    signedInAs('COMMISSIONER');
     mockLeagueFindFirst.mockResolvedValue(fakeLeague as never);
     mockAuditLog.mockResolvedValue(undefined);
     // Default: Sleeper agrees with the database, so names pass through.
     mockTeamNameResolver.mockResolvedValue((_id, stored) => stored);
+  });
+
+  // WHY: This is the other door into the schedule, and it writes an EXPORT
+  //      entry to the audit log on the way out. Signed-out callers get neither,
+  //      and neither does a PLAYER — the bar matches the schedule read itself.
+  it('returns 403 when the caller is not signed in', async () => {
+    mockAuth.mockResolvedValue(null as never);
+
+    const res = await GET(makeReq('lg1'), makeParams('lg1'));
+    expect(res.status).toBe(403);
+    expect(mockLeagueFindFirst).not.toHaveBeenCalled();
+    expect(mockAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 for a PLAYER', async () => {
+    signedInAs('PLAYER');
+
+    const res = await GET(makeReq('lg1'), makeParams('lg1'));
+    expect(res.status).toBe(403);
+    expect(mockAuditLog).not.toHaveBeenCalled();
+  });
+
+  // WHY: Exporting is not a commissioner action — any member may take a copy.
+  it('lets a MEMBER export the schedule', async () => {
+    signedInAs('MEMBER');
+    mockScheduleFindFirst.mockResolvedValueOnce(fakeSchedule as never);
+
+    const res = await GET(makeReq('lg1'), makeParams('lg1'));
+    expect(res.status).toBe(200);
   });
 
   // WHY: a CSV leaves the building. Shipping a name that was renamed weeks ago

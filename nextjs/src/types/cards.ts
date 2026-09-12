@@ -22,6 +22,25 @@ export interface CardDto {
   /** Number worn that season, or null for defenses and missing roster rows. */
   jerseyNumber: number | null;
   headshot: string | null;
+  /**
+   * Who took `headshot`, and on what terms.
+   *
+   * Non-null only for the Wikimedia Commons portraits the headshot sync falls
+   * back to for players nfl.com and ESPN have no picture of. Most of those are
+   * CC BY-SA, which requires the photographer and the licence to be named
+   * wherever the image is shown — so this is not decoration, it is the
+   * condition on which the card may show the picture at all. `photoFileUrl` is
+   * the file's description page on Commons, which is what the credit links to.
+   *
+   * All four are null for nfl.com and ESPN portraits, which carry no such
+   * requirement, and for cards with no portrait at all. A member's own upload
+   * replaces the portrait but not these fields — see CardDetail, which shows
+   * the credit only while the pool's own picture is the one on screen.
+   */
+  photoAuthor: string | null;
+  photoLicense: string | null;
+  photoLicenseUrl: string | null;
+  photoFileUrl: string | null;
 }
 
 /**
@@ -119,7 +138,7 @@ export type PackKind = 'STARTER' | 'BONUS' | 'RATION';
 /** Why a member earned a bonus pack. */
 export type BonusKind = 'WIN' | 'HIGH_SCORE';
 
-/** A bonus pack earned from a Sleeper result this week. */
+/** A bonus pack earned from a Sleeper result in the week just completed. */
 export interface BonusAwardDto {
   kind: BonusKind;
   sleeperLeagueId: string | null;
@@ -232,10 +251,16 @@ export interface LeaderboardEntryDto {
 
 /** Bonus packs held this week, and what earned them. */
 export interface BonusStateDto {
-  /** Rules satisfied this week. */
+  /** Rules satisfied in the week these were scored from. */
   kinds: BonusKind[];
   /** Awards granted by the request that returned this — for a "you earned!" toast. */
   awarded: BonusAwardDto[];
+  /**
+   * The completed week the rules were read from — one behind the allowance's
+   * week, and null when no week has finished yet. Bonuses are scored on results
+   * that can no longer change; the packs themselves land on the current week.
+   */
+  week: number | null;
   /** The score a member must beat for the high-score pack. */
   threshold: number;
 }
@@ -249,7 +274,7 @@ export interface CollectionResponse {
   roster: RosterSlotDto[];
   /** The season standings, computed alongside the deck rather than separately. */
   standings: LeaderboardEntryDto[];
-  /** Sleeper bonus packs earned this week. */
+  /** Sleeper bonus packs earned from the completed week's results. */
   bonus: BonusStateDto;
   /** The weekly submission game: this week's deadline and what was submitted. */
   weekly: WeeklyStateDto;

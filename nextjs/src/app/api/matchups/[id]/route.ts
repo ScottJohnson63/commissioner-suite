@@ -18,15 +18,23 @@
 //
 // Note: this endpoint does not re-validate schedule constraints after the edit.
 // It is intentionally flexible so commissioners can fix generator edge-cases.
+//
+// AUTH: PATCH commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { ok, err } from '@/lib/api';
+import { requireCommissioner } from '@/lib/apiAuth';
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  // Editing a matchup rewrites a published fixture, so it stays with the
+  // commissioner who is allowed to make the correction.
+  const denied = await requireCommissioner();
+  if (denied) return denied;
+
   const { id } = await params;
 
   const body = await req.json() as {

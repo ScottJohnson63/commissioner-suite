@@ -2,6 +2,9 @@
 //
 // Aggregates NFL headlines from several public feeds (RSS, plus ESPN's JSON
 // site API). Each feed is cached independently for 15 minutes.
+//
+// AUTH: GET public — the News tab is one of the two a signed-out visitor may
+//      browse; every feed behind it is public already
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';

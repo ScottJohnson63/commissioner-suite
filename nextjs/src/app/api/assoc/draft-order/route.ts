@@ -16,11 +16,14 @@
 //
 // Each pick captures the team name, roster ID, and where the pick originated
 // (lottery winner vs. inverse-standings placement) for full transparency.
+//
+// AUTH: POST commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
 import { findLeagueIdByAnyId } from '@/lib/league';
+import { requireCommissioner } from '@/lib/apiAuth';
 
 /** A single pick slot in the draft order, as submitted by the Lottery tab UI. */
 interface DraftPick {
@@ -33,6 +36,11 @@ interface DraftPick {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // The audit log is the league's permanent record of who picks when, so only
+  // the commissioner may write to it.
+  const denied = await requireCommissioner();
+  if (denied) return denied;
+
   const body = await req.json() as { leagueId?: string; draftOrder?: DraftPick[] };
 
   if (!body.leagueId || !Array.isArray(body.draftOrder)) {

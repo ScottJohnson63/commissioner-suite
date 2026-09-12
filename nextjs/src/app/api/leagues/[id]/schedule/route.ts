@@ -1,4 +1,7 @@
 // src/app/api/leagues/[id]/schedule/route.ts
+//
+// AUTH: GET         member
+// AUTH: POST,DELETE commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -9,6 +12,7 @@ import { writeAuditLog } from '@/lib/audit';
 import { ok, err } from '@/lib/api';
 import { leagueWhere } from '@/lib/league';
 import { teamNameResolver } from '@/lib/sleeper/liveNames';
+import { requireCommissioner, requireMember } from '@/lib/apiAuth';
 
 type LeagueWithTeams = NonNullable<Awaited<ReturnType<typeof findLeague>>>;
 
@@ -39,6 +43,11 @@ export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  // Generating a schedule replaces what every member sees for the season, and
+  // can trigger a Sleeper sync as a side effect. Commissioner only.
+  const denied = await requireCommissioner();
+  if (denied) return denied;
+
   const { id } = await params;
 
   let league = await findLeague(id);
@@ -116,6 +125,13 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  // Read, so not commissioner-gated — but the schedule is league-internal and
+  // the only page that asks for it (/league/commissioner) is behind the login
+  // wall already, so a session is required to match. See issue #62 for the
+  // wider read-route audit.
+  const denied = await requireMember();
+  if (denied) return denied;
+
   const { id } = await params;
 
   const league = await findLeague(id);
@@ -151,6 +167,10 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  // Destructive: drops every schedule for the league and all their matchups.
+  const denied = await requireCommissioner();
+  if (denied) return denied;
+
   const { id } = await params;
 
   const league = await findLeague(id);

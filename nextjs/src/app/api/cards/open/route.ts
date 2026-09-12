@@ -5,6 +5,8 @@
 // The roll happens here rather than on the client for the obvious reason: the
 // client is where someone would reroll until a Hall of Fame card fell out. The
 // response is the record of what was already written.
+//
+// AUTH: POST user
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';

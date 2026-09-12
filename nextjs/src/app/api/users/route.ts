@@ -12,15 +12,17 @@
 // for credential-based login in initial setup.
 //
 // Sensitive fields (password hash, sleeperUserId) are excluded from the response.
+//
+// AUTH: GET session
 
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { auth } from '@/auth';
 import { ok, err } from '@/lib/api';
+import { requireSession } from '@/lib/apiAuth';
 
 export async function GET(): Promise<NextResponse> {
-  const session = await auth();
-  if (!session) return err('Unauthorized', 401);
+  const denied = await requireSession();
+  if (denied) return denied;
 
   try {
     const adminUsername = process.env.ADMIN_USERNAME ?? 'admin';

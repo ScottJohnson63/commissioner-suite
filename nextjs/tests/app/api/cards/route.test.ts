@@ -22,7 +22,8 @@ const mockReadDeck = jest.fn<() => Promise<unknown>>();
 const mockReadLeaderboard = jest.fn<() => Promise<unknown>>();
 const mockClaimWildcard = jest.fn<() => Promise<unknown>>();
 const mockSetRosterSlot = jest.fn<() => Promise<unknown>>();
-const mockClaimBonuses = jest.fn<() => Promise<unknown>>();
+const mockClaimBonuses =
+  jest.fn<(...a: unknown[]) => Promise<unknown>>();
 const mockRebuild = jest.fn<() => Promise<unknown>>();
 const mockAvailableSeasons = jest.fn<() => Promise<number[]>>();
 const mockClearRetiredSlots = jest.fn<() => Promise<number>>();
@@ -85,10 +86,15 @@ jest.mock('@/lib/cards/allowance', () => ({
     poolSize: 1832, claimed: 45, remainingCards: 1787, members: 2, perWeek: 10,
   }),
 }));
-jest.mock('@/lib/sleeper/week', () => ({ resolveWeek: async () => 3 }));
+jest.mock('@/lib/sleeper/week', () => ({
+  resolveWeek: async () => 3,
+  // The collection route takes both readings from one call: it scores the
+  // completed week and pays onto the current one.
+  resolveWeeks: async () => ({ completed: 2, current: 3 }),
+}));
 jest.mock('@/lib/audit', () => ({ writeAuditLog: jest.fn() }));
 jest.mock('@/lib/cards/bonus', () => ({
-  claimBonuses: () => mockClaimBonuses(),
+  claimBonuses: (...a: unknown[]) => mockClaimBonuses(...a),
   HIGH_SCORE_THRESHOLD: 100,
 }));
 jest.mock('@/lib/prisma', () => ({
@@ -131,7 +137,7 @@ beforeEach(() => {
   mockRequireUser.mockResolvedValue(ALLOWED);
   mockRequireCommissioner.mockResolvedValue(null);
   mockAvailableSeasons.mockResolvedValue([2023, 2024, 2025]);
-  mockClaimBonuses.mockResolvedValue({ awarded: [], kinds: [] });
+  mockClaimBonuses.mockResolvedValue({ awarded: [], kinds: [], week: 2 });
   mockClearRetiredSlots.mockResolvedValue(0);
   mockReadWeeklyState.mockResolvedValue({ week: 3, phase: 'OPEN', submitted: null });
 });
@@ -318,6 +324,7 @@ describe('GET /api/cards/collection — Sleeper bonuses', () => {
     mockClaimBonuses.mockResolvedValue({
       awarded: [{ kind: 'WIN', sleeperLeagueId: 'L1', points: 112.4 }],
       kinds: ['WIN', 'HIGH_SCORE'],
+      week: 2,
     });
 
     const { GET } = await import('@/app/api/cards/collection/route');
@@ -325,13 +332,28 @@ describe('GET /api/cards/collection — Sleeper bonuses', () => {
 
     expect(body.bonus.kinds).toEqual(['WIN', 'HIGH_SCORE']);
     expect(body.bonus.awarded[0].points).toBe(112.4);
+    // The week the rules were read from, which is not the allowance's week.
+    expect(body.bonus.week).toBe(2);
+  });
+
+  // WHY: the two weeks are the whole of issue #52. Scoring the current week
+  //      paid out on a lead in a game still being played, and crediting the
+  //      completed week would drop the pack onto a grant that has already been
+  //      spent. Passing them the wrong way round type-checks perfectly.
+  it('scores the completed week and credits the current one', async () => {
+    mockClaimBonuses.mockResolvedValue({ awarded: [], kinds: [], week: 2 });
+
+    const { GET } = await import('@/app/api/cards/collection/route');
+    await GET(req('collection'));
+
+    expect(mockClaimBonuses).toHaveBeenCalledWith('user-1', 'sleeper-1', 2026, 2, 3);
   });
 
   // WHY: Sleeper is a third party and the card game does not depend on it. A
   //      member with no linked account, or an outage, must still get their deck
   //      — the bonus check is additive, never load-bearing.
   it('still returns the deck when nothing was earned', async () => {
-    mockClaimBonuses.mockResolvedValue({ awarded: [], kinds: [] });
+    mockClaimBonuses.mockResolvedValue({ awarded: [], kinds: [], week: null });
 
     const { GET } = await import('@/app/api/cards/collection/route');
     const res = await GET(req('collection'));

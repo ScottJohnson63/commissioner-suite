@@ -32,7 +32,7 @@ const STAT_SITES: { label: string; url: string; desc: string }[] = [
   { label: 'The Athletic',           url: 'https://theathletic.com/nfl/',            desc: 'In-depth reporting'          },
 ];
 
-function StatLeadersTable() {
+function StatLeadersTable({ showHeadshots }: { showHeadshots: boolean }) {
   const [statKey, setStatKey]   = useState('fantasyPointsPpr');
   // Populated from the table, newest first. Null until loaded, so the first
   // leaders fetch can let the server pick rather than guessing a year.
@@ -231,7 +231,7 @@ function StatLeadersTable() {
               style={{ borderColor: '#1a1a1c' }}>
               <span className="w-4 text-right text-[11px] tabular-nums shrink-0"
                 style={{ color: '#444' }}>{i + 1}</span>
-              {leader.headshot ? (
+              {showHeadshots && leader.headshot ? (
                 <Image src={leader.headshot} alt={leader.playerDisplayName ?? ''}
                   width={32} height={32} className="w-8 h-8 rounded-full object-cover shrink-0"
                   style={{ background: '#1e1e20' }}
@@ -271,11 +271,20 @@ function StatLeadersTable() {
 export function StatisticsTab({
   trending,
   trendingLoading,
+  isAuthed,
 }: {
   trending: TrendingData | null;
   trendingLoading: boolean;
   trendingError: string | null;
   onRetryTrending: () => void;
+  /**
+   * Statistics is one of the two tabs a signed-out visitor may browse, so it
+   * renders for members and strangers alike. Player headshots are the part
+   * that is members-only: everyone still gets the names, teams and numbers,
+   * and the grey circle the table already draws for a player with no
+   * headshot stands in for the picture.
+   */
+  isAuthed: boolean;
 }) {
 
   return (
@@ -284,11 +293,12 @@ export function StatisticsTab({
         adds={trending?.adds ?? []}
         drops={trending?.drops ?? []}
         loading={trendingLoading}
+        showHeadshots={isAuthed}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2">
-          <StatLeadersTable />
+          <StatLeadersTable showHeadshots={isAuthed} />
         </div>
 
         <div>

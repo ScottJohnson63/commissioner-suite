@@ -12,6 +12,8 @@
 // that closes a week, which is why the refusal for a late submission is a 409
 // rather than a 400: nothing about the request was malformed, it just arrived
 // after Monday 11:59pm central.
+//
+// AUTH: POST user
 
 import { NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';

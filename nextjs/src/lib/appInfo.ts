@@ -10,12 +10,14 @@
  * only shows up outside a Next build (unit tests, a stray script), where there
  * is no version to report.
  *
- * The scheme is plain semver now that the suite has shipped 1.0.0 — a patch
- * for a fix, a minor for a feature. It was `1.0.0-alpha.<commits>` while the
- * suite was pre-1.0, so that a version in a bug report pointed at a place in
- * the log; a released version names a release instead, and the log is reached
- * through the tag. Bump it with `npm version --no-git-tag-version` so
- * package.json and the lockfile stay in step — `npm ci` fails if they drift.
+ * The scheme is plain semver now that the suite has shipped 1.0.0. It was
+ * `1.0.0-alpha.<commits>` while the suite was pre-1.0, so that a version in a
+ * bug report pointed at a place in the log; a released version names a release
+ * instead, and the log is reached through the tag.
+ *
+ * Which way a PR moves it is CLAUDE.md's rule, not this file's — it reads the
+ * size off the issue's label — so it is stated there once rather than restated
+ * here where the two would drift apart.
  */
 export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
 
@@ -30,3 +32,14 @@ export const GITHUB_ISSUES_URL = `${GITHUB_REPO_URL}/issues`;
  * `${GITHUB_REPO_URL}/blob/main/docs/USER_GUIDE.md` once that file exists.
  */
 export const USER_GUIDE_URL = `${GITHUB_REPO_URL}/tree/main/docs`;
+
+/**
+ * Where the player stats come from. nflverse publishes them under CC BY 4.0,
+ * which asks for visible credit, a link to the licence, and a note when the
+ * data has been changed — so both links are constants rather than markup, and
+ * the About dialog says outright that the fantasy figures are ours, not theirs.
+ */
+export const NFLVERSE_DATA_URL = 'https://github.com/nflverse/nflverse-data';
+
+/** The licence nflverse publishes that data under. */
+export const CC_BY_4_URL = 'https://creativecommons.org/licenses/by/4.0/';

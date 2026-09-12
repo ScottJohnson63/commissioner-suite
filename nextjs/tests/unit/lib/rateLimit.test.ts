@@ -286,3 +286,162 @@ describe('rateLimit module', () => {
     expect(getClientId(req)).toBe('my-uuid');
   });
 });
+
+// ── Generic fixed-window limiter ──────────────────────────────────────────────
+
+describe('createFixedWindowLimiter', () => {
+  // Same resetModules dance as above: the error-report limiter is module-level
+  // state, so each test gets a fresh copy of the module.
+  let createFixedWindowLimiter: (limit: number, windowMs: number) => {
+    limit: number;
+    windowMs: number;
+    check(id: string): { allowed: boolean; remaining: number; resetAt: number };
+    peek(id: string): { used: number; remaining: number; resetAt: number };
+    size(): number;
+  };
+  let checkErrorReportLimit: (ip: string) => { allowed: boolean; remaining: number; resetAt: number };
+  let getClientIp: (req: NextRequest) => string;
+  let ERROR_REPORT_LIMIT: number;
+  let ERROR_REPORT_WINDOW_MS: number;
+
+  beforeEach(async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
+
+    jest.resetModules();
+    const mod = await import('@/lib/rateLimit');
+    createFixedWindowLimiter = mod.createFixedWindowLimiter;
+    checkErrorReportLimit    = mod.checkErrorReportLimit;
+    getClientIp              = mod.getClientIp;
+    ERROR_REPORT_LIMIT       = mod.ERROR_REPORT_LIMIT;
+    ERROR_REPORT_WINDOW_MS   = mod.ERROR_REPORT_WINDOW_MS;
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.resetModules();
+  });
+
+  // WHY: The limit is the count of requests allowed, so the Nth call passes and
+  //      the N+1th does not.
+  it('allows exactly `limit` calls and refuses the next', () => {
+    const limiter = createFixedWindowLimiter(3, 1_000);
+
+    expect(limiter.check('a')).toMatchObject({ allowed: true, remaining: 2 });
+    expect(limiter.check('a')).toMatchObject({ allowed: true, remaining: 1 });
+    expect(limiter.check('a')).toMatchObject({ allowed: true, remaining: 0 });
+    expect(limiter.check('a')).toMatchObject({ allowed: false, remaining: 0 });
+  });
+
+  // WHY: Buckets are per client. One caller spending their allowance must not
+  //      spend anybody else's.
+  it('keeps each client in its own bucket', () => {
+    const limiter = createFixedWindowLimiter(1, 1_000);
+
+    expect(limiter.check('a').allowed).toBe(true);
+    expect(limiter.check('a').allowed).toBe(false);
+    expect(limiter.check('b').allowed).toBe(true);
+  });
+
+  // WHY: Two features sharing this module must not share an allowance — the
+  //      whole point of building a limiter per feature rather than one map.
+  it('gives each limiter independent state', () => {
+    const first  = createFixedWindowLimiter(1, 1_000);
+    const second = createFixedWindowLimiter(1, 1_000);
+
+    expect(first.check('a').allowed).toBe(true);
+    expect(second.check('a').allowed).toBe(true);
+  });
+
+  // WHY: The window is what makes the limit temporary. A client refused now
+  //      must be served again once it has elapsed.
+  it('reopens the allowance after the window elapses', () => {
+    const limiter = createFixedWindowLimiter(1, 1_000);
+
+    expect(limiter.check('a').allowed).toBe(true);
+    expect(limiter.check('a').allowed).toBe(false);
+
+    jest.advanceTimersByTime(1_000);
+    expect(limiter.check('a').allowed).toBe(true);
+  });
+
+  // WHY: peek is what a usage meter reads. It must report the same count the
+  //      next check would spend from, without spending one itself.
+  it('peek reports usage without consuming a token', () => {
+    const limiter = createFixedWindowLimiter(2, 1_000);
+    limiter.check('a');
+
+    expect(limiter.peek('a')).toMatchObject({ used: 1, remaining: 1 });
+    expect(limiter.peek('a')).toMatchObject({ used: 1, remaining: 1 });
+    expect(limiter.check('a').allowed).toBe(true);
+  });
+
+  // WHY: A client with no bucket has spent nothing, and its window has not
+  //      started — so the truthful reset is one window from now.
+  it('peek reports an unseen client as a fresh window', () => {
+    const limiter = createFixedWindowLimiter(5, 1_000);
+    expect(limiter.peek('nobody')).toMatchObject({
+      used: 0, remaining: 5, resetAt: Date.now() + 1_000,
+    });
+  });
+
+  // WHY: The error reporter is keyed by a header a flooder can vary at will.
+  //      Without the sweep, every distinct value would hold a bucket for the
+  //      life of the process — a slow leak reachable by anonymous callers.
+  it('sweeps expired buckets rather than holding one per key seen', () => {
+    const limiter = createFixedWindowLimiter(1, 1_000);
+    for (let i = 0; i < 500; i += 1) limiter.check(`flood-${i}`);
+    expect(limiter.size()).toBe(500);
+
+    // Past the window all 500 are expired, and the next call clears them. The
+    // client that triggered the sweep keeps its own fresh bucket.
+    jest.advanceTimersByTime(1_001);
+    expect(limiter.check('flood-0').allowed).toBe(true);
+    expect(limiter.size()).toBe(1);
+    expect(limiter.check('flood-0').allowed).toBe(false);
+  });
+
+  // WHY: POST /api/errors cannot require a session, so this bucket is the only
+  //      thing bounding how many rows one caller can write.
+  it('checkErrorReportLimit refuses an IP past ERROR_REPORT_LIMIT', () => {
+    for (let i = 0; i < ERROR_REPORT_LIMIT; i += 1) {
+      expect(checkErrorReportLimit('1.2.3.4').allowed).toBe(true);
+    }
+    expect(checkErrorReportLimit('1.2.3.4').allowed).toBe(false);
+    expect(checkErrorReportLimit('5.6.7.8').allowed).toBe(true);
+
+    jest.advanceTimersByTime(ERROR_REPORT_WINDOW_MS);
+    expect(checkErrorReportLimit('1.2.3.4').allowed).toBe(true);
+  });
+
+  function makeReq(headers: Record<string, string>): NextRequest {
+    return {
+      headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
+    } as unknown as NextRequest;
+  }
+
+  // WHY: x-client-id is chosen by the caller. Honouring it on an open endpoint
+  //      would let a flooder mint a fresh allowance per request, so the IP
+  //      lookup must ignore it entirely.
+  it('getClientIp ignores x-client-id and uses the forwarded IP', () => {
+    const req = makeReq({ 'x-client-id': 'self-assigned', 'x-forwarded-for': '1.2.3.4' });
+    expect(getClientIp(req)).toBe('1.2.3.4');
+  });
+
+  // WHY: Proxies prepend their own address, so only the first hop is the caller.
+  it('getClientIp takes the first hop of the forwarded chain', () => {
+    const req = makeReq({ 'x-forwarded-for': '1.2.3.4, 10.0.0.1' });
+    expect(getClientIp(req)).toBe('1.2.3.4');
+  });
+
+  // WHY: Not every proxy sets x-forwarded-for; x-real-ip is the common second.
+  it('getClientIp falls back to x-real-ip', () => {
+    expect(getClientIp(makeReq({ 'x-real-ip': '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  // WHY: An unidentifiable caller shares one bucket rather than being waved
+  //      through — a flood with no headers is still a flood.
+  it("getClientIp buckets an unidentifiable caller as 'unknown'", () => {
+    expect(getClientIp(makeReq({}))).toBe('unknown');
+  });
+});

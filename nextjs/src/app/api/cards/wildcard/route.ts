@@ -16,6 +16,8 @@
 // number that actually stuck, so a double-click shows the real roll rather than
 // an error. A wildcard belonging to somebody else is a 404 rather than a 403:
 // confirming the id exists would be the only thing a 403 added.
+//
+// AUTH: POST user
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';

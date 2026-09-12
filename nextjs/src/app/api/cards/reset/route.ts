@@ -19,6 +19,8 @@
 // season to clear must be named explicitly in the body, and it must match a
 // season that actually has rows. A bare POST is refused rather than defaulting
 // to the current season, which is the one a mis-click would hurt most.
+//
+// AUTH: POST commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';
