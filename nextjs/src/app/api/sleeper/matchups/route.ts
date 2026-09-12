@@ -6,6 +6,8 @@
 //   /league/{id}/users            — maps owner_id → display_name / team_name
 //
 // Cached for 5 minutes per league+week combination.
+//
+// AUTH: GET session
 
 import { NextRequest, NextResponse } from 'next/server';
 import { sleeperGet } from '@/lib/sleeper/client';
@@ -13,6 +15,7 @@ import { buildUserMap, resolveTeamName } from '@/lib/sleeper/teams';
 import type { SleeperMatchupRaw, SleeperRoster, SleeperUser } from '@/lib/sleeper/types';
 import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import { ok, err } from '@/lib/api';
+import { requireSession } from '@/lib/apiAuth';
 
 const TTL = ROUTE_CACHE_TTL.LIVE;
 
@@ -39,6 +42,9 @@ const cache = new RouteCache<MatchupPair[]>();
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
+  const denied = await requireSession();
+  if (denied) return denied;
+
   const { searchParams } = req.nextUrl;
   const leagueId = searchParams.get('leagueId')?.trim();
   const week = Number(searchParams.get('week') ?? '1');

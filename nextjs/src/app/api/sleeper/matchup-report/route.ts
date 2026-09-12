@@ -14,6 +14,8 @@
 //   • Fixtures            (local NflGame, synced from nflverse)
 //
 // GET /api/sleeper/matchup-report?leagueId=&userId=&season=&week=
+//
+// AUTH: GET session
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -36,6 +38,7 @@ import { RouteCache, ROUTE_CACHE_TTL } from '@/lib/cache';
 import type { PlayerProjection, TeamProjection, WeatherInfo, VegasLine, MatchupReportResponse } from '@/types/projections';
 import { getNflOdds } from '@/lib/odds';
 import { ok, err } from '@/lib/api';
+import { requireSession } from '@/lib/apiAuth';
 
 export type { PlayerProjection, TeamProjection, WeatherInfo, VegasLine, MatchupReportResponse };
 
@@ -68,6 +71,9 @@ function starterIdsOf(starters: string[] | undefined): string[] {
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
+  const denied = await requireSession();
+  if (denied) return denied;
+
   const { searchParams } = req.nextUrl;
   const leagueId = searchParams.get('leagueId')?.trim();
   const userId   = searchParams.get('userId')?.trim();

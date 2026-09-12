@@ -1,4 +1,6 @@
 // src/app/api/leagues/[id]/schedule/export/route.ts
+//
+// AUTH: GET member
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -6,7 +8,7 @@ import { writeAuditLog } from '@/lib/audit';
 import { err } from '@/lib/api';
 import { findLeagueByAnyId } from '@/lib/league';
 import { teamNameResolver } from '@/lib/sleeper/liveNames';
-import { requireSession } from '@/lib/apiAuth';
+import { requireMember } from '@/lib/apiAuth';
 
 export async function GET(
   _req: NextRequest,
@@ -16,7 +18,7 @@ export async function GET(
   // open would just be the other door into the schedule. It also writes an
   // EXPORT entry to the audit log, which no anonymous caller should be able
   // to fill.
-  const denied = await requireSession();
+  const denied = await requireMember();
   if (denied) return denied;
 
   const { id } = await params;

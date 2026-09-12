@@ -135,13 +135,22 @@ describe('GET /api/leagues/[id]/schedule', () => {
     mockTeamNameResolver.mockResolvedValue((_id, stored) => stored);
   });
 
-  // WHY: The schedule is league-internal data and the page that shows it is
-  //      behind the login wall, so a signed-out caller gets nothing back.
-  it('returns 401 when the caller is not signed in', async () => {
+  // WHY: The schedule is league-internal data and the only page that shows it
+  //      is the commissioner's, so the bar is MEMBER rather than merely signed
+  //      in — a PLAYER has no tab to call this from.
+  it('returns 403 when the caller is not signed in', async () => {
     signedOut();
 
     const res = await GET(makeReq('lg1'), makeParams('lg1'));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(mockLeagueFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 for a PLAYER', async () => {
+    signedInAs('PLAYER');
+
+    const res = await GET(makeReq('lg1'), makeParams('lg1'));
+    expect(res.status).toBe(403);
     expect(mockLeagueFindFirst).not.toHaveBeenCalled();
   });
 

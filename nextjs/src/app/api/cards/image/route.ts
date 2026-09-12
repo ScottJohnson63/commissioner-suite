@@ -18,6 +18,8 @@
 // `null` clears a field and an absent field is left alone, in both shapes. That
 // distinction is the whole reason this can serve both forms without one wiping
 // the other's work.
+//
+// AUTH: GET,POST user
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';

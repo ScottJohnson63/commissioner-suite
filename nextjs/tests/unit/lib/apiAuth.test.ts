@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 
 jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
-import { requireCommissioner, requireSession } from '@/lib/apiAuth';
+import { requireCommissioner, requireMember, requireSession } from '@/lib/apiAuth';
 import { auth } from '@/auth';
 
 const mockAuth = auth as unknown as jest.MockedFunction<() => Promise<unknown>>;
@@ -63,5 +63,39 @@ describe('requireSession()', () => {
     const res = await requireSession();
     expect(res?.status).toBe(401);
     await expect(res?.json()).resolves.toEqual({ error: 'Unauthorized' });
+  });
+});
+
+describe('requireMember()', () => {
+  beforeEach(() => { mockAuth.mockReset(); });
+
+  // WHY: the line this guard draws is PLAYER | MEMBER, not signed-out | signed-in.
+  //      A PLAYER is a real account — it just has no commissioner page to call
+  //      the schedule, standings and league-teams reads from.
+  it('returns null for a member', async () => {
+    mockAuth.mockResolvedValue({ user: { role: 'MEMBER' } });
+    expect(await requireMember()).toBeNull();
+  });
+
+  it('returns null for a commissioner, who outranks a member', async () => {
+    mockAuth.mockResolvedValue({ user: { role: 'COMMISSIONER' } });
+    expect(await requireMember()).toBeNull();
+  });
+
+  it('returns 403 for a player', async () => {
+    mockAuth.mockResolvedValue({ user: { role: 'PLAYER' } });
+    const res = await requireMember();
+    expect(res?.status).toBe(403);
+    await expect(res?.json()).resolves.toEqual({ error: 'Forbidden' });
+  });
+
+  it('returns 403 when there is no session', async () => {
+    mockAuth.mockResolvedValue(null);
+    expect((await requireMember())?.status).toBe(403);
+  });
+
+  it('returns 403 when the session has no role', async () => {
+    mockAuth.mockResolvedValue({ user: {} });
+    expect((await requireMember())?.status).toBe(403);
   });
 });

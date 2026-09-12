@@ -13,6 +13,8 @@
 //
 // If any league fails, the handler returns a 500 with partial results and the
 // error message. The caller can retry the failed league independently.
+//
+// AUTH: POST commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { syncLeague, type LeagueSyncResult } from '@/lib/sleeper/sync';

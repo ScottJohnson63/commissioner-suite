@@ -25,6 +25,9 @@
 //
 // Required header: valid NextAuth JWT (checked via `getToken`)
 // Required body:   { sleeperUsername: string }
+//
+// AUTH: POST inline — reads the JWT with getToken, because the caller is
+//      mid-sign-in and has no session yet
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getToken } from 'next-auth/jwt';

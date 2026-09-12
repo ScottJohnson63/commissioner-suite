@@ -5,6 +5,8 @@
 // Cards are owned exclusively, so the game is a race rather than a collection:
 // this is the screen that says who is winning it. Every account appears, including
 // members who have not opened a pack, on a score of zero.
+//
+// AUTH: GET user
 
 import { NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';

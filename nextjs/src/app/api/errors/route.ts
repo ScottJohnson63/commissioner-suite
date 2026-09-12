@@ -10,16 +10,16 @@
 //
 // GET:
 //   Returns the most recent `limit` entries (capped at 500, default 100),
-//   ordered newest-first. Requires a session: the entries carry stack traces,
-//   the URL the visitor was on, and their username, none of which belongs in
-//   front of an anonymous caller. The header here used to claim the route was
+//   ordered newest-first. Commissioner only: the entries carry stack traces,
+//   the URL the visitor was on, and their username, which makes this the most
+//   sensitive read in the API. The header here used to claim the route was
 //   "only accessible to server admins who know the URL" — nothing enforced
 //   that, and the URL is in the page's own JavaScript bundle.
 //
-//   `/log`, the only page that reads this, additionally shows nothing to
-//   anyone but the `admin` account. Swap `requireSession` for
-//   `requireCommissioner` to make the route itself that narrow, bearing in mind
-//   that admin and COMMISSIONER are separate ideas in this app.
+//   `/log`, the only page that reads this, shows nothing to anyone but the
+//   `admin` account, so the route was narrowed to match the audience it
+//   actually has — bearing in mind that admin and COMMISSIONER are separate
+//   ideas in this app, and COMMISSIONER is the wider of the two.
 //
 // POST:
 //   Body: { message, stack?, username?, url? }
@@ -31,17 +31,21 @@
 //   ERROR_REPORT_LIMIT rows per IP per window, and every stored field truncated
 //   to the lengths below. Both matter, since one request otherwise buys one
 //   unbounded row.
+//
+// AUTH: GET  commissioner
+// AUTH: POST public — the browser's global error handlers post from the login
+//      page too, so a guard here would drop the reports that matter most
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { ok, err } from '@/lib/api';
-import { requireSession } from '@/lib/apiAuth';
+import { requireCommissioner } from '@/lib/apiAuth';
 import {
   checkErrorReportLimit, getClientIp, ERROR_REPORT_LIMIT,
 } from '@/lib/rateLimit';
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  const denied = await requireSession();
+  const denied = await requireCommissioner();
   if (denied) return denied;
 
   const { searchParams } = req.nextUrl;

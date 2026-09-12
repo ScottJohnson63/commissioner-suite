@@ -18,6 +18,9 @@
 //   • COMMISSIONER — full access, can manage members and generate schedules.
 //   • MEMBER       — read-only access to the Players Association dashboard.
 //   • PLAYER       — base role; no special access beyond the default pages.
+//
+// AUTH: PATCH inline — who may set which role is a matrix, not a threshold —
+//      see the table above
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';

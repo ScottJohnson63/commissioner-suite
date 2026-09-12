@@ -18,6 +18,8 @@
 //
 // Note: this endpoint does not re-validate schedule constraints after the edit.
 // It is intentionally flexible so commissioners can fix generator edge-cases.
+//
+// AUTH: PATCH commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';

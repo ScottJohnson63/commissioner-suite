@@ -76,6 +76,8 @@ jest.mock('@/lib/odds', () => ({
   getNflOdds:  jest.fn(),
 }));
 
+jest.mock('@/auth', () => ({ auth: jest.fn() }));
+
 import { GET, clearBaselineCache } from '@/app/api/sleeper/matchup-report/route';
 import { sleeperGet } from '@/lib/sleeper/client';
 import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
@@ -83,6 +85,8 @@ import { prisma } from '@/lib/prisma';
 import { getVenueWeather } from '@/lib/weather';
 import { clearStatsSeasonCache } from '@/lib/statsSeason';
 import { clearGsisXrefCache } from '@/lib/sleeper/gsisXref';
+import { auth } from '@/auth';
+import { MEMBER, PLAYER, SIGNED_OUT } from '../../../../helpers/session';
 
 const mockSleeperGet  = sleeperGet  as jest.MockedFunction<typeof sleeperGet>;
 const mockGetPlayerMap = getPlayerMapSafe as jest.MockedFunction<typeof getPlayerMapSafe>;
@@ -91,6 +95,7 @@ const mockGroupBy     = prisma.nflWeeklyStat.groupBy  as jest.MockedFunction<typ
 const mockGetWeather  = getVenueWeather as jest.MockedFunction<typeof getVenueWeather>;
 const mockAggregate   = prisma.nflWeeklyStat.aggregate as jest.MockedFunction<typeof prisma.nflWeeklyStat.aggregate>;
 const mockGames       = prisma.nflGame.findMany as jest.MockedFunction<typeof prisma.nflGame.findMany>;
+const mockAuth = auth as jest.MockedFunction<typeof auth>;
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -173,6 +178,14 @@ function setupHappyPath(): void {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+// Every guarded handler here is tested for what it does *past* the guard, so
+// a member is signed in for every test by default. The guard itself is
+// exercised in the "auth" describe at the bottom of the file.
+beforeEach(() => {
+  mockAuth.mockReset();
+  mockAuth.mockResolvedValue(MEMBER as never);
+});
 
 describe('GET /api/sleeper/matchup-report', () => {
   beforeEach(() => {
@@ -799,5 +812,28 @@ describe('GET /api/sleeper/matchup-report', () => {
     const json = await res.json() as { narrative: string };
     expect(json.narrative).toContain('Weather may be a factor');
     expect(json.narrative).toContain('32 mph');
+  });
+});
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+describe('GET /api/sleeper/matchup-report — auth', () => {
+  // A sibling describe, so the suite's own resets above do not reach here.
+  beforeEach(() => { mockSleeperGet.mockClear(); });
+
+  it('turns a signed-out caller away before any projection work', async () => {
+    mockAuth.mockResolvedValue(SIGNED_OUT as never);
+    const { leagueId, userId } = freshIds();
+    const res = await GET(makeReq(leagueId, userId));
+    expect(res.status).toBe(401);
+    // The point of the guard: no Sleeper fan-out on an anonymous request.
+    expect(mockSleeperGet).not.toHaveBeenCalled();
+  });
+
+  it('lets a PLAYER through — the Matchup tab is open to anyone signed in', async () => {
+    mockAuth.mockResolvedValue(PLAYER as never);
+    const res = await GET(new NextRequest('http://localhost/api/sleeper/matchup-report'));
+    // 400 for the missing identifiers, which is past the guard: the point.
+    expect(res.status).toBe(400);
   });
 });

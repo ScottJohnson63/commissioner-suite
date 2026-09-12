@@ -112,6 +112,9 @@
 //   NFL_SEASON      — current NFL season year (e.g. 2025); defaults to the
 //                     current calendar year. Set this explicitly — stale values
 //                     are the most common cause of wrong season data.
+//
+// AUTH: GET,POST inline — the rate limiter and the league lookup read the
+//      session too, so it is fetched once here rather than behind a guard
 
 import { NextRequest, NextResponse } from 'next/server';
 import Groq from 'groq-sdk';

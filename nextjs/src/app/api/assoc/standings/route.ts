@@ -24,6 +24,8 @@
 // `division` on the returned entries is a placeholder (rank % 2 === 1 ? 1 : 2)
 // that the Divisions tab uses as a starting point before the commissioner
 // manually adjusts assignments.
+//
+// AUTH: GET member
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
@@ -32,6 +34,7 @@ import { buildRosterInfo } from '@/lib/sleeper/teams';
 import type { SleeperRoster, SleeperUser, SleeperLeagueRaw } from '@/lib/sleeper/types';
 import type { StandingEntry } from '@/types/standings';
 import { ok, err } from '@/lib/api';
+import { requireMember } from '@/lib/apiAuth';
 import { findLeagueByAnyId } from '@/lib/league';
 
 export type { StandingEntry };
@@ -113,6 +116,9 @@ function rankFromBrackets(winners: BracketMatch[], losers: BracketMatch[]): Map<
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
+  const denied = await requireMember();
+  if (denied) return denied;
+
   const leagueId = req.nextUrl.searchParams.get('leagueId');
   if (!leagueId) return err('leagueId is required', 400);
 

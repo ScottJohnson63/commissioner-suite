@@ -12,14 +12,20 @@
 // Pass `refresh=1` to bypass the 5-minute Sleeper fetch cache. The Lottery tab
 // sends this from its Resync button so a manager who just joined shows up
 // immediately instead of after the cache expires.
+//
+// AUTH: GET member
 
 import { NextRequest, NextResponse } from 'next/server';
 import { SLEEPER_TTL } from '@/lib/sleeper/client';
 import { fetchRosterInfo } from '@/lib/sleeper/teams';
 import type { SleeperLeagueTeam } from '@/types/lottery';
 import { ok, err } from '@/lib/api';
+import { requireMember } from '@/lib/apiAuth';
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
+  const denied = await requireMember();
+  if (denied) return denied;
+
   const leagueId = req.nextUrl.searchParams.get('leagueId')?.trim();
   if (!leagueId) return err('leagueId is required', 400);
 

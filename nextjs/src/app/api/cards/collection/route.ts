@@ -22,6 +22,8 @@
 //
 // Signed-in members only. The collection is per-user by definition, so there is
 // no public view to fall back to.
+//
+// AUTH: GET user
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';

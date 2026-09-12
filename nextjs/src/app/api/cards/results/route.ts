@@ -11,6 +11,8 @@
 // 404 for a week that has not been published rather than an empty body, so a
 // member who bookmarks week 9 in week 8 is told it is not out yet instead of
 // being shown a league that apparently submitted nothing.
+//
+// AUTH: GET user
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ok, err } from '@/lib/api';
