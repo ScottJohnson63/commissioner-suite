@@ -179,12 +179,10 @@ describe('reporting the pack', () => {
     const onDealt = jest.fn();
     const user = await tearOpen(3, 'RATION', { onDealt });
 
-    for (let i = 0; i < 6; i++) {
-      const held = inHand();
-      if (!held) break;
-      await user.click(held);
-      await waitFor(() => expect(true).toBe(true));
-    }
+    // Two clicks a card — turn, then advance — so six finish a three-card
+    // pack. Every one of them has to find a card in hand: a loop that let
+    // itself run out early would assert nothing.
+    for (let i = 0; i < 6; i++) await user.click(inHand()!);
 
     await waitFor(() => expect(screen.getByText(/open another/i)).toBeTruthy());
     expect(onDealt).toHaveBeenCalledTimes(1);
