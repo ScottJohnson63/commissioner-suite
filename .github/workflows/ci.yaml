@@ -15,8 +15,16 @@ jobs:
       run:
         working-directory: nextjs
     steps:
+      # Every `uses:` in this repository is pinned to a commit rather than a
+      # tag: a tag is a mutable pointer the action's owner can repoint, which
+      # is how the trivy-action and kics-github-action supply-chain attacks
+      # reached their callers. Each SHA is what the floating tag resolved to
+      # when it was pinned, and the trailing comment says which version that
+      # was — so no step changed behaviour, it just can't be changed
+      # underneath us. Dependabot opens a weekly PR to move them on
+      # (.github/dependabot.yml).
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install cloc
         run: sudo apt-get install -y cloc
@@ -51,10 +59,10 @@ jobs:
         working-directory: nextjs
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -83,10 +91,10 @@ jobs:
         working-directory: nextjs
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -155,12 +163,16 @@ jobs:
     name: Semgrep SAST
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep
+      # Pinned rather than left floating on :latest, so two runs of the same
+      # commit get the same scanner. Semgrep publishes no rolling 1.x tag, and
+      # Dependabot can't update `container: image:` at all, so this one is a
+      # hand bump — 1.176.1 is what :latest resolved to when it was pinned.
+      image: semgrep/semgrep:1.176.1
     # Skip on dependabot PRs — it doesn't have access to secrets
     if: github.actor != 'dependabot[bot]'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Run Semgrep
         run: |
@@ -177,14 +189,14 @@ jobs:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
       - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.38.0
         if: always()
         with:
           sarif_file: semgrep.sarif
         continue-on-error: true
 
       - name: Upload Semgrep JSON report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: semgrep-results
@@ -228,10 +240,10 @@ jobs:
         working-directory: nextjs
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -258,7 +270,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-report
           path: nextjs/coverage/
