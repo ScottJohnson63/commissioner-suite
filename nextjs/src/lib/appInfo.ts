@@ -10,12 +10,14 @@
  * only shows up outside a Next build (unit tests, a stray script), where there
  * is no version to report.
  *
- * The scheme is `1.0.0-alpha.<commits>`, where the suffix is the number of
- * commits the history held when the version was last set
- * (`git rev-list --count HEAD`). That makes a reported version point at a
- * place in the log, which is what you want from a bug report while the suite
- * is pre-1.0. Bump it with `npm version --no-git-tag-version` so package.json
- * and the lockfile stay in step — `npm ci` fails if they drift.
+ * The scheme is plain semver now that the suite has shipped 1.0.0. It was
+ * `1.0.0-alpha.<commits>` while the suite was pre-1.0, so that a version in a
+ * bug report pointed at a place in the log; a released version names a release
+ * instead, and the log is reached through the tag.
+ *
+ * Which way a PR moves it is CLAUDE.md's rule, not this file's — it reads the
+ * size off the issue's label — so it is stated there once rather than restated
+ * here where the two would drift apart.
  */
 export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? 'dev';
 
