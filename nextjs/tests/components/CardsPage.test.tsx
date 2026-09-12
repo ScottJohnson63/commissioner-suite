@@ -28,8 +28,19 @@ jest.mock('next-auth/react', () => ({ useSession: () => mockSession() }));
 // callback it fires when a pack has been dealt, which is what sends the page
 // back to /collection. Everything else about it is PackOpener's own suite.
 jest.mock('@/components/cards/PackOpener', () => ({
-  PackOpener: ({ onDealt }: { onDealt: (result: unknown) => void }) => (
-    <button type="button" onClick={() => onDealt({})}>deal-a-pack</button>
+  PackOpener: ({ onDealt, onRevealing }: {
+    onDealt: (result: unknown) => void;
+    onRevealing: (r: { wildcardId: string | null } | null) => void;
+  }) => (
+    <>
+      <button type="button" onClick={() => onDealt({})}>deal-a-pack</button>
+      {/* The other half of what the opener tells the page: which pack it still
+          has on screen, and the die in it the page has to hold back. */}
+      <button type="button" onClick={() => onRevealing({ wildcardId: 'wc1' })}>
+        hold-wc1
+      </button>
+      <button type="button" onClick={() => onRevealing(null)}>let-go</button>
+    </>
   ),
 }));
 jest.mock('@/components/cards/DeckGrid', () => ({ DeckGrid: () => <div>deck-grid</div> }));
@@ -39,8 +50,13 @@ jest.mock('@/components/cards/Standings', () => ({ Standings: () => <div>standin
 jest.mock('@/components/cards/WeeklyPanel', () => ({ WeeklyPanel: () => <div>weekly-panel</div> }));
 jest.mock('@/components/cards/WeekResults', () => ({ WeekResults: () => <div>week-results</div> }));
 jest.mock('@/components/cards/CardDetail', () => ({ CardDetail: () => <div>card-detail</div> }));
+// Listed by id rather than stubbed flat: which dice the page offers here is
+// the subject of the tests at the bottom of this file. The die itself, and the
+// throw, are WildcardReveal's own.
 jest.mock('@/components/cards/WildcardReveal', () => ({
-  PendingWildcards: () => <div>pending-wildcards</div>,
+  PendingWildcards: ({ wildcards }: { wildcards: { id: string }[] }) => (
+    <div>pending-wildcards: {wildcards.map((w) => w.id).join(',')}</div>
+  ),
 }));
 jest.mock('@/components/intro/DraftDeckIntro', () => ({
   DraftDeckIntro: () => <div>intro</div>,
@@ -242,5 +258,67 @@ describe('re-reading the collection after a pack', () => {
     await act(async () => { settle[0](); });
 
     expect(screen.getByRole('button', { name: /Draft Packs/ })).toHaveTextContent('1');
+  });
+});
+
+// ─── The die in a pack that is still being revealed ───────────────────────────
+//
+// Issue #85. A pack's wildcard has no roll on it, so the read that #70 moved
+// to the deal puts the die in `pendingWildcards` while the reveal is still
+// working through the pack's cards. Closing the dialog then landed a member on
+// this tab with the die on offer — which gave away that the pack held one and
+// took the throw out of the reveal built to present it.
+
+describe('a wildcard out of a pack still on screen', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  /** A collection holding two unthrown dice: the open pack's, and an older. */
+  function withTwoDice() {
+    return collection({
+      allowance: {
+        ...collection().allowance,
+        pendingWildcards: [{ id: 'wc1', week: 1 }, { id: 'wc0', week: 1 }],
+      },
+    });
+  }
+
+  it('offers every unthrown die when no pack is being revealed', async () => {
+    await renderPage(withTwoDice());
+    expect(screen.getByText(/pending-wildcards: wc1,wc0/)).toBeInTheDocument();
+  });
+
+  it('holds back the die of the pack on screen, and offers the rest', async () => {
+    await renderPage(withTwoDice());
+
+    await userEvent.click(screen.getByRole('button', { name: /Draft Packs/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'hold-wc1' }));
+
+    expect(screen.getByText(/pending-wildcards: wc0$/)).toBeInTheDocument();
+  });
+
+  // WHY: this panel is the safety net for a reveal nobody came back to, so the
+  //      die has to return the moment the opener stops holding it — otherwise
+  //      #85's fix strands the thing #85 was careful not to strand.
+  it('offers it again as soon as the opener lets the pack go', async () => {
+    await renderPage(withTwoDice());
+
+    await userEvent.click(screen.getByRole('button', { name: /Draft Packs/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'hold-wc1' }));
+    await userEvent.click(screen.getByRole('button', { name: 'let-go' }));
+
+    expect(screen.getByText(/pending-wildcards: wc1,wc0/)).toBeInTheDocument();
+  });
+
+  // WHY: a member who walked out on a reveal has to be able to find it again,
+  //      and the line saying so must not name what the panel above is hiding.
+  it('points back at a half-open pack without naming what is in it', async () => {
+    await renderPage(withTwoDice());
+
+    await userEvent.click(screen.getByRole('button', { name: /Draft Packs/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'hold-wc1' }));
+
+    const hint = screen.getByText(/left a pack half-open/i);
+    expect(hint).toBeInTheDocument();
+    expect(hint.textContent).not.toMatch(/wildcard|die/i);
   });
 });

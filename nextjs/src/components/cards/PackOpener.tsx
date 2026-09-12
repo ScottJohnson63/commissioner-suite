@@ -82,6 +82,7 @@ type Phase = 'idle' | 'opening' | 'revealing';
 
 export function PackOpener({
   remaining, nextPackTier, nextPackKind = 'RATION', onOpen, onRollWildcard, onDealt,
+  onRevealing,
 }: {
   remaining: number;
   /** Tier of the sealed pack, decided server-side before it is torn. */
@@ -101,6 +102,19 @@ export function PackOpener({
    * Telling the page here is what makes every way out of the dialog equivalent.
    */
   onDealt: (result: OpenPackResponse) => void;
+  /**
+   * Called with the pack this opener still has on screen, and null when it has
+   * none.
+   *
+   * The page needs it because the reveal is no longer the only place a pack's
+   * contents can surface. A wildcard row is written with no roll on it, so the
+   * die of a pack dealt a moment ago is already in the collection's pending
+   * list — and offering it outside the opener gives away that the pack held one
+   * before the reveal has got there, and takes the throw out of the step built
+   * to present it. The id is reported so the page can hold that one die back
+   * for exactly as long as the reveal can still reach it.
+   */
+  onRevealing: (revealing: { wildcardId: string | null } | null) => void;
 }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [pack, setPack] = useState<OpenPackResponse | null>(null);
@@ -216,6 +230,22 @@ export function PackOpener({
   }, [phase, start]);
 
   const allRevealed = done;
+
+  /**
+   * Reports the pack on screen to the page — see `onRevealing`.
+   *
+   * Derived from the reveal's own state rather than pushed from `start` and
+   * `reset`: the pack is let go of when its last step is dismissed as well as
+   * when the opener is reset, and one report read off what is actually on
+   * screen cannot drift out of step with it the way several pushed ones can.
+   */
+  useEffect(() => {
+    onRevealing(pack && !done ? { wildcardId: pack.wildcard?.id ?? null } : null);
+  }, [pack, done, onRevealing]);
+
+  // An opener that goes away holds nothing. Without this, a die held back for
+  // a reveal that no longer exists would be offered nowhere at all.
+  useEffect(() => () => onRevealing(null), [onRevealing]);
 
   /**
    * One click, whatever state the current card is in.

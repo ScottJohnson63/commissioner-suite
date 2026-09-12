@@ -95,6 +95,15 @@ export default function CardsPage() {
   // see the Packs tab below. Kept separate from `pack` state inside PackOpener
   // itself, which is why closing this never discards a reveal in progress.
   const [packDialogOpen, setPackDialogOpen] = useState(false);
+  /**
+   * The pack the opener still has on screen, if any — see `PackOpener`'s
+   * `onRevealing`.
+   *
+   * Two things behind the dialog key off it: the die out of a pack still being
+   * revealed is held back from the panel below, and the line under the tiles
+   * points back at the pack rather than at a fresh one.
+   */
+  const [revealing, setRevealing] = useState<{ wildcardId: string | null } | null>(null);
   // The week's results behind the "Season" stat, the same idea one tile over:
   // the number is the button for the thing it summarises.
   const [seasonDialogOpen, setSeasonDialogOpen] = useState(false);
@@ -351,6 +360,24 @@ export default function CardsPage() {
   const { allowance, stats, cards, roster, standings, weekly, seasons } = data;
   const poolEmpty = allowance.poolSize === 0;
 
+  /**
+   * The dice to offer outside the opener.
+   *
+   * `pendingWildcards` is every wildcard with no roll on it, which since #70
+   * includes the one in the pack the opener is working through right now — the
+   * deck is re-read when a pack is dealt, not when it is finished. Offering
+   * that die here spoiled that the pack held a wildcard at all and let it be
+   * thrown with none of the reveal that exists to present it.
+   *
+   * Held back only while the opener still has that pack on screen. Abandon the
+   * reveal for good, or reload, and the die is in the panel again — which is
+   * what this panel is for, and why hiding the die outright would be the wrong
+   * fix.
+   */
+  const offeredWildcards = revealing?.wildcardId
+    ? allowance.pendingWildcards.filter((w) => w.id !== revealing.wildcardId)
+    : allowance.pendingWildcards;
+
   // Resolved from the freshly-read deck rather than stored, so the panel shows
   // the saved card and not the copy that was selected before the write.
   const selected = cards.find((c) => c.id === selectedId) ?? null;
@@ -449,9 +476,9 @@ export default function CardsPage() {
         {/* Wildcards found in an earlier pack and never thrown. The opener
             offers a die at the moment it is pulled; this is the safety net for
             a member who closed the tab mid-reveal. */}
-        {allowance.pendingWildcards.length > 0 && (
+        {offeredWildcards.length > 0 && (
           <div className="mb-6">
-            <PendingWildcards wildcards={allowance.pendingWildcards} onRoll={rollWildcard} />
+            <PendingWildcards wildcards={offeredWildcards} onRoll={rollWildcard} />
           </div>
         )}
 
@@ -479,6 +506,15 @@ export default function CardsPage() {
               No cards have been built yet — a commissioner needs to build the card pool first.
             </p>
           </div>
+        ) : revealing ? (
+          /* A pack whose reveal was walked out on. Said in terms of the pack
+             and nothing in it: this line is on screen precisely when a die is
+             being held back from the panel above, and naming it here would
+             give away the thing that holding it back protects. */
+          <p className="text-xs text-center py-6" style={{ color: '#555' }}>
+            You left a pack half-open. Tap <span style={{ color: '#80ff49' }}>Draft Packs</span> to
+            finish it.
+          </p>
         ) : allowance.remaining === 0 ? (
           <p className="text-xs text-center py-6" style={{ color: '#555' }}>
             No packs left to open. More next week.
@@ -507,6 +543,7 @@ export default function CardsPage() {
               onOpen={openPack}
               onRollWildcard={rollWildcard}
               onDealt={onPackDealt}
+              onRevealing={setRevealing}
             />
           </CardsDialog>
         )}
