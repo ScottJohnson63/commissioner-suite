@@ -21,6 +21,7 @@ function card(over: Partial<OwnedCardDto> = {}): OwnedCardDto {
     id: 'c1', season: 2003, playerId: 'p1', playerName: 'Jamal Lewis', position: 'RB',
     team: 'BAL', tier: 'GOLD', seasonRank: 7, fantasyPoints: 300, pointsPerGame: 18.8,
     gamesPlayed: 16, jerseyNumber: 31, headshot: null,
+    photoAuthor: null, photoLicense: null, photoLicenseUrl: null, photoFileUrl: null,
     nickname: null, customImage: null, eligibleForReward: true, isContributed: false,
     retiredWeek: null, retiredPoints: 0,
     ...over,
@@ -68,6 +69,59 @@ describe('CardDetail', () => {
     expect(lineup.className).toContain('col-span-2');
     // A child of the grid itself, not of the form column.
     expect((lineup.parentElement as HTMLElement).className).toContain('grid');
+  });
+
+  // ── The photograph's credit ────────────────────────────────────────────────
+  //
+  // Most of the Wikimedia portraits the headshot sync falls back to are
+  // CC BY-SA: free to show, and not free to show uncredited. These pin the one
+  // place the game states the credit, because the failure is silent — a card
+  // renders perfectly either way and the breach is only visible in the licence.
+
+  const COMMONS = {
+    photoAuthor: 'Jane Doe',
+    photoLicense: 'CC BY-SA 4.0',
+    photoLicenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0',
+    photoFileUrl: 'https://commons.wikimedia.org/wiki/File:Jamal_Lewis.jpg',
+    headshot: 'https://upload.wikimedia.org/wikipedia/commons/1/1a/Jamal_Lewis.jpg',
+  };
+
+  it('credits the photographer and the licence for a Wikimedia portrait', () => {
+    panel(COMMONS);
+
+    const author = screen.getByRole('link', { name: 'Jane Doe' });
+    // CC BY-SA attribution is satisfied by linking to the file's description
+    // page, where Commons itself states the author and the terms.
+    expect(author).toHaveAttribute('href', COMMONS.photoFileUrl);
+    expect(screen.getByRole('link', { name: 'CC BY-SA 4.0' }))
+      .toHaveAttribute('href', COMMONS.photoLicenseUrl);
+  });
+
+  // WHY: nfl.com's and ESPN's portraits carry no attribution requirement, and
+  //      a "Photo:" line under every card would be noise that makes the real
+  //      credits easier to miss.
+  it('says nothing for a portrait that needs no credit', () => {
+    panel({ headshot: 'https://static.www.nfl.com/x.png' });
+    expect(screen.queryByText(/^Photo:/)).not.toBeInTheDocument();
+  });
+
+  // WHY: the credit belongs to the picture, not to the card. Once an owner's
+  //      own photograph is the one on screen, naming a Commons contributor
+  //      under it credits them for a picture they did not take.
+  it('drops the credit once the owner has replaced the picture', () => {
+    panel({ ...COMMONS, customImage: '/api/cards/image?cardId=c1&v=1' });
+    expect(screen.queryByText(/^Photo:/)).not.toBeInTheDocument();
+  });
+
+  // WHY: Commons files are old and inconsistently filled in — an uploader who
+  //      left the Artist field empty, a public-domain scan with no licence
+  //      URL. The credit has to degrade to what is known rather than print
+  //      "Photo: , " or link to nowhere.
+  it('prints what it has when the credit is incomplete', () => {
+    panel({ ...COMMONS, photoAuthor: null, photoLicenseUrl: null });
+
+    expect(screen.getByText(/^Photo:/)).toHaveTextContent('Photo: CC BY-SA 4.0');
+    expect(screen.queryByRole('link', { name: 'CC BY-SA 4.0' })).not.toBeInTheDocument();
   });
 
   it('prompts when nothing is selected', () => {

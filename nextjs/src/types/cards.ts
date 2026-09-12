@@ -22,6 +22,25 @@ export interface CardDto {
   /** Number worn that season, or null for defenses and missing roster rows. */
   jerseyNumber: number | null;
   headshot: string | null;
+  /**
+   * Who took `headshot`, and on what terms.
+   *
+   * Non-null only for the Wikimedia Commons portraits the headshot sync falls
+   * back to for players nfl.com and ESPN have no picture of. Most of those are
+   * CC BY-SA, which requires the photographer and the licence to be named
+   * wherever the image is shown — so this is not decoration, it is the
+   * condition on which the card may show the picture at all. `photoFileUrl` is
+   * the file's description page on Commons, which is what the credit links to.
+   *
+   * All four are null for nfl.com and ESPN portraits, which carry no such
+   * requirement, and for cards with no portrait at all. A member's own upload
+   * replaces the portrait but not these fields — see CardDetail, which shows
+   * the credit only while the pool's own picture is the one on screen.
+   */
+  photoAuthor: string | null;
+  photoLicense: string | null;
+  photoLicenseUrl: string | null;
+  photoFileUrl: string | null;
 }
 
 /**

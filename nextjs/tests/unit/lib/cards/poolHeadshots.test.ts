@@ -51,12 +51,32 @@ function statRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** A card as the builder writes it — the portrait and the credit beside it. */
+interface WrittenCard {
+  playerId: string;
+  headshot: string | null;
+  photoAuthor: string | null;
+  photoLicense: string | null;
+  photoLicenseUrl: string | null;
+  photoFileUrl: string | null;
+}
+
 /** Every card handed to createMany across the run, flattened. */
-function writtenCards(): { playerId: string; headshot: string | null }[] {
+function writtenCards(): WrittenCard[] {
   return createMany.mock.calls.flatMap(
-    (call) => (call[0] as { data: { playerId: string; headshot: string | null }[] }).data,
+    (call) => (call[0] as { data: WrittenCard[] }).data,
   );
 }
+
+/** A resolved Wikimedia portrait, credit and all. */
+const COMMONS = {
+  playerId:   '00-0001',
+  url:        'https://upload.wikimedia.org/wikipedia/commons/1/1a/Edgerrin_James.jpg',
+  author:     'Jane Doe',
+  license:    'CC BY-SA 4.0',
+  licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0',
+  fileUrl:    'https://commons.wikimedia.org/wiki/File:Edgerrin_James.jpg',
+};
 
 /** Wires $queryRaw to answer both of the builder's raw queries. */
 function withStats(rows: ReturnType<typeof statRow>[]) {
@@ -109,5 +129,59 @@ describe('rebuildCardPool() portraits', () => {
     await rebuildCardPool();
 
     expect(writtenCards()[0].headshot).toBe(SILHOUETTE);
+  });
+
+  // WHY: most Wikimedia portraits are CC BY-SA, which is free to show and not
+  //      free to show uncredited. The card reads CardDefinition, so a credit
+  //      the builder drops here is a credit that cannot be printed anywhere —
+  //      and the card renders perfectly without it, so nothing would say so.
+  it('carries the credit onto the card beside the portrait', async () => {
+    withStats([statRow()]);
+    headshotFindMany.mockResolvedValue([COMMONS]);
+
+    await rebuildCardPool();
+
+    expect(writtenCards()[0]).toMatchObject({
+      headshot:        COMMONS.url,
+      photoAuthor:     'Jane Doe',
+      photoLicense:    'CC BY-SA 4.0',
+      photoLicenseUrl: COMMONS.licenseUrl,
+      photoFileUrl:    COMMONS.fileUrl,
+    });
+  });
+
+  // WHY: the credit belongs to the picture. A player whose Wikimedia portrait
+  //      has since been replaced by an nfl.com headshot must lose the credit
+  //      with it, or the card attributes a league photograph to a Commons
+  //      uploader — a false statement, and a worse failure than no credit.
+  it('writes no credit for a portrait that needs none', async () => {
+    withStats([statRow()]);
+    headshotFindMany.mockResolvedValue([{
+      playerId: '00-0001', url: ESPN,
+      author: null, license: null, licenseUrl: null, fileUrl: null,
+    }]);
+
+    await rebuildCardPool();
+
+    expect(writtenCards()[0]).toMatchObject({
+      headshot:        ESPN,
+      photoAuthor:     null,
+      photoLicense:    null,
+      photoLicenseUrl: null,
+      photoFileUrl:    null,
+    });
+  });
+
+  // WHY: a checkout whose headshot sync predates the credit columns has rows
+  //      with a URL and nothing else. That must build a card with a picture
+  //      and no credit, not undefined columns Prisma would reject.
+  it('writes nulls for a row that predates the credit columns', async () => {
+    withStats([statRow()]);
+    headshotFindMany.mockResolvedValue([{ playerId: '00-0001', url: ESPN }]);
+
+    await rebuildCardPool();
+
+    expect(writtenCards()[0].photoAuthor).toBeNull();
+    expect(writtenCards()[0].photoFileUrl).toBeNull();
   });
 });

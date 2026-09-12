@@ -21,6 +21,7 @@ function playedCard(over: Partial<PlayedCardDto> = {}): PlayedCardDto {
     id: 'c1', season: 2003, playerId: 'p1', playerName: 'Priest Holmes', position: 'RB',
     team: 'KC', tier: 'GOLD', seasonRank: 2, fantasyPoints: 340, pointsPerGame: 22.7,
     gamesPlayed: 15, jerseyNumber: 31, headshot: null,
+    photoAuthor: null, photoLicense: null, photoLicenseUrl: null, photoFileUrl: null,
     nickname: null, customImage: null, slot: 'RB1', points: 22.7,
     ownerId: 'u1', ownerName: 'Scott', isYou: true,
     ...over,
