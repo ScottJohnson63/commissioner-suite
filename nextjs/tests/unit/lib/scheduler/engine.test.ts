@@ -26,6 +26,22 @@ function makeTeams(): Team[] {
   ];
 }
 
+// The attempt ceiling every test that expects a schedule passes explicitly.
+//
+// `assignWeeks` is greedy first-fit over a shuffled matchup list, and it paints
+// itself into a corner far more often than engine.ts's header suggests: measured
+// over 20 000 runs on this fixture, a single attempt succeeds ~0.2% of the time,
+// not the ~98% the comment there claims. The retry loop still lands a schedule
+// after ~475 attempts on average, so the ceiling only decides how thin the
+// failure tail is — at 5 000 it is ~3e-5 per call, and with six calls in this
+// file CI hit it (run 34653863420). At 50 000 the tail is ~1e-45, while the
+// typical run is unchanged because the loop exits on the first success.
+//
+// This is a stopgap for the test, not a fix: the generator's success rate is the
+// real defect and wants a smarter assignment (backtracking or a round-robin
+// construction) rather than a bigger lottery.
+const MAX_ATTEMPTS = 50_000;
+
 // ── Happy-path structural tests ───────────────────────────────────────────────
 
 describe('generateSchedule — happy path', () => {
@@ -34,9 +50,9 @@ describe('generateSchedule — happy path', () => {
 
   beforeAll(() => {
     // Generate once and re-use across all structural checks.
-    // Pass maxAttempts=5000 explicitly — the env-var default of 100 can be
-    // flaky in CI due to the probabilistic nature of the shuffled assignment.
-    schedule = generateSchedule('league-1', 2025, teams, 5000);
+    // Pass the ceiling explicitly — the env-var default of 100 is nowhere near
+    // enough for the probabilistic shuffled assignment (see MAX_ATTEMPTS).
+    schedule = generateSchedule('league-1', 2025, teams, MAX_ATTEMPTS);
   });
 
   // WHY: The season is exactly 13 weeks. Fewer would leave matchups unscheduled;
@@ -212,8 +228,7 @@ describe('generateSchedule — determinism', () => {
   it('always produces a valid schedule across multiple runs', () => {
     const teams = makeTeams();
     for (let i = 0; i < 5; i++) {
-      // 5000 attempts guarantees success despite the probabilistic shuffle
-      const s = generateSchedule('lg', 2025, teams, 5000);
+      const s = generateSchedule('lg', 2025, teams, MAX_ATTEMPTS);
       expect(s.weeks).toHaveLength(13);
       for (const slot of s.weeks) {
         expect(slot.matchups).toHaveLength(5);

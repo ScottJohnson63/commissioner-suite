@@ -1,8 +1,20 @@
 // prisma/schema.prisma
 
+// `engineType = "client"` swaps Prisma's Rust query engine for the WASM query
+// compiler. The Rust engine is a 17.5MB native binary that `prisma generate`
+// copies into the generated client, and Vercel bundles the generated client
+// into every one of the ~40 Functions this app deploys — roughly 700MB of the
+// build output per deployment, which is what "Function Storage" bills for
+// (issue #50). The compiler that replaces it is 1.9MB.
+//
+// It needs a driver adapter to talk to the database, which is already how this
+// app connects: see PrismaLibSql in src/lib/prisma.tsx. Migrations are
+// unaffected — `engine` in prisma.config.ts selects the schema engine, which is
+// a separate thing and still the classic one.
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["driverAdapters"]
+  engineType      = "client"
 }
 
 datasource db {
