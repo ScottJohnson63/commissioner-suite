@@ -49,23 +49,34 @@ type HttpMethod = (typeof HTTP_METHODS)[number];
 const POSTURES = ['public', 'session', 'user', 'member', 'commissioner', 'inline'] as const;
 type Posture = (typeof POSTURES)[number];
 
-/** The guard call that backs each mechanically-checkable posture. */
+/**
+ * The guard that backs each mechanically-checkable posture, matched exactly.
+ *
+ * An earlier draft let a stricter guard satisfy a looser marker — requireCommissioner
+ * standing in for a `member` marker — on the reasoning that a marker states a floor
+ * and a route guarded above its floor is not under-protected. That was wrong twice
+ * over, so it is worth saying why it is not coming back.
+ *
+ * It permits the drift this file exists to stop. A route marked `session` and
+ * guarded with requireCommissioner passes, and its header then tells the next
+ * reader "any signed-in account" while the code answers 403 to every member. A
+ * stale comment about who may call a route is the failure mode, not a lesser one.
+ *
+ * And the ladder was never a ladder. `user` accepted only requireUser, never the
+ * "stricter" requireCommissioner, because `user` is not a seniority level at all:
+ * it means the handler needs the caller's id back, and requireCommissioner returns
+ * null. Two different axes — how senior the caller must be, and what the guard
+ * hands back — were being ordered as one.
+ *
+ * Exact matching costs nothing: every guarded handler already matches its marker.
+ * Tightening a route now fails until the marker and INVENTORY catch up, which is
+ * the review hook rather than a cost.
+ */
 const GUARD_FOR: Partial<Record<Posture, string>> = {
   session:      'requireSession',
   user:         'requireUser',
   member:       'requireMember',
   commissioner: 'requireCommissioner',
-};
-
-/**
- * A stricter guard satisfies a looser marker, so no route has to over-declare.
- * Keyed by marker posture, valued by the guards that count as enforcing it.
- */
-const ACCEPTED_GUARDS: Partial<Record<Posture, string[]>> = {
-  session:      ['requireSession', 'requireUser', 'requireMember', 'requireCommissioner'],
-  user:         ['requireUser'],
-  member:       ['requireMember', 'requireCommissioner'],
-  commissioner: ['requireCommissioner'],
 };
 
 /**
@@ -199,7 +210,7 @@ function sliceHandler(lines: string[], start: number): string {
 }
 
 /**
- * Whether a handler body really enforces `posture`.
+ * Whether a handler body really enforces `posture`, and nothing else.
  *
  * The signal is a pair — the guard call AND the rejection it returns — never
  * the guard name alone. Both apiAuth shapes are accepted:
@@ -208,11 +219,11 @@ function sliceHandler(lines: string[], start: number): string {
  *   const guard  = await requireUser();    if (guard.denied) return guard.denied;
  */
 function enforces(body: string, posture: Posture): boolean {
+  const guard = GUARD_FOR[posture];
+  if (!guard) return false;
   const returnsDenial = /return\s+(?:[A-Za-z_$][\w$]*\.)?denied\b/.test(body);
   if (!returnsDenial) return false;
-  return (ACCEPTED_GUARDS[posture] ?? []).some((fn) =>
-    new RegExp(`\\b${fn}\\s*\\(`).test(body),
-  );
+  return new RegExp(`\\b${guard}\\s*\\(`).test(body);
 }
 
 /** Whether a body calls any apiAuth guard at all — used to police `public`. */
@@ -368,11 +379,19 @@ function auditFile(file: string): string[] {
     }
 
     if (!enforces(body, marker.posture)) {
+      // Naming the guard that is actually there separates the two ways this
+      // fails: a missing guard, and a guard that no longer matches what the
+      // header promises. The second reads as a puzzle without it.
+      const found = callsAnyGuard(body);
       problems.push(
-        `${method} is marked "${marker.posture}" but its body shows no guard enforcing it. Add as ` +
-          `the first statement of ${method}: const denied = await ${GUARD_FOR[marker.posture]}(); ` +
-          'if (denied) return denied; — or, if the method really is open, change the marker to ' +
-          '"public — <reason>".',
+        found
+          ? `${method} is marked "${marker.posture}" but its body calls ${found}(). The marker and ` +
+              'the guard have to agree: change the marker (and its INVENTORY entry) to the posture ' +
+              `${found}() enforces, or change the guard to ${GUARD_FOR[marker.posture]}().`
+          : `${method} is marked "${marker.posture}" but its body shows no guard enforcing it. Add as ` +
+              `the first statement of ${method}: const denied = await ${GUARD_FOR[marker.posture]}(); ` +
+              'if (denied) return denied; — or, if the method really is open, change the marker to ' +
+              '"public — <reason>".',
       );
     }
   }
