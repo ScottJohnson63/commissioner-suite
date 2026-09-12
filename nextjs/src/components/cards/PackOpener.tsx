@@ -98,6 +98,42 @@ export function PackOpener({
   const [faceUp, setFaceUp] = useState(false);
   // Set once the last card has been turned and dismissed.
   const [done, setDone] = useState(false);
+  /**
+   * What the server said was left after the last pack this opener spent.
+   *
+   * The `remaining` prop is the page's copy, and the page only re-reads once a
+   * pack has been revealed to the end — so between spending the last pack and
+   * that re-read landing, the prop still says there is one to open. Acting on
+   * it is what let a member tear a pack they no longer had and be told "no
+   * packs left" by the server afterwards.
+   *
+   * Null until this opener has spent anything, so a freshly mounted opener
+   * trusts the prop. Cleared whenever the prop changes, because a fresh read
+   * from the page — a wildcard paying out mid-session, say — is newer than
+   * anything remembered here.
+   */
+  const [spentRemaining, setSpentRemaining] = useState<number | null>(null);
+  // Adjusted during render rather than in an effect, so the count is never one
+  // render out of date — the pack must not be tearable for even a frame after
+  // the page has said it is gone.
+  const [lastProp, setLastProp] = useState(remaining);
+  if (lastProp !== remaining) {
+    setLastProp(remaining);
+    setSpentRemaining(null);
+  }
+
+  /** What is actually openable: the server's last word, else the page's. */
+  const left = spentRemaining ?? remaining;
+
+  /**
+   * Raised when "Open another" is pressed, lowered once the next pack is on
+   * its way. The re-open cannot be fired from the click itself — `start`
+   * refuses to run outside the idle phase, and at the moment of the click the
+   * opener is still revealing — so it is deferred to the effect below, which
+   * runs once the idle pack has mounted. A ref rather than state because it is
+   * a one-shot instruction, not something rendered.
+   */
+  const reopen = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   // Pending timers, so unmounting mid-animation cannot set state afterwards.
@@ -111,7 +147,7 @@ export function PackOpener({
   );
 
   const start = useCallback(async () => {
-    if (phase !== 'idle' || remaining <= 0) return;
+    if (phase !== 'idle' || left <= 0) return;
 
     setError(null);
     setPack(null);
@@ -133,8 +169,36 @@ export function PackOpener({
     }
 
     setPack(result.value);
+    // The response is the only fresh count there is until the page re-reads,
+    // so a pack that has just been spent seals the wrapper behind it.
+    setSpentRemaining(result.value.allowance.remaining);
     setPhase('revealing');
-  }, [phase, remaining, onOpen]);
+  }, [phase, left, onOpen]);
+
+  /**
+   * Throws a wildcard, and credits what it won to the count above.
+   *
+   * A die is the one thing that puts packs *back* while the opener is mounted,
+   * so the remembered count has to rise with it. The page re-reads after a
+   * roll too, but that read can land on the same number the prop already held
+   * — spend your last pack, throw a one — and a prop that does not change
+   * cannot clear a count that is now too low. Adding the face here needs no
+   * such luck: the count tracked the truth, and the die moved it by `value`.
+   */
+  const rollWildcard = useCallback(async (id: string): Promise<WildcardResponse> => {
+    const result = await onRollWildcard(id);
+    if (result.rolled) {
+      setSpentRemaining((cur) => (cur === null ? null : cur + result.value));
+    }
+    return result;
+  }, [onRollWildcard]);
+
+  // Fires the pack "Open another" asked for, once the opener is idle again.
+  useEffect(() => {
+    if (!reopen.current || phase !== 'idle') return;
+    reopen.current = false;
+    void start();
+  }, [phase, start]);
 
   const allRevealed = done;
 
@@ -167,6 +231,7 @@ export function PackOpener({
   function reset() {
     timers.current.forEach(clearTimeout);
     timers.current = [];
+    reopen.current = false;
     setPack(null);
     setIndex(0);
     setFaceUp(false);
@@ -178,7 +243,7 @@ export function PackOpener({
     <div className="relative flex flex-col items-center justify-center" style={{ minHeight: 420 }}>
       {phase === 'idle' && (
         <IdlePack
-          remaining={remaining}
+          remaining={left}
           tier={nextPackTier}
           kind={nextPackKind}
           error={error}
@@ -194,13 +259,16 @@ export function PackOpener({
           index={index}
           faceUp={faceUp}
           onAdvance={advance}
-          onRollWildcard={onRollWildcard}
+          onRollWildcard={rollWildcard}
           allRevealed={allRevealed}
-          canOpenAnother={remaining > 0}
+          canOpenAnother={left > 0}
           onAgain={() => {
             reset();
-            // A tick, so the idle pack mounts before the next one is torn.
-            timers.current.push(setTimeout(() => void start(), 30));
+            // The effect above tears the next one, once the idle pack has
+            // mounted. A timer here would call the `start` captured during the
+            // reveal, which refuses to run because that closure's phase is not
+            // idle — the button did nothing at all.
+            reopen.current = true;
           }}
           onDone={reset}
         />
