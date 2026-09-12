@@ -582,3 +582,74 @@ class TestWikipediaPhotos:
 
         headshots.wikipedia_photos({"p1": "Eddie George"})
         assert len(asked) == 1
+
+
+class TestPurgeNonFree:
+    """The guard against portraits the league has no licence for.
+
+    Not a hypothetical: run against the real table this found 7 stored
+    portraits out of 256 that were English Wikipedia's own non-free uploads,
+    which `pilicense=free` had passed. Those cards were showing fair-use
+    pictures, so the reset below is a correction and not a precaution.
+    """
+
+    EN_WIKI = "https://upload.wikimedia.org/wikipedia/en/0/06/Jerry_Porter.jpg"
+
+    def _rows(self, monkeypatch, rows):
+        """Points the reader at canned rows and captures what gets written."""
+        written = []
+        monkeypatch.setattr(headshots, "stored_wikipedia_rows", lambda: rows)
+        monkeypatch.setattr(
+            headshots.turso, "execute_chunked",
+            lambda sql, args, **kw: written.append((sql, list(args))) or len(list(args)),
+        )
+        return written
+
+    # WHY: the whole point. A fair-use upload that is already stored keeps
+    #      serving its picture until something clears it — the source-side
+    #      filter only stops new ones.
+    def test_resets_a_portrait_that_is_not_on_commons(self, monkeypatch):
+        written = self._rows(monkeypatch, [{"playerId": "p1", "url": self.EN_WIKI}])
+
+        assert headshots.purge_non_free() == 1
+        sql, args = written[0]
+        assert args == [("p1",)]
+        # Cleared to NONE rather than deleted: the card falls back to its team
+        # logo, and an ordinary run re-checks a NONE row later.
+        assert "'NONE'" in sql
+        assert '"url" = NULL' in sql
+
+    # WHY: the credit columns describe the picture. Leaving them behind on a
+    #      cleared row would attribute a photograph the card no longer shows.
+    def test_clears_the_credit_along_with_the_picture(self, monkeypatch):
+        written = self._rows(monkeypatch, [{"playerId": "p1", "url": self.EN_WIKI}])
+        headshots.purge_non_free()
+
+        sql = written[0][0]
+        for column in ("author", "license", "licenseUrl", "fileUrl"):
+            assert f'"{column}" = NULL' in sql
+
+    # WHY: a Commons portrait is exactly what the game is allowed to show.
+    #      Clearing one would cost a card its picture for no reason.
+    def test_leaves_a_commons_portrait_alone(self, monkeypatch):
+        written = self._rows(monkeypatch, [{"playerId": "p1", "url": COMMONS_THUMB}])
+
+        assert headshots.purge_non_free() == 0
+        assert written == []
+
+    def test_writes_nothing_when_every_portrait_is_free(self, monkeypatch):
+        written = self._rows(monkeypatch, [])
+        assert headshots.purge_non_free() == 0
+        assert written == []
+
+    # WHY: the mixed case is the real one — 7 bad rows among 249 good ones.
+    #      Only the offenders may be touched.
+    def test_resets_only_the_offenders(self, monkeypatch):
+        written = self._rows(monkeypatch, [
+            {"playerId": "good1", "url": COMMONS_THUMB},
+            {"playerId": "bad",   "url": self.EN_WIKI},
+            {"playerId": "good2", "url": COMMONS_THUMB},
+        ])
+
+        assert headshots.purge_non_free() == 1
+        assert written[0][1] == [("bad",)]

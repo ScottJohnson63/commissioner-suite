@@ -48,8 +48,9 @@ to use a CC BY-SA file wrongly.
 Usage:
   python scripts/sync_player_headshots.py           # new and unresolved players
   python scripts/sync_player_headshots.py --all     # re-check every player
-  python scripts/sync_player_headshots.py --credits # attribution only, for rows
-                                                    # written before it was kept
+  python scripts/sync_player_headshots.py --credits # reconcile stored rows with
+                                                    # the licence: clear the
+                                                    # non-free, credit the rest
 
 Env:
   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN — database credentials
@@ -131,11 +132,16 @@ WIKIPEDIA_THUMB_PX = 500
 # encyclopaedia holds *locally* sit under /wikipedia/en/ instead, and those are
 # precisely the non-free ones — logos, album art, fair-use publicity shots.
 #
-# `pilicense=free` already asks the API to leave them out, and this is the check
-# that the answer is what was asked for: a portrait whose URL is not on Commons
-# is dropped rather than printed on a card the league has no licence for. It
-# costs nothing and it is the one mistake in this file that would be a legal
-# problem rather than a cosmetic one.
+# ⚠ This check is load-bearing, not a formality. `pilicense=free` is the API's
+# own default and it was assumed to make this redundant; measured against the
+# stored rows, **7 of 256** portraits the job had already accepted were
+# /wikipedia/en/ fair-use uploads (Jerry Porter's among them). So the filter
+# does not do what its name promises for every file, and the path is what
+# actually separates a picture the league may show from one it may not.
+#
+# A portrait failing this is dropped rather than printed on a card, and an
+# already-stored one is cleared — see purge_non_free. It is the one mistake in
+# this file that would be a legal problem rather than a cosmetic one.
 COMMONS_PATH = "/wikipedia/commons/"
 
 # The three fields a credit is made of, asked for by name. Commons' unfiltered
@@ -355,8 +361,10 @@ def _wikipedia_query(titles: list[str]) -> dict | None:
             "prop": "pageimages|description",
             "piprop": "thumbnail|name",
             "pithumbsize": str(WIKIPEDIA_THUMB_PX),
-            # Free files only. This is the API's own filter; _is_commons is the
-            # check that it did what it says — see COMMONS_PATH.
+            # Free files only — asked for explicitly rather than left to the
+            # default. It is not sufficient on its own: _is_commons is what
+            # actually keeps fair-use uploads off the cards, and it has caught
+            # files this filter passed. See COMMONS_PATH.
             "pilicense": "free",
             # Follow renames, so "Chad Johnson" reaches the article it redirects to.
             "redirects": "1",
@@ -742,41 +750,95 @@ def uncredited_wikipedia_rows() -> list[dict[str, str | None]]:
     )
 
 
-def backfill_credits() -> None:
-    """Fills in the attribution for portraits stored before it was kept.
+def stored_wikipedia_rows() -> list[dict[str, str | None]]:
+    """Every stored Wikipedia portrait, credited or not."""
+    return turso.query(
+        'SELECT "playerId", "url" FROM "NflPlayerHeadshot" '
+        "WHERE \"source\" = 'WIKIPEDIA' AND \"url\" IS NOT NULL"
+    )
 
-    The portraits themselves are not touched. Every row this reads already holds
-    a picture somebody's card is showing, and re-resolving it could only take it
-    away — a Wikipedia article that has since lost its lead image would turn a
-    card back into a team logo for no reason but a missing credit.
+
+def purge_non_free() -> int:
+    """Clears stored portraits that are not Wikimedia Commons files.
+
+    These are English Wikipedia's *local* uploads: non-free files kept under a
+    fair-use rationale that covers the encyclopaedia's own use of them and not a
+    fantasy league's. Measured on the real table, 7 of 256 stored portraits were
+    such files, so this is a live problem rather than a hypothetical one — those
+    cards were showing pictures the league has no licence for.
+
+    _page_images now refuses them at the source, but that only stops new ones.
+    A row already written keeps serving its picture until something clears it,
+    which is what this does.
+
+    Reset to `source = 'NONE'` rather than deleted, for two reasons. The card
+    falls back to its team logo, which is the honest answer for a player with no
+    freely licensed photograph. And a NONE row is exactly what an ordinary run
+    re-checks, so the player is looked at again next time and recovered properly
+    if Commons has since gained a portrait of him.
+
+    Returns the number of rows reset.
+    """
+    off_commons = [
+        str(row["playerId"])
+        for row in stored_wikipedia_rows()
+        if not _is_commons(str(row["url"]))
+    ]
+    if not off_commons:
+        return 0
+
+    return turso.execute_chunked(
+        'UPDATE "NflPlayerHeadshot" '
+        "SET \"url\" = NULL, \"source\" = 'NONE', \"author\" = NULL, "
+        '"license" = NULL, "licenseUrl" = NULL, "fileUrl" = NULL, '
+        '"checkedAt" = CURRENT_TIMESTAMP '
+        'WHERE "playerId" = ?',
+        [(player_id,) for player_id in off_commons],
+        label="non-free portraits",
+    )
+
+
+def backfill_credits() -> None:
+    """Brings stored portraits in line with the licence rules, in two steps.
+
+    **First, the unlicensed ones go.** Every stored Wikipedia portrait is
+    checked against COMMONS_PATH and anything that is not a Commons file is
+    reset — see purge_non_free, and note that this is not theoretical: it found
+    7 fair-use uploads the job had already accepted. A picture the league cannot
+    licence is worse than no picture, so this happens before anything else and
+    without being asked for separately.
+
+    **Then the rest are credited.** Those portraits are ones somebody's card is
+    already showing, and they are not re-resolved: an article that has since
+    lost its lead image would turn a card back into a team logo for no reason
+    but a missing credit. Only the four attribution columns are written.
 
     The file name is recovered from the stored URL rather than by asking
     Wikipedia for the articles again: the URL already contains it (see
     file_name), so this costs one request per fifty files instead of one per
     fifty players per title form, and it cannot be thrown off by an article that
     has been renamed since.
-
-    It also answers the question the URL check exists for. Every stored URL is
-    counted against COMMONS_PATH and the total is reported, so "page images only
-    returns freely licensed files" is a measurement rather than an assumption.
     """
+    # Before the credit lookup, so a file that must not be shown is never asked
+    # about — and so the query below cannot hand one back a credit, which would
+    # read as permission to print it.
+    purged = purge_non_free()
+    if purged:
+        print(
+            f"⚠ Reset {purged} portrait(s) that are not on Wikimedia Commons — "
+            "English Wikipedia's own non-free uploads, which this league has no "
+            "licence for. Those cards fall back to their team logo, and an "
+            "ordinary run will look for a free portrait again."
+        )
+    else:
+        print("✓ Every stored Wikipedia portrait is a Commons file.")
+
     rows = uncredited_wikipedia_rows()
     if not rows:
         print("Nothing to backfill — every Wikipedia portrait has a credit.")
         return
 
     urls = {str(r["playerId"]): str(r["url"]) for r in rows}
-    off_commons = [p for p, url in urls.items() if not _is_commons(url)]
-    if off_commons:
-        # Not dropped here: this job backfills credits, and deleting somebody's
-        # card portrait is a decision for whoever reads this line.
-        print(
-            f"⚠ {len(off_commons)} stored portrait(s) are not on Wikimedia Commons "
-            f"and may not be freely licensed — e.g. {urls[off_commons[0]]}"
-        )
-    else:
-        print(f"✓ All {len(urls)} stored Wikipedia portraits are Commons files.")
-
     files = {player_id: file_name(url) for player_id, url in urls.items()}
     print(f"Asking Commons about {len(set(filter(None, files.values())))} file(s)…")
     credits = credits_for(list(files.values()))
