@@ -17,6 +17,16 @@ updates:
     # caught within days of publication.
     cooldown:
       default-days: 7
+    # A floating `@v4` tag used to cap updates at the v4 line. A SHA carries no
+    # such constraint, so without this Dependabot compares each pin against the
+    # newest release and proposes that — it opened a six-major-jump PR (#78)
+    # two minutes after the pins landed. This restores what the tag gave us;
+    # majors are a deliberate decision instead (#79). Naming `update-types`
+    # rather than a version range matters: update-types applies to version
+    # updates only, so a Dependabot security update still comes through.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     # One PR a week covering every action, rather than one PR per action.
     groups:
       github-actions:
