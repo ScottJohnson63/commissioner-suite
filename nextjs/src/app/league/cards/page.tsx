@@ -185,13 +185,19 @@ export default function CardsPage() {
   }, []);
 
   /**
-   * Re-reads after a pack lands.
+   * Re-reads as soon as a pack is dealt.
    *
    * The response already carries the new allowance, but the collection totals
    * and duplicate counts live server-side, so a re-read is simpler than merging
    * the pull into local state and cannot drift from it.
+   *
+   * This runs when the wrapper comes off, not when the last card is turned.
+   * The opener fires it that early on purpose: the cards are claimed by the
+   * time the open request answers, so a member who closes the dialog partway
+   * through the reveal owns them regardless — and the deck behind the dialog
+   * has to say so rather than wait for a flip that is never coming.
    */
-  const onFinished = useCallback(() => { void load(); }, [load]);
+  const onPackDealt = useCallback(() => { void load(); }, [load]);
 
   /**
    * Sets or clears one lineup slot.
@@ -455,7 +461,7 @@ export default function CardsPage() {
               nextPackKind={allowance.nextPackKind}
               onOpen={openPack}
               onRollWildcard={rollWildcard}
-              onFinished={onFinished}
+              onDealt={onPackDealt}
             />
           </CardsDialog>
         )}

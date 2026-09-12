@@ -19,6 +19,12 @@
 //
 // Order matters to the drama: the API hands back the pack worst card first, so
 // laying them out in array order puts the guaranteed card at the end of the row.
+//
+// None of that ceremony is what hands the cards over. The pack is spent and its
+// cards claimed server-side the moment it is opened, so the reveal is theatre
+// over a write that has already happened — which is why `onDealt` fires when
+// the wrapper comes off rather than when the last card lands. Walking away
+// mid-flip costs a member the flip, never the cards.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { PlayerCard, CardBack } from '@/components/cards/PlayerCard';
@@ -75,7 +81,7 @@ const BODY_CLIP =
 type Phase = 'idle' | 'opening' | 'revealing';
 
 export function PackOpener({
-  remaining, nextPackTier, nextPackKind = 'RATION', onOpen, onRollWildcard, onFinished,
+  remaining, nextPackTier, nextPackKind = 'RATION', onOpen, onRollWildcard, onDealt,
 }: {
   remaining: number;
   /** Tier of the sealed pack, decided server-side before it is torn. */
@@ -86,8 +92,15 @@ export function PackOpener({
   onOpen: () => Promise<OpenPackResponse>;
   /** Throws a wildcard found in the pack currently being revealed. */
   onRollWildcard: (id: string) => Promise<WildcardResponse>;
-  /** Called once every card in a pack has been turned over. */
-  onFinished: (result: OpenPackResponse) => void;
+  /**
+   * Called the moment a pack has been dealt, before a single card is turned.
+   *
+   * Not at the end of the reveal: the cards are already the member's when the
+   * API answers, so a pack abandoned half-flipped — the dialog closed on its
+   * X, Escape, a tap outside — still has to show up in the deck behind it.
+   * Telling the page here is what makes every way out of the dialog equivalent.
+   */
+  onDealt: (result: OpenPackResponse) => void;
 }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [pack, setPack] = useState<OpenPackResponse | null>(null);
@@ -173,7 +186,9 @@ export function PackOpener({
     // so a pack that has just been spent seals the wrapper behind it.
     setSpentRemaining(result.value.allowance.remaining);
     setPhase('revealing');
-  }, [phase, left, onOpen]);
+    // The cards are claimed by now, so the page is told before the first flip.
+    onDealt(result.value);
+  }, [phase, left, onOpen, onDealt]);
 
   /**
    * Throws a wildcard, and credits what it won to the count above.
@@ -201,11 +216,6 @@ export function PackOpener({
   }, [phase, start]);
 
   const allRevealed = done;
-
-  // Tell the page once the last card is over, so it can re-read the deck.
-  useEffect(() => {
-    if (allRevealed && pack) onFinished(pack);
-  }, [allRevealed, pack, onFinished]);
 
   /**
    * One click, whatever state the current card is in.
