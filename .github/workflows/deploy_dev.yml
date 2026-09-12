@@ -109,8 +109,13 @@ jobs:
               ;;
           esac
 
+      # Pinned to a commit rather than `@v4`: a tag is a mutable pointer the
+      # action's owner can repoint, which is how the trivy-action and
+      # kics-github-action supply-chain attacks reached their callers. This SHA
+      # is what `v4` resolves to today (v4.4.0), so nothing about the step
+      # changes — it just can't be changed underneath us.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The variable goes through the environment rather than being pasted into
       # the script — an expression expands before the shell parses the line, so
