@@ -68,6 +68,7 @@ async function tearOpen(
   opts: {
     wildcard?: { id: string; week: number } | null;
     onRollWildcard?: (id: string) => Promise<WildcardResponse>;
+    onDealt?: (result: OpenPackResponse) => void;
   } = {},
 ) {
   const user = userEvent.setup();
@@ -84,7 +85,7 @@ async function tearOpen(
           id, rolled: true, value: 4, packsGranted: 14, week: 3, gameSeason: 2026,
         }))
       }
-      onFinished={jest.fn()}
+      onDealt={opts.onDealt ?? jest.fn()}
     />,
   );
 
@@ -152,6 +153,41 @@ describe.each([
   it('offers no way to reveal everything at once', async () => {
     await tearOpen(size as number, kind as PackKind);
     expect(screen.queryByText(/reveal all/i)).toBeNull();
+  });
+});
+
+// ─── Handing the cards over ───────────────────────────────────────────────────
+
+describe('reporting the pack', () => {
+  // WHY: issue #70. The pack is claimed server-side the moment it is opened, so
+  //      a member who closes the dialog on its X partway through the reveal
+  //      owns the cards — but the page only re-read its deck when the last card
+  //      was dismissed, so the deck behind the dialog still looked empty. Firing
+  //      on the deal is what makes every way out of the dialog equivalent.
+  it('tells the page as soon as the wrapper comes off', async () => {
+    const onDealt = jest.fn();
+    await tearOpen(5, 'RATION', { onDealt });
+
+    // One card is in hand and none has been turned, so nothing has been
+    // revealed yet — and the page has already been told.
+    expect(inHand()!.getAttribute('aria-label')).toMatch(/face down/i);
+    expect(onDealt).toHaveBeenCalledTimes(1);
+    expect((onDealt.mock.calls[0] as [OpenPackResponse])[0].cards).toHaveLength(5);
+  });
+
+  it('reports a pack once, not again as its cards are turned', async () => {
+    const onDealt = jest.fn();
+    const user = await tearOpen(3, 'RATION', { onDealt });
+
+    for (let i = 0; i < 6; i++) {
+      const held = inHand();
+      if (!held) break;
+      await user.click(held);
+      await waitFor(() => expect(true).toBe(true));
+    }
+
+    await waitFor(() => expect(screen.getByText(/open another/i)).toBeTruthy());
+    expect(onDealt).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -89,7 +89,7 @@ function mount(
         id, rolled: true, value: opts.rolls ?? 4,
         packsGranted: 9, week: 3, gameSeason: 2026,
       })}
-      onFinished={jest.fn()}
+      onDealt={jest.fn()}
     />,
   );
   return onOpen;
