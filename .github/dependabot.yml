@@ -1,0 +1,26 @@
+# Pinning every action to a commit SHA (issue #74) closes the automatic update
+# channel a floating tag gave us: a pin never picks up an upstream fix on its
+# own. This turns that staleness into a review queue instead — Dependabot opens
+# a PR with the new SHA and rewrites the trailing `# v4.4.0` comment to match.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    # "/" means .github/workflows, not the repository root.
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # Don't propose a release until it has been public for a week. The point
+    # of pinning is that a compromised upstream can't reach us on its next
+    # run; without a cooldown this config would hand that same release back
+    # within a day, just via a PR. The incidents this guards against were
+    # caught within days of publication.
+    cooldown:
+      default-days: 7
+    # One PR a week covering every action, rather than one PR per action.
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+    labels: ["pipeline"]
