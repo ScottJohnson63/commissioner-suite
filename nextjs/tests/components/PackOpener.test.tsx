@@ -15,7 +15,7 @@
 // is a supported way in precisely so the drag is not the only route.
 
 import { describe, it, expect, jest } from '@jest/globals';
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { PackOpener } from '@/components/cards/PackOpener';
@@ -69,6 +69,7 @@ async function tearOpen(
     wildcard?: { id: string; week: number } | null;
     onRollWildcard?: (id: string) => Promise<WildcardResponse>;
     onDealt?: (result: OpenPackResponse) => void;
+    onRevealing?: (revealing: { wildcardId: string | null } | null) => void;
   } = {},
 ) {
   const user = userEvent.setup();
@@ -86,6 +87,7 @@ async function tearOpen(
         }))
       }
       onDealt={opts.onDealt ?? jest.fn()}
+      onRevealing={opts.onRevealing ?? jest.fn()}
     />,
   );
 
@@ -186,6 +188,73 @@ describe('reporting the pack', () => {
 
     await waitFor(() => expect(screen.getByText(/open another/i)).toBeTruthy());
     expect(onDealt).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── What the page is told is still on screen ─────────────────────────────────
+//
+// Issue #85. The deck is re-read when a pack is dealt, so a pack's unthrown
+// wildcard reaches the page's pending list while the reveal is still working
+// through the cards. The page holds that one die back from the panel outside
+// the dialog, and it can only do that if the opener says which pack it has and
+// when it lets go of it.
+
+describe('reporting the pack still on screen', () => {
+  /** The reports made, oldest first. */
+  function recorder() {
+    const calls: ({ wildcardId: string | null } | null)[] = [];
+    return {
+      calls,
+      onRevealing: (r: { wildcardId: string | null } | null) => { calls.push(r); },
+    };
+  }
+
+  it('names the wildcard in the pack it is revealing', async () => {
+    const rec = recorder();
+    await tearOpen(4, 'RATION', { wildcard: { id: 'wc1', week: 3 }, onRevealing: rec.onRevealing });
+
+    // Not a card has been turned, and the die is already spoken for.
+    expect(rec.calls.at(-1)).toEqual({ wildcardId: 'wc1' });
+  });
+
+  it('reports a pack without a wildcard as carrying none', async () => {
+    const rec = recorder();
+    await tearOpen(5, 'RATION', { onRevealing: rec.onRevealing });
+
+    // A pack, so not null — the half-open pack is worth saying — but no die to
+    // hold back for it.
+    expect(rec.calls.at(-1)).toEqual({ wildcardId: null });
+  });
+
+  // WHY: the die has to come back. Holding it back for a reveal that has run
+  //      its course would leave it offered nowhere at all — the opposite
+  //      failure to the one #85 is about, and the worse of the two.
+  it('lets the pack go once its last step is dismissed', async () => {
+    const rec = recorder();
+    const user = await tearOpen(2, 'RATION', {
+      wildcard: { id: 'wc1', week: 3 }, onRevealing: rec.onRevealing,
+    });
+
+    // Two cards and a die: turn and advance each card, turn the die over, then
+    // leave it and finish.
+    for (let i = 0; i < 4; i++) await user.click(inHand()!);
+    await user.click(inHand()!);                                   // turns the die over
+    await user.click(screen.getByText(/throw it later/i));         // ends the pack
+
+    await waitFor(() => expect(screen.getByText(/open another/i)).toBeTruthy());
+    expect(rec.calls.at(-1)).toBeNull();
+  });
+
+  // WHY: the panel outside is the safety net for an abandoned reveal, so an
+  //      opener that has gone away must not still be holding a die.
+  it('reports nothing once it is unmounted', async () => {
+    const rec = recorder();
+    await tearOpen(5, 'RATION', { wildcard: { id: 'wc1', week: 3 }, onRevealing: rec.onRevealing });
+    expect(rec.calls.at(-1)).toEqual({ wildcardId: 'wc1' });
+
+    cleanup();
+
+    expect(rec.calls.at(-1)).toBeNull();
   });
 });
 

@@ -90,6 +90,7 @@ function mount(
         packsGranted: 9, week: 3, gameSeason: 2026,
       })}
       onDealt={jest.fn()}
+      onRevealing={jest.fn()}
     />,
   );
   return onOpen;
