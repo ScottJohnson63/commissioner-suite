@@ -14,7 +14,7 @@
 // nothing to do with the page.
 
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import type { CollectionResponse } from '@/types/cards';
@@ -24,7 +24,14 @@ jest.mock('next-auth/react', () => ({ useSession: () => mockSession() }));
 
 // Stubs, each standing in for a panel with its own suite. Named so a failure
 // here points at the page rather than at a component that is not on trial.
-jest.mock('@/components/cards/PackOpener', () => ({ PackOpener: () => <div>pack-opener</div> }));
+// The opener is stubbed down to the one thing the page cares about: the
+// callback it fires when a pack has been dealt, which is what sends the page
+// back to /collection. Everything else about it is PackOpener's own suite.
+jest.mock('@/components/cards/PackOpener', () => ({
+  PackOpener: ({ onDealt }: { onDealt: (result: unknown) => void }) => (
+    <button type="button" onClick={() => onDealt({})}>deal-a-pack</button>
+  ),
+}));
 jest.mock('@/components/cards/DeckGrid', () => ({ DeckGrid: () => <div>deck-grid</div> }));
 jest.mock('@/components/cards/RosterPanel', () => ({ RosterPanel: () => <div>roster-panel</div> }));
 jest.mock('@/components/cards/RankCard', () => ({ RankCard: () => <div>rank-card</div> }));
@@ -161,5 +168,79 @@ describe('Draft Deck packs tiles', () => {
 
     expect(screen.getByText(/of 2,000 cards left/)).toBeInTheDocument();
     expect(screen.getByText('Cards per player')).toBeInTheDocument();
+  });
+});
+
+// ─── Re-reading after a pack ──────────────────────────────────────────────────
+//
+// The opener reports a pack the moment it is dealt — the cards are claimed
+// server-side by then — and the page answers by re-reading the collection.
+// That read now runs while a reveal is still on screen, which is what these
+// cover: it must not be able to take the reveal down with it, and two of them
+// racing must not leave the older one's pack count on the page.
+
+/** Opens the pack dialog and deals a pack, firing the page's re-read. */
+async function dealAPack() {
+  await userEvent.click(screen.getByRole('button', { name: /Draft Packs/ }));
+  await userEvent.click(screen.getByRole('button', { name: 'deal-a-pack' }));
+}
+
+describe('re-reading the collection after a pack', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  // WHY: issue #70's fix moved this read from the end of the reveal to the
+  //      deal. A failed read used to replace the whole page with an error
+  //      panel, which now unmounts the dialog and throws away a reveal the
+  //      member is in the middle of — for cards the server has already given
+  //      them. The deck stays, and the failure is a line above it.
+  it('keeps the page up when the re-read fails', async () => {
+    await renderPage();
+
+    global.fetch = jest.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+    await dealAPack();
+
+    await waitFor(() => expect(screen.getByText(/offline/)).toBeInTheDocument());
+    // Still the page, not the error panel: the tiles and the dialog survive.
+    expect(screen.getByRole('button', { name: /Draft Packs/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'deal-a-pack' })).toBeInTheDocument();
+    expect(screen.getByText(/your cards are safe/i)).toBeInTheDocument();
+  });
+
+  // WHY: two reads are in flight whenever a second pack is dealt before the
+  //      first read lands, and responses are not ordered. The older one
+  //      carries a pack count from before the newer pack was spent; letting it
+  //      land hands the opener a pack that is gone, which the server then
+  //      refuses.
+  it('ignores a read that is overtaken by a newer one', async () => {
+    await renderPage(collection({
+      allowance: { ...collection().allowance, remaining: 3, starterRemaining: 0 },
+    }));
+
+    const bodies = [
+      collection({ allowance: { ...collection().allowance, remaining: 2, starterRemaining: 0 } }),
+      collection({ allowance: { ...collection().allowance, remaining: 1, starterRemaining: 0 } }),
+    ];
+    const settle: (() => void)[] = [];
+    let next = 0;
+    global.fetch = jest.fn(() => {
+      const body = bodies[next++];
+      return new Promise((resolve) => {
+        settle.push(() => resolve({ ok: true, status: 200, json: async () => body }));
+      });
+    }) as unknown as typeof fetch;
+
+    await dealAPack();
+    await dealAPack();
+    expect(settle).toHaveLength(2);
+
+    // The newer read answers first, and the older one lands on top of it.
+    settle[1]();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Draft Packs/ })).toHaveTextContent('1'));
+    // Flushed inside `act`, so the assertion below runs after the stale
+    // response has had every chance to be applied rather than merely before it.
+    await act(async () => { settle[0](); });
+
+    expect(screen.getByRole('button', { name: /Draft Packs/ })).toHaveTextContent('1');
   });
 });

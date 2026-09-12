@@ -24,7 +24,7 @@
 // person, so there is no public view to degrade to — a signed-out visitor gets
 // an explanation rather than an empty grid.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSession } from 'next-auth/react';
 import { PackOpener } from '@/components/cards/PackOpener';
@@ -75,6 +75,18 @@ export default function CardsPage() {
   // from inside the effect — a synchronous setState that cascades a re-render.
   // Deriving it below keeps the effect to just the fetch.
   const [settled, setSettled] = useState(false);
+  /**
+   * Sequence number of the newest collection read, so an older one cannot land
+   * on top of it.
+   *
+   * Two reads are in flight often enough to matter: every pack dealt starts
+   * one, and "Open another" can deal the next before the first has answered.
+   * Responses are not ordered, and the loser of that race carries a pack count
+   * from before the newer pack was spent — which the opener would then trust,
+   * offer a pack that is gone, and be refused by the server for. Anything but
+   * the latest read is dropped instead.
+   */
+  const reads = useRef(0);
   const [tab, setTab] = useState<Tab>('packs');
   // The card open in the detail panel, by id rather than by value: the deck is
   // re-read after every save, so holding the object would pin a stale copy.
@@ -114,18 +126,31 @@ export default function CardsPage() {
    * to a rank computed a moment apart from it.
    */
   const load = useCallback(async () => {
+    const seq = ++reads.current;
+    /** Whether this read is still the newest one — see `reads`. */
+    const current = () => seq === reads.current;
+
     try {
       const res = await fetch('/api/cards/collection');
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `Could not load your deck (${res.status})`);
       }
-      setData((await res.json()) as CollectionResponse);
+      const body = (await res.json()) as CollectionResponse;
+      if (!current()) return;
+      setData(body);
       setError(null);
     } catch (e) {
+      // A re-read that fails leaves the deck it could not refresh on screen,
+      // and says so in a line above it. Only the first read has nothing to
+      // fall back on, and that is the one the error panel below is for: a
+      // pack is dealt and claimed server-side before this read is even sent,
+      // so a collection request that times out mid-reveal must not be able to
+      // unmount the dialog and throw the reveal away with it.
+      if (!current()) return;
       setError(e instanceof Error ? e.message : 'Could not load your deck');
     } finally {
-      setSettled(true);
+      if (current()) setSettled(true);
     }
   }, []);
 
@@ -311,7 +336,9 @@ export default function CardsPage() {
     );
   }
 
-  if (error || !data) {
+  // Only with nothing to show: an error on top of a deck already in hand is a
+  // line above that deck rather than a replacement for it — see `load`.
+  if (!data) {
     return (
       <Shell>
         <div className="rounded p-6" style={PANEL_BG}>
@@ -335,6 +362,24 @@ export default function CardsPage() {
 
   return (
     <Shell tab={tab} onTab={setTab}>
+      {/* A re-read that failed. The deck below is whatever the last good read
+          said, which is worth keeping on screen — but it may now be behind a
+          pack that has already been dealt, and saying so beats a stale count
+          that looks current. Cleared by the next read that works. */}
+      {error && (
+        <div
+          className="rounded px-3 py-2 mb-4 text-[11px]"
+          style={{
+            background: 'rgba(255,107,107,0.08)',
+            border: '1px solid rgba(255,107,107,0.3)',
+            color: '#ff6b6b',
+          }}
+          role="status"
+        >
+          {error} — your cards are safe; this page is just out of date.
+        </div>
+      )}
+
       {/* ── Packs ──────────────────────────────────────────────────────────
           Kept mounted rather than unmounted on a tab switch: the opener holds
           a torn pack and a half-turned reveal in local state, and looking
