@@ -2,14 +2,23 @@
 //
 // PATCH /api/users/{id}
 //
-// Updates the role of the user identified by `id`. Accessible to both
-// COMMISSIONER and MEMBER roles, with the following permission matrix:
+// Updates the role of the user identified by `id`. COMMISSIONER only:
 //
-//   Caller role    | Can assign     | Can modify
-//   ───────────────┼────────────────┼───────────────────────────────
-//   COMMISSIONER   | any role       | any non-self user
-//   MEMBER         | MEMBER/PLAYER  | non-COMMISSIONER users only
-//   PLAYER / none  | —              | —  (403)
+//   Caller role         | Can assign  | Can modify
+//   ────────────────────┼─────────────┼──────────────────────────────
+//   COMMISSIONER        | any role    | any non-self user
+//   MEMBER / PLAYER     | —           | —  (403)
+//   pending / none      | —           | —  (403)
+//
+// This used to admit MEMBER callers too, for non-COMMISSIONER targets and the
+// MEMBER/PLAYER roles only. That was deliberate, but role administration is
+// not a member-tier capability: one borrowed or disgruntled member could demote
+// every peer to PLAYER and lock the league out of its own app, with no
+// commissioner in the loop.
+//
+// It also made the pending-OAuth session bug a write primitive rather than a
+// disclosure one — an unverified caller arrived carrying role MEMBER, and this
+// endpoint trusted the role it was handed.
 //
 // Self-role changes are always rejected (400) regardless of caller role to
 // prevent accidental lock-outs where a COMMISSIONER demotes themselves.
@@ -25,6 +34,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
+import { denyPending } from '@/lib/apiAuth';
 import { ok, err } from '@/lib/api';
 
 export async function PATCH(
@@ -32,9 +42,14 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const session = await auth();
-  const callerRole = session?.user?.role;
 
-  if (callerRole !== 'COMMISSIONER' && callerRole !== 'MEMBER') {
+  // auth() inline rather than requireCommissioner(): the self-check below needs
+  // session.user.id, and calling a guard as well would mean a second round trip
+  // that could disagree with this one. denyPending is the guards' own predicate.
+  const pending = denyPending(session);
+  if (pending) return pending;
+
+  if (session?.user?.role !== 'COMMISSIONER') {
     return err('Forbidden', 403);
   }
 
@@ -50,19 +65,9 @@ export async function PATCH(
     return err('Invalid role', 400);
   }
 
-  // Members cannot assign the COMMISSIONER role
-  if (callerRole === 'MEMBER' && body.role === 'COMMISSIONER') {
-    return err('Forbidden', 403);
-  }
-
   try {
-    // Members cannot change a COMMISSIONER's role
     const target = await prisma.user.findUnique({ where: { id }, select: { role: true } });
     if (!target) return err('User not found', 404);
-
-    if (callerRole === 'MEMBER' && target.role === 'COMMISSIONER') {
-      return err('Forbidden', 403);
-    }
 
     const updated = await prisma.user.update({
       where: { id },

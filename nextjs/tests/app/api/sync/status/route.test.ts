@@ -79,6 +79,17 @@ describe('GET /api/sync/status', () => {
     expect((await body()).status).toBe(401);
   });
 
+  // WHY: A pendingOAuth caller completed Discord/Google OAuth but never proved
+  //      Sleeper league membership. The session is real, so the bare signed-out
+  //      check above waves them through; the run history they would get carries
+  //      each feed's `detail` payload. src/proxy.ts does not cover /api.
+  it('returns 403 for a pendingOAuth caller', async () => {
+    mockAuth.mockResolvedValue({
+      user: { id: '', role: 'PENDING', pendingOAuth: true },
+    } as never);
+    expect((await body()).status).toBe(403);
+  });
+
   // WHY: The tab renders one card per feed whether or not it has ever run, so a
   //      feed missing from the response would silently disappear from the UI.
   it('returns every configured feed even with no history', async () => {

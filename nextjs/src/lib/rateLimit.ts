@@ -6,7 +6,9 @@
 // N requests per client per rolling window, counted in memory. Two features use
 // it, and each owns its own limiter so their counts never share a bucket:
 //
-//   AI agent, per client — keyed by IP (or x-client-id header).
+//   AI agent, per client — keyed by the signed-in user's id, falling back to
+//     IP. Never by the x-client-id header: the caller sets that, so it let them
+//     pick their own bucket and a fresh value per request meant no limit at all.
 //     Each client is allowed HOURLY_LIMIT prompts per rolling 60-minute window.
 //     The window resets automatically after one hour of inactivity.
 //
@@ -272,10 +274,18 @@ export function checkErrorReportLimit(clientIp: string): LimitVerdict {
  *   2. `x-forwarded-for`     — first IP in the proxy chain (set by Vercel/CDN).
  *   3. `'unknown'`           — fallback when neither header is present.
  *
- * The `x-client-id` preference is what the agent's usage meter is keyed on, and
- * it means a caller can choose their own bucket. That is a fair trade where the
- * route is already behind a session; on an unauthenticated route, prefer
- * `getClientIp()`.
+ * The `x-client-id` preference means a caller can choose their own bucket: a
+ * fresh UUID per request is a fresh allowance per request.
+ *
+ * This used to key the agent's rate limiter, justified here as "a fair trade
+ * where the route is already behind a session". That premise did not hold — a
+ * pendingOAuth caller reached the route with a valid session and no admission,
+ * so the session was not the barrier the trade assumed. The agent now keys on
+ * `session.user.id` instead.
+ *
+ * Nothing currently limits on this. Do not key a limiter with it: use
+ * `getClientIp()`, or better, the session id. It is fit for a display hint
+ * about which client is talking, and not for deciding what a caller may spend.
  *
  * @param req  The incoming Next.js request.
  * @returns    A trimmed string identifying the client.

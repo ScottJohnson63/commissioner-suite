@@ -118,7 +118,14 @@ export interface UsageController {
   exhausted: boolean;
   /** True when it is the app-wide day that is gone, not this reader's hour. */
   dayExhausted: boolean;
-  /** The header this page must send so the count follows the browser, not the IP. */
+  /**
+   * A per-browser id, still sent as `X-Client-Id`.
+   *
+   * No longer decides anything: the agent limiter keys on the session id, since
+   * a header the caller sets let them choose their own bucket and a fresh value
+   * per request meant the hourly limit never fired. Kept only as a hint about
+   * which browser is talking. Do not reintroduce it as a limiter key.
+   */
   clientId: string;
   /** Applies the usage headers on a successful answer. */
   recordResponse: (headers: Headers) => void;
