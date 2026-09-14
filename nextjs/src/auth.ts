@@ -42,42 +42,23 @@ import Google from 'next-auth/providers/google';
 import Credentials from 'next-auth/providers/credentials';
 import { prisma } from '@/lib/prisma';
 import { validateSleeperMembership, resolveSleeperUser, authorizeCredentials } from '@/lib/authHelpers';
+import { authConfig } from '@/auth.config';
 
 // Re-export the pure helpers so callers who previously imported from @/auth
 // (e.g. the connect-sleeper API route) continue to work without changes.
 export { validateSleeperMembership, resolveSleeperUser, authorizeCredentials };
 
-// ─── Session type augmentation ────────────────────────────────────────────────
-
-declare module 'next-auth' {
-  interface Session {
-    user: {
-      id: string;
-      role: string;
-      username: string | null;
-      sleeperUserId?: string | null;
-      name?: string | null;
-      email?: string | null;
-      image?: string | null;
-      /**
-       * true  → OAuth completed but user is NOT yet in the database.
-       *         They must pass Sleeper verification before a DB record is created.
-       * false → fully authenticated, DB record exists.
-       */
-      pendingOAuth: boolean;
-      /** Only populated when pendingOAuth === true */
-      pendingProvider?: string;
-      pendingProviderAccountId?: string;
-      pendingTokenType?: string | null;
-      pendingScope?: string | null;
-      pendingExpiresAt?: number | null;
-    };
-  }
-}
+// The Session type augmentation lives in @/auth.config so the middleware, which
+// no longer imports this module, still picks it up.
 
 // ─── Auth config ──────────────────────────────────────────────────────────────
+//
+// This is the full configuration: everything in @/auth.config plus the parts
+// that reach the database. src/proxy.ts deliberately uses @/auth.config alone —
+// see the comment there for why.
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  ...authConfig,
   /**
    * No adapter — users are NOT written to the database on OAuth sign-in.
    * The jwt callback detects whether the incoming OAuth account already exists.
@@ -88,10 +69,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
    *                         the User + Account records, then the client calls
    *                         update({ userId }) to resolve the pending state.
    */
-  // Required when deployed behind a proxy/load balancer (e.g. AWS Lambda + API Gateway).
-  // Without this, Auth.js ignores x-forwarded-proto and misidentifies the protocol,
-  // causing PKCE cookie prefix mismatches that break OAuth callbacks.
-  trustHost: true,
+  // trustHost, session strategy and pages come from @/auth.config.
   providers: [
     Discord({
       clientId:    process.env.DISCORD_CLIENT_ID!,
@@ -110,9 +88,10 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     }),
   ],
 
-  session: { strategy: 'jwt' },
-
   callbacks: {
+    // session() comes from @/auth.config — it is pure, so the middleware shares it.
+    ...authConfig.callbacks,
+
     // ─────────────────────────────────────────────────────────────────────────
     // jwt — the single source of truth for everything in the token.
     //
@@ -218,48 +197,5 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       return token;
     },
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // session — maps token fields onto session.user.
-    //
-    // NextAuth has already copied token.name / token.email / token.picture into
-    // session.user before this callback runs, so we only need to set our custom
-    // fields here.
-    // ─────────────────────────────────────────────────────────────────────────
-    session({ session, token }) {
-      const isPending = (token.pendingOAuth as boolean) === true;
-
-      session.user.pendingOAuth = isPending;
-
-      if (isPending) {
-        // PENDING, not MEMBER. A pending user has completed OAuth but has not
-        // yet proved Sleeper league membership, so they are not admitted to
-        // anything. Handing them a real role made requireMember() and the role
-        // matrix in /api/users/[id] treat an unverified stranger as a member —
-        // the page proxy never caught it because config.matcher excludes /api.
-        //
-        // PENDING deliberately matches no role check anywhere. The guards in
-        // src/lib/apiAuth.ts also reject pendingOAuth outright, so this value
-        // is the belt and that check is the braces.
-        session.user.id                      = '';
-        session.user.role                    = 'PENDING';
-        session.user.username                = null;
-        session.user.pendingProvider          = token.pendingProvider          as string | undefined;
-        session.user.pendingProviderAccountId = token.pendingProviderAccountId as string | undefined;
-        session.user.pendingTokenType         = (token.pendingTokenType  as string | null | undefined) ?? null;
-        session.user.pendingScope             = (token.pendingScope      as string | null | undefined) ?? null;
-        session.user.pendingExpiresAt         = (token.pendingExpiresAt  as number | null | undefined) ?? null;
-      } else {
-        session.user.id          = (token.id          as string | null) ?? '';
-        session.user.role        = (token.role        as string)        ?? 'MEMBER';
-        session.user.username    = (token.username    as string | null) ?? null;
-        session.user.sleeperUserId = (token.sleeperUserId as string | null | undefined) ?? null;
-      }
-
-      return session;
-    },
-  },
-
-  pages: {
-    signIn: '/login',
   },
 });

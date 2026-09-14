@@ -8,31 +8,66 @@ const nextConfig: NextConfig = {
    * Keep dead Prisma runtime blobs out of every Vercel Function.
    *
    * Vercel packages each route as its own Function, and each one bundles
-   * whatever the file tracer reaches. `@prisma/client` ships a WASM build of
-   * both the query engine and the query compiler for *every* database it
-   * supports, in both .js and .mjs base64 form. The tracer sees the dynamic
-   * requires in the package's edge/wasm entrypoints and pulls all of them in —
-   * about 52MB per function, none of which this app can execute:
+   * whatever the file tracer reaches. `@prisma/client` ships a runtime build for
+   * every engine and every host it supports, in both .js and .mjs form, and the
+   * tracer follows the dynamic requires in the package's entrypoints and pulls
+   * all of them in — replicated across ~50 Functions.
    *
-   *   - query_engine_bg.*   — the Rust engine's WASM build. `engineType =
-   *                           "client"` (prisma/schema.prisma) means the
-   *                           generated client loads runtime/client.js, which
-   *                           never references these at all.
-   *   - query_compiler_bg.* — needed, but only the `sqlite` one. The datasource
-   *                           provider is sqlite (Turso/libSQL), so the
-   *                           cockroachdb/mysql/postgresql/sqlserver builds can
-   *                           never be selected.
+   * The list below is the complement of what actually loads. That was measured,
+   * not guessed: constructing the real generated client and running a query,
+   * then dumping require.cache and every readFileSync, reaches exactly
    *
-   * The sqlite query compiler and the generated client are deliberately absent
-   * from this list — those are the ones actually loaded at runtime.
+   *   .prisma/client/{default,index,query_compiler_bg}.js
+   *   .prisma/client/query_compiler_bg.wasm
+   *   @prisma/client/default.js
+   *   @prisma/client/runtime/client.js
+   *
+   * plus @prisma/debug, @prisma/driver-adapter-utils and the adapter. So:
+   *
+   *   - query_engine_bg.*    — the Rust engine's WASM build. `engineType =
+   *                            "client"` (prisma/schema.prisma) means the
+   *                            generated client never references these at all.
+   *   - query_compiler_bg.*  — under @prisma/client/runtime these are the *edge*
+   *                            base64 fallbacks, one per provider, and none is
+   *                            loaded on the Node runtime. Note the live query
+   *                            compiler is the copy the generator emits at
+   *                            node_modules/.prisma/client/query_compiler_bg.
+   *                            {js,wasm}, which this list does not touch.
+   *   - binary.*, library.*  — the other two engine runtimes, both dead under
+   *                            engineType = "client".
+   *   - edge*, wasm-*-edge.* — the edge-runtime builds. No route opts into the
+   *   - react-native.*         edge runtime, and nothing here is React Native.
+   *   - client.mjs           — the server output is CJS, so only client.js runs.
+   *   - *.d.ts, *.d.mts      — type declarations; never executed.
+   *
+   * @img/** and sharp/** are libvips for next/image. Vercel runs image
+   * optimization on its own infrastructure rather than inside the Function, so
+   * these are inert there — but they are the one entry here not proven by the
+   * probe above. If remote images stop rendering in production, this pair is the
+   * first thing to drop; it is only ~45MB of the ~1,490MB this block saves.
+   *
+   * Note this does NOT apply to the middleware bundle, which Next traces
+   * separately — see src/auth.config.ts for how that one is kept small.
    */
   outputFileTracingExcludes: {
     '**/*': [
       'node_modules/@prisma/client/runtime/query_engine_bg.*',
-      'node_modules/@prisma/client/runtime/query_compiler_bg.cockroachdb.*',
-      'node_modules/@prisma/client/runtime/query_compiler_bg.mysql.*',
-      'node_modules/@prisma/client/runtime/query_compiler_bg.postgresql.*',
-      'node_modules/@prisma/client/runtime/query_compiler_bg.sqlserver.*',
+      'node_modules/@prisma/client/runtime/query_compiler_bg.*',
+      'node_modules/@prisma/client/runtime/binary.*',
+      'node_modules/@prisma/client/runtime/library.*',
+      'node_modules/@prisma/client/runtime/react-native.*',
+      'node_modules/@prisma/client/runtime/edge.*',
+      'node_modules/@prisma/client/runtime/edge-esm.*',
+      'node_modules/@prisma/client/runtime/wasm-engine-edge.*',
+      'node_modules/@prisma/client/runtime/wasm-compiler-edge.*',
+      'node_modules/@prisma/client/runtime/client.mjs',
+      'node_modules/@prisma/client/runtime/*.d.ts',
+      'node_modules/@prisma/client/runtime/*.d.mts',
+      'node_modules/.prisma/client/edge.js',
+      'node_modules/.prisma/client/wasm.js',
+      'node_modules/.prisma/client/*.d.ts',
+      'node_modules/@img/**',
+      'node_modules/sharp/**',
     ],
   },
   /**

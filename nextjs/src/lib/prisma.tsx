@@ -12,11 +12,30 @@
 //
 // Required env vars:
 //   TURSO_DATABASE_URL  — libSQL URL for the Turso database (e.g. libsql://…)
-//   TURSO_AUTH_TOKEN    — Auth token for the Turso database (can be omitted for
-//                         local SQLite via file: URLs in development)
+//   TURSO_AUTH_TOKEN    — Auth token for the Turso database
+//
+// Why the `/web` adapter and not the default one:
+//
+//   The default entrypoint re-exports @libsql/client's *node* build, which
+//   `require`s the native `libsql` package at module load. That drags the
+//   prebuilt SQLite binaries for every supported platform — @libsql/linux-x64-gnu
+//   and -musl alone are ~19MB — into all ~50 Vercel Functions, roughly 950MB of
+//   the build output per deployment, for a database we only ever reach over the
+//   network (#50).
+//
+//   `/web` speaks the same hrana protocol to the same Turso server over HTTPS
+//   rather than a WebSocket, which suits a serverless function better anyway:
+//   there is no persistent socket to open and tear down per invocation.
+//
+//   The tradeoff is that it cannot open `file:` URLs or serve embedded replicas,
+//   and it has no interactive (callback-form) `$transaction`. Nothing here needs
+//   any of those — both `$transaction` call sites pass an array. For a local
+//   file-backed database, `turso dev` serves http://127.0.0.1:8080, which this
+//   client accepts. The maintenance scripts under prisma/ and scripts/ build
+//   @libsql/client themselves and are unaffected; they are not bundled.
 
 import { PrismaClient } from '@prisma/client';
-import { PrismaLibSql } from '@prisma/adapter-libsql';
+import { PrismaLibSql } from '@prisma/adapter-libsql/web';
 
 const globalForPrisma = global as unknown as { prisma?: PrismaClient };
 
