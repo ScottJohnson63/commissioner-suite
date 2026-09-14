@@ -100,8 +100,11 @@ export async function GET(
         // A session lookup that throws must not take the leaderboard down with
         // it — answering signed-out visitors is this endpoint's job — so a
         // failure counts as signed out, which is the safe direction to fail.
+        // A pendingOAuth session is signed in but not admitted — OAuth done,
+        // Sleeper membership unproven — so it does not count as authed for the
+        // members-only column.
         const isAuthed = await auth()
-          .then((session) => !!session?.user)
+          .then((session) => !!session?.user && session.user.pendingOAuth !== true)
           .catch(() => false);
 
         // Position is always a short all-caps abbreviation — safe to inline

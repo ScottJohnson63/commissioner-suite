@@ -14,8 +14,33 @@
 // directly rather than relying on a catch.
 
 import { NextResponse } from 'next/server';
+import type { Session } from 'next-auth';
 import { auth } from '@/auth';
 import { err } from '@/lib/api';
+
+/**
+ * Rejects a caller who has completed OAuth but not yet proved Sleeper league
+ * membership.
+ *
+ * Such a session is real — NextAuth signed it — but its holder has not been
+ * admitted to anything. src/proxy.ts turns them back at /auth/connect-sleeper,
+ * but its `config.matcher` excludes /api, so the proxy has never been what
+ * stops them reaching the data. Every guard below has to say so itself.
+ *
+ * The session callback in src/auth.ts already gives these callers the role
+ * 'PENDING', which matches no role check anywhere. This is the second lock:
+ * it holds even if that sentinel is changed back to something privileged.
+ *
+ * Exported because the agent route holds its own `auth()` result — it needs
+ * `sleeperUserId` off the session further down, and calling a guard as well
+ * would mean a second round trip that could disagree with the first. It shares
+ * this predicate rather than restating the rule.
+ *
+ * @returns A 403 to return from the guard, or null when the caller is admitted.
+ */
+export function denyPending(session: Session | null): NextResponse | null {
+  return session?.user?.pendingOAuth === true ? err('Forbidden', 403) : null;
+}
 
 /**
  * Rejects anyone who is not a commissioner.
@@ -25,17 +50,27 @@ import { err } from '@/lib/api';
  */
 export async function requireCommissioner(): Promise<NextResponse | null> {
   const session = await auth();
+  const pending = denyPending(session);
+  if (pending) return pending;
   return session?.user?.role === 'COMMISSIONER' ? null : err('Forbidden', 403);
 }
 
 /**
  * Rejects anyone who is not signed in, whatever their role.
  *
- * @returns A 401 response to return from the handler, or null when a session
- *          exists and the handler should proceed.
+ * "Signed in" means admitted: a pendingOAuth caller holds a valid session but
+ * has not passed Sleeper verification, and this guard used to let them through
+ * on the strength of the session object alone. It was the widest of the four,
+ * because it is what stands in front of /api/users and /api/audit — the
+ * members' email addresses and the full audit log.
+ *
+ * @returns A 401 response to return from the handler, 403 for a caller who is
+ *          signed in but not admitted, or null when the handler should proceed.
  */
 export async function requireSession(): Promise<NextResponse | null> {
   const session = await auth();
+  const pending = denyPending(session);
+  if (pending) return pending;
   return session ? null : err('Unauthorized', 401);
 }
 
@@ -55,12 +90,18 @@ export async function requireSession(): Promise<NextResponse | null> {
  * if (guard.denied) return guard.denied;
  * // guard.userId is a string from here on
  * ```
+ *
+ * A pendingOAuth caller is rejected before the id is read. The empty-string id
+ * such a session carries would have failed the `!userId` check below anyway,
+ * but that was luck rather than intent, and luck is not a thing to guard with.
  */
 export async function requireUser(): Promise<
   { denied: NextResponse; userId?: undefined; role?: undefined }
   | { denied: null; userId: string; role: string }
 > {
   const session = await auth();
+  const pending = denyPending(session);
+  if (pending) return { denied: pending };
   const userId = session?.user?.id;
   if (!userId) return { denied: err('Unauthorized', 401) };
   return { denied: null, userId, role: session.user.role };
@@ -84,6 +125,9 @@ export async function requireUser(): Promise<
  *          is a member or a commissioner and the handler should proceed.
  */
 export async function requireMember(): Promise<NextResponse | null> {
-  const role = (await auth())?.user?.role;
+  const session = await auth();
+  const pending = denyPending(session);
+  if (pending) return pending;
+  const role = session?.user?.role;
   return role === 'MEMBER' || role === 'COMMISSIONER' ? null : err('Forbidden', 403);
 }

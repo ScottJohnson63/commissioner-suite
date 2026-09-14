@@ -37,7 +37,6 @@ export default function MembersPage() {
 
   const role = session?.user?.role as Role | undefined;
   const isCommissioner = role === 'COMMISSIONER';
-  const isMember = role === 'MEMBER';
   const currentUserId = session?.user?.id;
 
   useEffect(() => {
@@ -100,7 +99,7 @@ export default function MembersPage() {
           <p className="text-xs" style={{ color: '#555' }}>
             {isCommissioner
               ? 'Manage roles for registered users.'
-              : 'Promote players to members.'}
+              : 'Registered users. Only a commissioner can change roles.'}
           </p>
         </div>
 
@@ -168,7 +167,6 @@ export default function MembersPage() {
                             busy={updating === user.id}
                             isSelf={user.id === currentUserId}
                             isCommissioner={isCommissioner}
-                            isMember={isMember}
                             onSetRole={(r) => setRole(user, r)}
                           />
                         ))}
@@ -190,31 +188,24 @@ function UserRow({
   busy,
   isSelf,
   isCommissioner,
-  isMember,
   onSetRole,
 }: {
   user: User;
   busy: boolean;
   isSelf: boolean;
   isCommissioner: boolean;
-  isMember: boolean;
   onSetRole: (role: Role) => void;
 }) {
   const displayName = user.name ?? user.username ?? '—';
   const sub = user.email ?? (user.username ? `@${user.username}` : null);
 
-  // Commissioners can reassign anyone (except themselves).
-  // Members can only reassign non-commissioner users, and only to MEMBER or PLAYER.
-  const canEdit =
-    !isSelf &&
-    (isCommissioner || (isMember && user.role !== 'COMMISSIONER'));
+  // Commissioners can reassign anyone (except themselves). Members can no
+  // longer reassign anyone: PATCH /api/users/[id] is commissioner-only, so
+  // offering a member the control would only earn them a 403.
+  const canEdit = !isSelf && isCommissioner;
 
   const assignableRoles: Role[] = canEdit
-    ? ROLES.filter((r) => {
-        if (r === user.role) return false;
-        if (isMember && r === 'COMMISSIONER') return false;
-        return true;
-      })
+    ? ROLES.filter((r) => r !== user.role)
     : [];
 
   return (

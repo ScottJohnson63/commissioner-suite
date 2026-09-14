@@ -231,8 +231,17 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       session.user.pendingOAuth = isPending;
 
       if (isPending) {
+        // PENDING, not MEMBER. A pending user has completed OAuth but has not
+        // yet proved Sleeper league membership, so they are not admitted to
+        // anything. Handing them a real role made requireMember() and the role
+        // matrix in /api/users/[id] treat an unverified stranger as a member —
+        // the page proxy never caught it because config.matcher excludes /api.
+        //
+        // PENDING deliberately matches no role check anywhere. The guards in
+        // src/lib/apiAuth.ts also reject pendingOAuth outright, so this value
+        // is the belt and that check is the braces.
         session.user.id                      = '';
-        session.user.role                    = 'MEMBER';
+        session.user.role                    = 'PENDING';
         session.user.username                = null;
         session.user.pendingProvider          = token.pendingProvider          as string | undefined;
         session.user.pendingProviderAccountId = token.pendingProviderAccountId as string | undefined;

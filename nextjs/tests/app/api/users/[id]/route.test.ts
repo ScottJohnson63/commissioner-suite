@@ -101,13 +101,34 @@ describe('PATCH /api/users/[id]', () => {
     expect(res.status).toBe(404);
   });
 
-  // WHY: A MEMBER cannot promote another user to COMMISSIONER — only a
-  //      COMMISSIONER can assign that role.
-  it('returns 403 when MEMBER tries to assign COMMISSIONER role', async () => {
-    mockAuth.mockResolvedValueOnce({ user: { id: callerId, role: 'MEMBER' } } as never);
+  // WHY: Role administration is commissioner-only. A MEMBER used to be able to
+  //      reassign any non-COMMISSIONER user between MEMBER and PLAYER, which
+  //      meant one borrowed or disgruntled member could demote every peer and
+  //      lock the league out of its own app.
+  it('returns 403 for a MEMBER-role caller, whatever role they assign', async () => {
+    for (const role of ['COMMISSIONER', 'MEMBER', 'PLAYER'] as const) {
+      mockAuth.mockResolvedValueOnce({ user: { id: callerId, role: 'MEMBER' } } as never);
 
-    const res = await PATCH(makePatch(targetId, { role: 'COMMISSIONER' }), makeParams(targetId));
+      const res = await PATCH(makePatch(targetId, { role }), makeParams(targetId));
+      expect(res.status).toBe(403);
+    }
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  // WHY: A pendingOAuth caller has completed OAuth but not proved Sleeper
+  //      membership. They used to arrive here carrying role MEMBER, which is
+  //      what turned that session bug from a disclosure into a write primitive:
+  //      an unverified stranger could rewrite everyone else's role. The empty
+  //      id such a session carries also means the self-check below could never
+  //      fire for them.
+  it('returns 403 for a pendingOAuth caller even if the role claims otherwise', async () => {
+    mockAuth.mockResolvedValueOnce({
+      user: { id: '', role: 'COMMISSIONER', pendingOAuth: true },
+    } as never);
+
+    const res = await PATCH(makePatch(targetId, { role: 'PLAYER' }), makeParams(targetId));
     expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   // WHY: When Prisma throws unexpectedly (e.g. DB timeout), the route should

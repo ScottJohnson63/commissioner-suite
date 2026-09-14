@@ -121,8 +121,9 @@ import Groq from 'groq-sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
+import { denyPending } from '@/lib/apiAuth';
 import {
-  HOURLY_LIMIT, DAILY_LIMIT, getClientId, checkHourlyLimit, peekHourlyLimit,
+  HOURLY_LIMIT, DAILY_LIMIT, getClientIp, checkHourlyLimit, peekHourlyLimit,
   checkDailyLimit, dailyResetAt, getDailyCount, incrementDaily,
 } from '@/lib/rateLimit';
 import {
@@ -1633,9 +1634,31 @@ async function probeGemini(): Promise<Record<string, unknown>> {
  *
  * Exposes booleans, model IDs and provider error text only, never key material.
  */
+/**
+ * The bucket an agent request is billed to.
+ *
+ * Was `getClientId(req)`, which prefers the `x-client-id` request header — so
+ * the caller chose their own bucket and a fresh UUID per request meant the
+ * hourly limit never fired. The header is the browser client's idea of its own
+ * identity, not evidence of one.
+ *
+ * `session.user.id` is issued by us and the caller cannot forge it. The IP
+ * fallback exists for the signed-out case; both handlers reject those before
+ * they get here, so it is a floor rather than a path anyone takes.
+ *
+ * Both the usage meter (GET ?usage=1) and the debit (POST) must call this, or
+ * the meter reports a different bucket than the one being spent.
+ */
+function agentLimitKey(userId: string | undefined, req: NextRequest): string {
+    return userId || getClientIp(req);
+}
+
 export async function GET(req: NextRequest): Promise<Response> {
     const session = await auth();
     if (!session) return err('Unauthorized', 401);
+
+    const pending = denyPending(session);
+    if (pending) return pending;
 
     const params = new URL(req.url).searchParams;
 
@@ -1646,7 +1669,9 @@ export async function GET(req: NextRequest): Promise<Response> {
     // no way to ask, so every reload drew an empty meter over a window that was
     // already half spent.
     if (params.get('usage') === '1') {
-        const { used, remaining, resetAt } = peekHourlyLimit(getClientId(req));
+        const { used, remaining, resetAt } = peekHourlyLimit(
+            agentLimitKey(session.user?.id, req),
+        );
         const daily = checkDailyLimit();
         return NextResponse.json(
             {
@@ -1759,6 +1784,12 @@ async function handlePost(req: NextRequest): Promise<Response> {
     const session = await auth();
     if (!session) return err('Your session has expired. Please sign in again.', 401);
 
+    // OAuth done, Sleeper verification not. src/proxy.ts turns these callers
+    // back in the UI but its matcher excludes /api, so without this they reach
+    // the model and spend the shared Groq/Gemini budget un-admitted.
+    const pending = denyPending(session);
+    if (pending) return pending;
+
     let body: {
         messages?: { role: string; content: string }[];
         sleeperLeagueId?: string;  // Phase 2: Sleeper league ID from client
@@ -1773,7 +1804,7 @@ async function handlePost(req: NextRequest): Promise<Response> {
         return err('messages array is required', 400);
     }
 
-    const clientId = getClientId(req);
+    const clientId = agentLimitKey(session.user?.id, req);
     const { allowed, remaining, resetAt } = checkHourlyLimit(clientId);
     if (!allowed) {
         return NextResponse.json(

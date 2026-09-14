@@ -9,7 +9,7 @@
 //
 // Mocks:
 //   @/auth              — auth()
-//   @/lib/rateLimit     — checkHourlyLimit, getClientId, getDailyCount, incrementDaily
+//   @/lib/rateLimit     — checkHourlyLimit, getClientIp, getDailyCount, incrementDaily
 //   @/lib/agentContext  — fetchTrending, fetchSleeperPlayerMap, fetchLeagueContext
 //   @/lib/prisma        — nflWeeklyStat
 //   groq-sdk            — Groq class (Pass 1 + Pass 2 streaming)
@@ -27,7 +27,7 @@ jest.mock('@/auth', () => ({
 jest.mock('@/lib/rateLimit', () => ({
   HOURLY_LIMIT:     10,
   DAILY_LIMIT:      50,
-  getClientId:      jest.fn().mockReturnValue('test-client'),
+  getClientIp:      jest.fn().mockReturnValue('203.0.113.9'),
   checkHourlyLimit: jest.fn(),
   peekHourlyLimit:  jest.fn().mockReturnValue({ used: 0, remaining: 10, resetAt: 0 }),
   checkDailyLimit:  jest.fn(),
@@ -237,6 +237,42 @@ describe('POST /api/agent', () => {
     const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Who should I start?' }] }));
     expect(res.status).toBe(401);
     expect(mockGroqCreate).not.toHaveBeenCalled();
+  });
+
+  // WHY: A pendingOAuth caller finished Discord/Google OAuth but never proved
+  //      Sleeper league membership. src/proxy.ts turns them back in the UI, but
+  //      its matcher excludes /api, so without an explicit check here they reach
+  //      the model and spend the shared Groq/Gemini budget un-admitted.
+  it('returns 403 for a pendingOAuth caller and spends no budget', async () => {
+    mockAuth.mockResolvedValueOnce({
+      user: { id: '', role: 'PENDING', pendingOAuth: true },
+    } as never);
+
+    const res = await POST(makeReq({ messages: [{ role: 'user', content: 'Who should I start?' }] }));
+    expect(res.status).toBe(403);
+    expect(mockGroqCreate).not.toHaveBeenCalled();
+    expect(mockCheckLimit).not.toHaveBeenCalled();
+  });
+
+  // WHY: The limiter used to key on the `x-client-id` request header, so a
+  //      caller picked their own bucket and a fresh UUID per request meant the
+  //      hourly limit never fired. The session id is issued by us and cannot be
+  //      chosen by the caller, so two requests differing only in that header
+  //      must land in the same bucket.
+  it('keys the rate limiter on the session id, not the x-client-id header', async () => {
+    const withClientId = (id: string) =>
+      new NextRequest('http://localhost/api/agent', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+        headers: { 'Content-Type': 'application/json', 'x-client-id': id },
+      });
+
+    await POST(withClientId('bucket-aaa'));
+    await POST(withClientId('bucket-bbb'));
+
+    expect(mockCheckLimit).toHaveBeenCalledTimes(2);
+    expect(mockCheckLimit).toHaveBeenNthCalledWith(1, 'user-1');
+    expect(mockCheckLimit).toHaveBeenNthCalledWith(2, 'user-1');
   });
 
   // WHY: messages is required — the AI has nothing to respond to without it.
