@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
+import { denyPending } from '@/lib/apiAuth';
 import { ok, err } from '@/lib/api';
 import {
   SYNC_JOBS, nextRun, previousRun, nextActiveRun, isInSeason, OVERDUE_GRACE_MS,
@@ -72,6 +73,12 @@ function parseDetail(raw: string): unknown {
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const session = await auth();
   if (!session) return err('Unauthorized', 401);
+
+  // A pendingOAuth caller holds a real session but has not proved Sleeper
+  // league membership, and the run history below carries each feed's `detail`
+  // payload. src/proxy.ts does not reach /api, so the check belongs here.
+  const pending = denyPending(session);
+  if (pending) return pending;
 
   // The league picked in the header. Its runs are the ones a league-scoped feed
   // reports on; a run with leagueId NULL swept every league, so it counts too.
