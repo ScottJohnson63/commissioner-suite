@@ -1,4 +1,9 @@
-import { auth } from '@/auth';
+// Deliberately @/auth.proxy and not @/auth: this file only reads a JWT session,
+// which needs no providers and no database. Importing @/auth would pull the
+// Prisma client and libSQL driver into the middleware bundle, and Next traces
+// the middleware separately, so next.config.ts's outputFileTracingExcludes
+// cannot trim it back down afterwards (#50).
+import { auth } from '@/auth.proxy';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 

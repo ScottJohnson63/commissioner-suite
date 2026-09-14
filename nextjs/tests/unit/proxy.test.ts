@@ -8,7 +8,10 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 
 const authMock = jest.fn<() => Promise<unknown>>();
 
-jest.mock('@/auth', () => ({ auth: authMock }));
+// @/auth.proxy, not @/auth: the proxy reads its session through the slim,
+// database-free NextAuth instance so the middleware bundle stays small. Mocking
+// it here also keeps next-auth's ESM out of ts-jest.
+jest.mock('@/auth.proxy', () => ({ auth: authMock }));
 
 import { proxy } from '@/proxy';
 
