@@ -229,7 +229,74 @@ jobs:
             echo "No results file found." >> $GITHUB_STEP_SUMMARY
           fi
 
-  # ── 5. Unit Tests ──────────────────────────────────────────────────────────
+  # ── 5. Bundle Budget ───────────────────────────────────────────────────────
+  #
+  # Vercel bills "Function Storage" as the total size of the Function bundles
+  # across every deployment it retains, and it never prunes the last 10
+  # production deployments — so a deployment's size, times ten, is a floor the
+  # quota has to accommodate. Issue #50 cut a deployment from 4.04GB to 1.47GB
+  # and it had drifted back to 1.74GB before anyone looked again, because
+  # nothing in CI had an opinion about it. Now something does.
+  #
+  # This is the only job that runs a real `next build`; project-check stops at
+  # tsc and eslint. The build needs the env vars below to be *present*, not
+  # valid — no route is prerendered against a live database.
+  bundle-budget:
+    name: Bundle Budget
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nextjs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: nextjs/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          DATABASE_URL: file:./ci.db
+          TURSO_DATABASE_URL: libsql://ci.invalid
+          TURSO_AUTH_TOKEN: ci
+          AUTH_SECRET: ci-bundle-budget-secret
+          NEXTAUTH_SECRET: ci-bundle-budget-secret
+          DISCORD_CLIENT_ID: ci
+          DISCORD_CLIENT_SECRET: ci
+          GOOGLE_CLIENT_ID: ci
+          GOOGLE_CLIENT_SECRET: ci
+          NFL_SEASON: "2025"
+
+      # The report goes to the job summary *and* has to be able to fail the job.
+      # Running the check inside a `{ ... } >> $GITHUB_STEP_SUMMARY` block would
+      # report the closing `echo`'s status instead of the check's, so capture it
+      # first and re-raise the exit code afterwards. The budget message is on
+      # stderr, hence 2>&1.
+      - name: Check Function bundle size
+        run: |
+          set +e
+          npm run --silent check:bundle > /tmp/bundle-budget.txt 2>&1
+          status=$?
+          set -e
+          {
+            echo "## Vercel Function Bundle Size"
+            echo ''
+            echo '```'
+            cat /tmp/bundle-budget.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/bundle-budget.txt
+          exit $status
+
+  # ── 6. Unit Tests ──────────────────────────────────────────────────────────
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
