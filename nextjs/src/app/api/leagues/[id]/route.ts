@@ -16,7 +16,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireCommissioner } from '@/lib/apiAuth';
 
 export async function DELETE(
@@ -56,8 +56,6 @@ export async function DELETE(
 
     return ok({ removed: league.sleeperLeagueId, name: league.name });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('League delete failed:', error);
-    return err(`Could not remove that league: ${message}`);
+    return fail(error, 'Could not remove that league');
   }
 }

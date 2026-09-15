@@ -14,6 +14,14 @@ jest.mock('@/lib/prisma', () => ({
 // Importing the real @/auth would pull NextAuth's whole provider config in.
 jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
+// The seasons endpoint reads a cached row rather than scanning the stat table —
+// see lib/nflSeasons.ts. Mocked here so the route's own behaviour is what is
+// under test; the cache itself is covered in tests/unit/lib/nflSeasons.test.ts.
+const mockStatSeasons = jest.fn<() => Promise<number[]>>();
+jest.mock('@/lib/nflSeasons', () => ({
+  statSeasonsDescending: () => mockStatSeasons(),
+}));
+
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
 
@@ -179,7 +187,10 @@ describe('GET /api/nfl/leaders', () => {
     expect(body[0].gamesPlayed).toBe(17);
   });
 
-  it('returns 500 when the query throws', async () => {
+  // WHY: this route is public, so its error body is the one a signed-out
+  //      visitor can read. The database's own words are never it — see the
+  //      note on the equivalent test in tests/app/api/users/route.test.ts.
+  it('returns 500 without repeating the database error', async () => {
     mockQueryRaw.mockRejectedValueOnce(new Error('DB connection failed'));
 
     const res = await GET(makeRequest('leaders?season=2025'), {
@@ -188,7 +199,8 @@ describe('GET /api/nfl/leaders', () => {
 
     expect(res.status).toBe(500);
     const body = await res.json() as { error: string };
-    expect(body.error).toMatch(/DB connection failed/);
+    expect(body.error).toBe('Database error');
+    expect(body.error).not.toMatch(/DB connection failed/);
   });
 
   it('returns 404 for an unknown endpoint', async () => {
@@ -279,13 +291,30 @@ describe('GET /api/nfl/leaders', () => {
 
   it('does not look up a session for the seasons endpoint', async () => {
     // /api/nfl/seasons carries no headshot, so it should not pay for a session.
-    (prisma as unknown as { $queryRaw: jest.Mock }).$queryRaw =
-      jest.fn(async () => [{ season: 2025 }]) as never;
+    mockStatSeasons.mockResolvedValue([2025]);
 
     await GET(makeRequest('seasons'), {
       params: Promise.resolve({ path: ['seasons'] }),
     });
 
     expect(mockAuth).not.toHaveBeenCalled();
+  });
+
+  // WHY: this route is public and fires on every mount of the Statistics tab,
+  //      and `DISTINCT season` has no index to lean on — it walked ~448,000
+  //      rows to return two dozen integers. It was the second call site of the
+  //      scan that emptied the database's read allowance, and it must not come
+  //      back: the answer comes off a cached row now.
+  it('serves the seasons from the cache, newest first, without scanning', async () => {
+    mockStatSeasons.mockResolvedValue([2025, 2024, 2023]);
+    const scan = jest.fn();
+    (prisma as unknown as { $queryRaw: jest.Mock }).$queryRaw = scan as never;
+
+    const res = await GET(makeRequest('seasons'), {
+      params: Promise.resolve({ path: ['seasons'] }),
+    });
+
+    expect(await res.json()).toEqual([2025, 2024, 2023]);
+    expect(scan).not.toHaveBeenCalled();
   });
 });

@@ -136,7 +136,7 @@ import {
 import type { TrendingPlayer, LeagueContext, PlayerIdentity } from '@/lib/agentContext';
 import { fetchAgentTools, formatAgentTools } from '@/lib/agentTools';
 import type { AgentTools, ToolRequest } from '@/lib/agentTools';
-import { err } from '@/lib/api';
+import { err, fail } from '@/lib/api';
 
 // ── Clients ───────────────────────────────────────────────────────────────────
 //
@@ -1774,9 +1774,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Anything unhandled below would otherwise escape as a framework 500
         // with an HTML body, which the client can only report as a generic
         // "Agent failed to respond".
-        console.error('[agent] unhandled route error:', routeErr);
-        const message = routeErr instanceof Error ? routeErr.message : 'Unexpected server error';
-        return err(`The assistant could not complete this request: ${message}`, 500);
+        return fail(routeErr, 'The assistant could not complete this request', 500);
     }
 }
 

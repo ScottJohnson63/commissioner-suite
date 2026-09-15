@@ -14,7 +14,7 @@
 // AUTH: PUT user
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { gameSeason } from '@/lib/cards/allowance';
 import { readDeck, setRosterSlot } from '@/lib/cards/service';
@@ -73,7 +73,6 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
     };
     return ok(payload);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to update lineup';
-    return err(message, 500);
+    return fail(error, 'Failed to update lineup');
   }
 }

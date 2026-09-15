@@ -9,7 +9,7 @@
 // AUTH: POST user
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { resolveWeek } from '@/lib/sleeper/week';
 import { gameSeason } from '@/lib/cards/allowance';
@@ -37,7 +37,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const body: OpenPackResponse = outcome.result;
     return ok(body);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to open pack';
-    return err(message, 500);
+    return fail(error, 'Failed to open pack');
   }
 }

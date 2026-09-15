@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sleeperGet, SLEEPER_TTL } from '@/lib/sleeper/client';
 import type { SleeperUser, SleeperLeagueRaw } from '@/lib/sleeper/types';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireSession } from '@/lib/apiAuth';
 
 const CURRENT_SEASON = parseInt(process.env.NFL_SEASON ?? String(new Date().getFullYear()), 10);
@@ -72,8 +72,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             leagues,
         });
     } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to fetch Sleeper data';
-        const status = message.includes('404') ? 404 : 502;
-        return err(message, status);
+        const status = error instanceof Error && error.message.includes('404') ? 404 : 502;
+        return fail(
+          error,
+          status === 404 ? 'No such Sleeper user' : 'Sleeper is not responding',
+          status,
+        );
     }
 }

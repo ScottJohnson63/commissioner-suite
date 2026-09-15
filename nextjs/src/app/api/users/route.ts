@@ -17,7 +17,7 @@
 
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { ok, err } from '@/lib/api';
+import { ok, fail } from '@/lib/api';
 import { requireSession } from '@/lib/apiAuth';
 
 export async function GET(): Promise<NextResponse> {
@@ -40,7 +40,6 @@ export async function GET(): Promise<NextResponse> {
     });
     return ok(users);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to fetch users';
-    return err(message);
+    return fail(error, 'Failed to fetch users');
   }
 }

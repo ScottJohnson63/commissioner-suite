@@ -26,7 +26,7 @@
 // AUTH: GET user
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, fail } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { prisma } from '@/lib/prisma';
 import { HIGH_SCORE_THRESHOLD, claimBonuses } from '@/lib/cards/bonus';
@@ -34,7 +34,7 @@ import { resolveWeeks } from '@/lib/sleeper/week';
 import { gameSeason } from '@/lib/cards/allowance';
 import { readAllowance, readDeck } from '@/lib/cards/service';
 import { clearRetiredSlots, readWeeklyState } from '@/lib/cards/weekly';
-import { availableSeasons } from '@/lib/cards/pool';
+import { poolSeasons } from '@/lib/cards/snapshot';
 import { toRosterDtos } from '@/lib/cards/rosterDto';
 import type { BonusStateDto, CollectionResponse } from '@/types/cards';
 
@@ -96,7 +96,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       readAllowance(guard.userId, season, week),
       readDeck(guard.userId, season, now),
       readWeeklyState(guard.userId, season, now),
-      availableSeasons(),
+      poolSeasons(),
     ]);
 
     const body: CollectionResponse = {
@@ -113,7 +113,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     };
     return ok(body);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to read collection';
-    return err(message, 500);
+    return fail(error, 'Failed to read collection');
   }
 }

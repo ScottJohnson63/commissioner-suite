@@ -270,12 +270,12 @@ describe('GET /api/errors', () => {
 
   // WHY: A database failure while reading the log should surface as a 500 with
   //      the reason, not an unhandled throw the page renders as HTML.
-  it('returns 500 when Prisma throws', async () => {
+  it('returns 500 without repeating the database error', async () => {
     mockFindMany.mockRejectedValueOnce(new Error('DB read failed'));
 
     const res = await GET(new NextRequest('http://localhost/api/errors'));
     expect(res.status).toBe(500);
-    expect(await res.json()).toMatchObject({ error: 'DB read failed' });
+    expect(await res.json()).toMatchObject({ error: 'Failed to fetch error logs' });
   });
 
   // WHY: The limit cap (500) must be enforced to prevent memory issues from

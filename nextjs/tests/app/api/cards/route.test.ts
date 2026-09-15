@@ -25,7 +25,8 @@ const mockSetRosterSlot = jest.fn<() => Promise<unknown>>();
 const mockClaimBonuses =
   jest.fn<(...a: unknown[]) => Promise<unknown>>();
 const mockRebuild = jest.fn<() => Promise<unknown>>();
-const mockAvailableSeasons = jest.fn<() => Promise<number[]>>();
+const mockInvalidateFacts = jest.fn<() => Promise<void>>();
+const mockPoolSeasons = jest.fn<() => Promise<number[]>>();
 const mockClearRetiredSlots = jest.fn<() => Promise<number>>();
 const mockReadWeeklyState = jest.fn<() => Promise<unknown>>();
 const mockSubmitLineup = jest.fn<() => Promise<unknown>>();
@@ -77,10 +78,21 @@ jest.mock('@/lib/cards/service', () => ({
 }));
 jest.mock('@/lib/cards/pool', () => ({
   rebuildCardPool: () => mockRebuild(),
-  availableSeasons: () => mockAvailableSeasons(),
+}));
+// The pool's whole-table facts come off one cached row rather than a scan per
+// request — see lib/cards/snapshot.ts. Both routes read it, and POST drops it.
+jest.mock('@/lib/cards/snapshot', () => ({
+  poolSeasons: () => mockPoolSeasons(),
+  poolFacts: async () => ({
+    seasons: await mockPoolSeasons(),
+    poolSize: 1832,
+    byTier: { BRONZE: 900, SILVER: 500, GOLD: 400, HALL_OF_FAME: 32 },
+  }),
+  invalidatePoolFacts: mockInvalidateFacts,
 }));
 jest.mock('@/lib/cards/allowance', () => ({
   gameSeason: () => 2026,
+  PACKS_PER_WEEK: 2,
   claimWildcard: () => mockClaimWildcard(),
   currentAllowance: async () => ({
     poolSize: 1832, claimed: 45, remainingCards: 1787, members: 2, perWeek: 10,
@@ -136,7 +148,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockRequireUser.mockResolvedValue(ALLOWED);
   mockRequireCommissioner.mockResolvedValue(null);
-  mockAvailableSeasons.mockResolvedValue([2023, 2024, 2025]);
+  mockPoolSeasons.mockResolvedValue([2023, 2024, 2025]);
   mockClaimBonuses.mockResolvedValue({ awarded: [], kinds: [], week: 2 });
   mockClearRetiredSlots.mockResolvedValue(0);
   mockReadWeeklyState.mockResolvedValue({ week: 3, phase: 'OPEN', submitted: null });
@@ -228,15 +240,20 @@ describe('GET /api/cards/collection', () => {
     expect(order).toEqual(['sweep', 'deck']);
   });
 
+  // Once, not mockRejectedValue: clearAllMocks() resets calls but not
+  // implementations, so a persistent rejection here leaked into every test
+  // below it and quietly decided their outcome too.
   it('reports a read failure as a 500 rather than throwing', async () => {
-    mockReadAllowance.mockRejectedValue(new Error('turso is down'));
+    mockReadAllowance.mockRejectedValueOnce(new Error('turso is down'));
     mockReadDeck.mockResolvedValue({ cards: [], stats: {}, roster: [], standings: [] });
 
     const { GET } = await import('@/app/api/cards/collection/route');
     const res = await GET(req('collection'));
 
     expect(res.status).toBe(500);
-    expect((await res.json()).error).toBe('turso is down');
+    // The route's own wording, not the database's. This used to assert
+    // `toBe('turso is down')` — the leak, pinned as if it were the feature.
+    expect((await res.json()).error).toBe('Failed to read collection');
   });
 });
 
@@ -300,7 +317,10 @@ describe('POST /api/cards/pool', () => {
 
     expect(res.status).toBe(200);
     expect(body.total).toBe(623);
-    expect(body.perWeek).toBe(10);
+    expect(body.perWeek).toBe(2);
+    // The rebuilt pool is a different size and a different tier split, so the
+    // cached facts describing the old one must not outlive it.
+    expect(mockInvalidateFacts).toHaveBeenCalled();
   });
 
   it('refuses a non-commissioner', async () => {
@@ -311,6 +331,39 @@ describe('POST /api/cards/pool', () => {
 
     expect(res.status).toBe(403);
     expect(mockRebuild).not.toHaveBeenCalled();
+  });
+});
+
+// The bug this whole branch started from, pinned end to end: a member opened
+// the Draft Deck and the page showed them Turso's block message, billing prompt
+// and all. The route caught it and returned `error.message` verbatim.
+describe('GET /api/cards/collection — when the database refuses', () => {
+  it('does not put Turso\'s block message on the page', async () => {
+    mockReadAllowance.mockResolvedValue({ remaining: 0, week: 3 });
+    mockReadDeck.mockRejectedValueOnce(new Error(
+      'BLOCKED: Operation was blocked: SQL read operations are forbidden '
+      + '(reads are blocked, do you need to upgrade your plan?)',
+    ));
+
+    const { GET } = await import('@/app/api/cards/collection/route');
+    const res = await GET(req('collection'));
+    const body = await res.json() as { error: string };
+
+    expect(res.status).toBe(500);
+    expect(body.error).toBe('The league database is temporarily unavailable');
+    expect(body.error).not.toMatch(/upgrade your plan/);
+  });
+
+  // WHY: an ordinary failure keeps the route's own wording — the outage line is
+  //      a claim about the world, and it must not be made about a bug.
+  it('keeps the route\'s message for an ordinary failure', async () => {
+    mockReadAllowance.mockResolvedValue({ remaining: 0, week: 3 });
+    mockReadDeck.mockRejectedValueOnce(new Error('Cannot read properties of undefined'));
+
+    const { GET } = await import('@/app/api/cards/collection/route');
+    const res = await GET(req('collection'));
+
+    expect((await res.json() as { error: string }).error).toBe('Failed to read collection');
   });
 });
 

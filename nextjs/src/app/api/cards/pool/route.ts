@@ -14,12 +14,12 @@
 // AUTH: POST commissioner
 
 import { NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, fail } from '@/lib/api';
 import { requireCommissioner, requireUser } from '@/lib/apiAuth';
 import { writeAuditLog } from '@/lib/audit';
-import { prisma } from '@/lib/prisma';
-import { availableSeasons, rebuildCardPool } from '@/lib/cards/pool';
-import { currentAllowance, gameSeason } from '@/lib/cards/allowance';
+import { rebuildCardPool } from '@/lib/cards/pool';
+import { PACKS_PER_WEEK, gameSeason } from '@/lib/cards/allowance';
+import { invalidatePoolFacts, poolFacts } from '@/lib/cards/snapshot';
 import { invalidatePoolCache } from '@/lib/cards/service';
 
 export async function GET(): Promise<NextResponse> {
@@ -27,11 +27,11 @@ export async function GET(): Promise<NextResponse> {
   if (guard.denied) return guard.denied;
 
   try {
-    const [{ poolSize, perWeek }, seasons, byTier] = await Promise.all([
-      currentAllowance(),
-      availableSeasons(),
-      prisma.cardDefinition.groupBy({ by: ['tier'], _count: true }),
-    ]);
+    // All three pool numbers come off one cached row. They used to be a
+    // `count()`, a `DISTINCT season` over the stat table and a `groupBy` — three
+    // whole-table scans for three answers that only change when the rebuild
+    // below runs, which is what POST invalidates. See lib/cards/snapshot.ts.
+    const { poolSize, seasons, byTier } = await poolFacts();
 
     return ok({
       // The season the game is being played in. The commissioner page reads it
@@ -39,13 +39,15 @@ export async function GET(): Promise<NextResponse> {
       // a year in the reset confirmation.
       gameSeason: gameSeason(),
       poolSize,
-      perWeek,
+      // The ration is a flat constant, so it is read as one. Deriving it from
+      // currentAllowance() meant counting every ownership row and every member
+      // to report a number that is neither.
+      perWeek: PACKS_PER_WEEK,
       seasons,
-      byTier: Object.fromEntries(byTier.map((t) => [t.tier, t._count])),
+      byTier,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to read pool';
-    return err(message, 500);
+    return fail(error, 'Failed to read pool');
   }
 }
 
@@ -57,8 +59,10 @@ export async function POST(): Promise<NextResponse> {
     const result = await rebuildCardPool();
     // The in-process pool cache still holds the ids this rebuild just replaced.
     invalidatePoolCache();
-
-    const { perWeek } = await currentAllowance();
+    // And the cached facts still describe the pool that was here a moment ago —
+    // its size, its tier split and the seasons it spanned. Dropped rather than
+    // recomputed: the next reader measures, and only if there is one.
+    await invalidatePoolFacts();
 
     // GENERATE rather than SYNC: nothing left the building, this derived a new
     // pool from data already here. Not league-scoped — the pool is NFL-wide.
@@ -67,12 +71,11 @@ export async function POST(): Promise<NextResponse> {
       seasons: result.seasons,
       cardsBySeason: result.cardsBySeason,
       total: result.total,
-      perWeek,
+      perWeek: PACKS_PER_WEEK,
     });
 
-    return ok({ ...result, perWeek });
+    return ok({ ...result, perWeek: PACKS_PER_WEEK });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to rebuild pool';
-    return err(message, 500);
+    return fail(error, 'Failed to rebuild pool');
   }
 }

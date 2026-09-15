@@ -27,10 +27,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 // The allowlist lives with the stat catalog so the API and the Statistics
 // dropdown can never disagree about which columns exist.
 import { ALLOWED_STAT_COLS } from '@/lib/nflStats';
+import { statSeasonsDescending } from '@/lib/nflSeasons';
 
 
 interface StatLeaderRow {
@@ -61,10 +62,12 @@ export async function GET(
       // for Sleeper's sake, and in the months before kickoff no stats exist for
       // it yet — defaulting to it would render an empty leaderboard.
       case 'seasons': {
-        const rows = await prisma.$queryRaw<{ season: number }[]>`
-          SELECT DISTINCT season FROM NflWeeklyStat ORDER BY season DESC
-        `;
-        return ok(rows.map((r) => Number(r.season)));
+        // Cached rather than scanned. `DISTINCT season` has no index to lean on
+        // and walks ~448,000 rows to return two dozen integers; this route is
+        // public and fires on every mount of the Statistics tab, which made it
+        // the second-biggest spender of the database's read allowance after the
+        // Draft Deck. See lib/nflSeasons.ts.
+        return ok(await statSeasonsDescending());
       }
 
       // ── Season stat leaders (aggregated totals) ─────────────────────────────
@@ -169,7 +172,6 @@ export async function GET(
         return err(`Unknown endpoint: ${endpoint}`, 404);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Database error';
-    return err(message);
+    return fail(error, 'Database error');
   }
 }

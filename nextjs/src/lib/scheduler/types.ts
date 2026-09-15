@@ -6,6 +6,8 @@
 // These types encode that invariant: WeeklySlot always holds exactly 5 matchups,
 // and Team.divisionId is constrained to 0 | 1.
 
+import { PublicError } from '@/lib/publicError';
+
 /** Opaque team identifier — matches the `id` primary key in the Team table. */
 export type TeamId = string;
 
@@ -60,7 +62,7 @@ export interface Schedule {
  * route handlers to distinguish engine failures from unexpected runtime errors
  * and return a more helpful 400/422 status instead of a 500.
  */
-export class ScheduleError extends Error {
+export class ScheduleError extends PublicError {
   constructor(message: string) {
     super(message);
     this.name = 'ScheduleError';

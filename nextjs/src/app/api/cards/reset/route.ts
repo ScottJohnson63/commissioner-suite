@@ -23,7 +23,7 @@
 // AUTH: POST commissioner
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireCommissioner } from '@/lib/apiAuth';
 import { writeAuditLog } from '@/lib/audit';
 import { prisma } from '@/lib/prisma';
@@ -129,7 +129,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     return ok({ season, ...counts });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to reset season';
-    return err(message, 500);
+    return fail(error, 'Failed to reset season');
   }
 }

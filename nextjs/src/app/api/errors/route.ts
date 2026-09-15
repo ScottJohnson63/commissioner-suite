@@ -38,7 +38,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireCommissioner } from '@/lib/apiAuth';
 import {
   checkErrorReportLimit, getClientIp, ERROR_REPORT_LIMIT,
@@ -59,8 +59,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     });
     return ok(logs);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to fetch error logs';
-    return err(message);
+    return fail(error, 'Failed to fetch error logs');
   }
 }
 
@@ -155,7 +154,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     return NextResponse.json({ id: entry.id }, { headers: rateHeaders });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to write error log';
-    return err(message);
+    return fail(error, 'Failed to write error log');
   }
 }

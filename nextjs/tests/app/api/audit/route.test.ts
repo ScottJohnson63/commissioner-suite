@@ -75,14 +75,15 @@ describe('GET /api/audit', () => {
   });
 
   // WHY: DB failure must produce a 500 with an error message.
-  it('returns 500 when Prisma throws', async () => {
+  it('returns 500 without repeating the database error', async () => {
     mockFindMany.mockRejectedValueOnce(new Error('DB error'));
 
     const res = await GET(makeGet());
     expect(res.status).toBe(500);
 
     const body = await res.json() as { error: string };
-    expect(body.error).toMatch(/DB error/);
+    expect(body.error).toBe('Failed to fetch audit logs');
+    expect(body.error).not.toMatch(/DB error/);
   });
 
   // WHY: The leagueId query parameter is optional — verifies the route handles
