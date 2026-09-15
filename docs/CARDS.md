@@ -1213,26 +1213,61 @@ return the handful of years it holds. Half a million row reads per page view,
 for an answer that changes when a commissioner rebuilds the pool and at no
 other time.
 
+The season scan had a **second call site**, and it was worse: `GET
+/api/nfl/seasons` runs the identical query on every mount of the Statistics tab,
+and that route is public, so it needed no session at all.
+
 ### What replaced them
 
-`lib/cards/snapshot.ts` measures all three **once** and writes them to a
-`SleeperCache` row, so a page load costs **one row read**. This is the fix this
-section used to propose for the pack-open scan ("store the pool as a single
-JSON blob in `SleeperCache`"), applied to the facts about the pool rather than
-to the pool itself.
+`lib/dbCache.ts` holds one expensive answer in a `SleeperCache` row. Two caches
+are built on it, and they are deliberately separate:
 
-The row rather than a `RouteCache` because an in-process cache is defeated by
-serverless cold starts, which is the condition these scans were running under in
-the first place; a row is shared by every Function instance and survives every
-restart. An in-process memo sits in front of it, single-flighted, because the
-collection route asks for the seasons and the pack allowance concurrently.
+| Cache | Holds | Dropped by |
+|---|---|---|
+| `lib/nflSeasons.ts` | the seasons `NflWeeklyStat` holds | nothing — age only |
+| `lib/cards/snapshot.ts` | the pool's size, tier split and seasons | a pool rebuild |
 
-Staleness is bounded by the rebuild, not by the clock: `POST /api/cards/pool`
-and `prisma/rebuild-pool.ts` both drop the row as they rewrite the pool. The
-24-hour maximum age is a safety net for a rebuild run somewhere the caches
-cannot see, not the mechanism. `availableSeasons()` in `pool.ts` is still the
-live scan and is still what the rebuild itself uses — it must not be called
-from a request.
+A page load now costs **one row read**, and so does the Statistics tab's season
+picker. This is the fix this section used to propose for the pack-open scan
+("store the pool as a single JSON blob in `SleeperCache`"), applied to the facts
+about the pool rather than to the pool itself.
+
+**Why two caches rather than one.** The pool facts are dropped when a
+commissioner rebuilds `CardDefinition`. That is the wrong trigger for the season
+list, which is a fact about `NflWeeklyStat`: folding them together meant a stat
+backfill stayed invisible until somebody rebuilt the pool, and tied the
+Statistics tab — which has nothing to do with the card game — to the card game's
+invalidation. So `snapshot.ts` consumes `nflSeasons.ts` instead of scanning.
+
+**The season cache has no invalidator, deliberately.** `NflWeeklyStat` is
+written only by the sync scripts under `python/scripts`, never by the app, so
+there is no write to hook. The 24-hour age limit is the whole mechanism, and it
+is sound because what is cached is the *set* of seasons: a weekly sync adds rows
+to a season already in the list and does not move it. The list changes when a
+new season's first stats land or a backfill completes — a once-a-year event.
+
+The pool facts are the other way round: staleness is bounded by the rebuild, not
+by the clock. `POST /api/cards/pool` and `prisma/rebuild-pool.ts` both drop the
+row as they rewrite the pool, and the age limit is only a safety net for a
+rebuild run somewhere the caches cannot see.
+
+`availableSeasons()` in `pool.ts` is still the live scan, and is still what the
+rebuild itself uses — it must not be called from a request.
+
+**Two races the cache has to not have**, both able to pin a wrong answer for a
+whole day across every instance, and neither visible in a single-threaded
+reading:
+
+- A rebuild does `deleteMany` then ~70 chunked inserts, so a measurement
+  overlapping it sees a half-written table — possibly `poolSize: 0`. Its write
+  would land *after* the invalidation deleted the row.
+- An invalidation that clears the memo but leaves a measurement in flight has
+  that measurement re-seed the memo with the pre-rebuild pool, in the very
+  process that rebuilt it.
+
+`DbCache` handles both with a generation counter captured when a read begins:
+a read that has been overtaken returns its value to its own caller and publishes
+it nowhere.
 
 ### What is still counted live
 
@@ -1244,10 +1279,20 @@ from a request.
 
 - **Opening a pack scans the whole pool** — `loadAllCards` reads every
   `CardDefinition` row (id and tier only) to build the draw pool, plus the
-  claimed-id set for the season. That is ~14,000 + up to ~10,000 rows, but only
-  when a pack tier actually needs rolling: `ensureNextPackTier` returns the
-  stored tier before it loads anything, so an ordinary page load does not pay
-  it. Cached for an hour *per process*, so cold starts still defeat that cache.
+  claimed-id set for the season: ~14,000 + up to ~10,000 rows. `loadAllCards` is
+  cached for an hour *per process*, so cold starts still defeat that half; the
+  claimed-id set is never cached, because it moves on every pack in the league.
+
+  **An ordinary page load does not pay this.** `ensureNextPackTier` returns the
+  stored tier before it loads anything, and `openOnePack` re-rolls the next tier
+  before it returns — so the collection fetch that follows an open short-circuits
+  too. The cost falls on the open itself, which used to load the pool twice: once
+  to deal the pack and again to pre-roll the next one. It now hands the second
+  call the pool it already has, less the ids that pack touched, so an open reads
+  the claimed-id set once. (Less the ids it touched is not an optimisation but a
+  correctness requirement: the pool a pack was drawn from still contains that
+  pack's own cards, and re-rolling against it unfiltered could pick a tier whose
+  last cards that very pack just took.)
 
 - **Ranking a member means ranking everybody.** `readLeaderboard` runs three
   queries, two of them joins across `CardOwnership × CardDefinition`. This used
@@ -1258,7 +1303,8 @@ from a request.
 
 Both remaining paths are bounded by how many cards the league owns rather than
 by pool size, so neither grows when more seasons are backfilled. The one that
-did grow with the backfill was the season scan, and it is gone.
+did grow with the backfill was the season scan, and it is gone from both of its
+call sites.
 
 ## Schema notes
 

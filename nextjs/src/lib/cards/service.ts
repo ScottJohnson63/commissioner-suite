@@ -91,6 +91,20 @@ async function loadAvailablePool(season: number, exclude?: Set<string>): Promise
 }
 
 /**
+ * A pool the caller already has, minus every card it has since touched.
+ *
+ * Cheaper than re-reading, and not merely an optimisation: the pool a pack was
+ * drawn from still contains that pack's own cards, so re-rolling against it
+ * unfiltered could pick a tier whose last cards this very pack just took, and
+ * `openPack` would then come up empty against a tier the roll promised.
+ */
+function poolWithout(pool: CardPool, exclude: Set<string>): CardPool {
+  return toPool(
+    TIER_ORDER.flatMap((tier) => pool[tier]).filter((c) => !exclude.has(c.id)),
+  );
+}
+
+/**
  * Decides — once — what the member's next pack will be, and stores it.
  *
  * The sealed pack shows its tier before it is torn, which means the tier has to
@@ -103,9 +117,13 @@ async function loadAvailablePool(season: number, exclude?: Set<string>): Promise
  *
  * Returns null only when the pool is empty, which is the one case where there
  * is genuinely no next pack.
+ *
+ * @param preloaded An already-loaded available pool to roll against, saving a
+ *                  second read of the claimed-id set. Must not contain a card
+ *                  the caller has just claimed.
  */
 export async function ensureNextPackTier(
-  userId: string, season: number, week: number, rng?: Rng,
+  userId: string, season: number, week: number, rng?: Rng, preloaded?: CardPool,
 ): Promise<CardTier | null> {
   const [grant, starter] = await Promise.all([
     ensureGrant(userId, season, week),
@@ -113,7 +131,13 @@ export async function ensureNextPackTier(
   ]);
   if (grant.nextPackTier) return grant.nextPackTier;
 
-  const pool = await loadAvailablePool(season);
+  // `preloaded` is the pool the caller is already holding — openOnePack has one
+  // in hand and would otherwise re-read the claimed-id set (~10,000 rows) to
+  // rebuild the same thing a moment later. It must already have this pack's own
+  // claims removed; see poolWithout at the call site. Absent, load it: the
+  // readAllowance path has nothing to hand over, and the early return above
+  // means most page loads never get this far anyway.
+  const pool = preloaded ?? await loadAvailablePool(season);
   const { kind, remaining } = nextSupply(grant, starter);
 
   // A bonus pack is an ordinary pack now, so it needs no branch of its own —
@@ -954,7 +978,15 @@ export async function openOnePack(
   // Roll what comes next, so the wrapper the member sees on returning to the
   // page already has a tier. Failure here is not worth losing the pack over —
   // readAllowance rolls it on the next page load anyway.
-  await ensureNextPackTier(userId, season, week, rng).catch(() => null);
+  //
+  // Rolled against the pool this open already loaded, less every card it
+  // touched — the ones it claimed and the ones it lost to somebody else, which
+  // `attempted` holds both of. That saves re-reading the claimed-id set a
+  // second time inside one request; it was the larger half of what a pack open
+  // costs the database.
+  await ensureNextPackTier(
+    userId, season, week, rng, poolWithout(pool, attempted),
+  ).catch(() => null);
 
   const [poolStats, nextGrant, nextStarter, wildcards] = await Promise.all([
     currentAllowance(),

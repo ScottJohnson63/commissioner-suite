@@ -14,6 +14,14 @@ jest.mock('@/lib/prisma', () => ({
 // Importing the real @/auth would pull NextAuth's whole provider config in.
 jest.mock('@/auth', () => ({ auth: jest.fn() }));
 
+// The seasons endpoint reads a cached row rather than scanning the stat table —
+// see lib/nflSeasons.ts. Mocked here so the route's own behaviour is what is
+// under test; the cache itself is covered in tests/unit/lib/nflSeasons.test.ts.
+const mockStatSeasons = jest.fn<() => Promise<number[]>>();
+jest.mock('@/lib/nflSeasons', () => ({
+  statSeasonsDescending: () => mockStatSeasons(),
+}));
+
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
 
@@ -279,13 +287,30 @@ describe('GET /api/nfl/leaders', () => {
 
   it('does not look up a session for the seasons endpoint', async () => {
     // /api/nfl/seasons carries no headshot, so it should not pay for a session.
-    (prisma as unknown as { $queryRaw: jest.Mock }).$queryRaw =
-      jest.fn(async () => [{ season: 2025 }]) as never;
+    mockStatSeasons.mockResolvedValue([2025]);
 
     await GET(makeRequest('seasons'), {
       params: Promise.resolve({ path: ['seasons'] }),
     });
 
     expect(mockAuth).not.toHaveBeenCalled();
+  });
+
+  // WHY: this route is public and fires on every mount of the Statistics tab,
+  //      and `DISTINCT season` has no index to lean on — it walked ~448,000
+  //      rows to return two dozen integers. It was the second call site of the
+  //      scan that emptied the database's read allowance, and it must not come
+  //      back: the answer comes off a cached row now.
+  it('serves the seasons from the cache, newest first, without scanning', async () => {
+    mockStatSeasons.mockResolvedValue([2025, 2024, 2023]);
+    const scan = jest.fn();
+    (prisma as unknown as { $queryRaw: jest.Mock }).$queryRaw = scan as never;
+
+    const res = await GET(makeRequest('seasons'), {
+      params: Promise.resolve({ path: ['seasons'] }),
+    });
+
+    expect(await res.json()).toEqual([2025, 2024, 2023]);
+    expect(scan).not.toHaveBeenCalled();
   });
 });
