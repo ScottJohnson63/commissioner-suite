@@ -19,7 +19,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SLEEPER_TTL } from '@/lib/sleeper/client';
 import { fetchRosterInfo } from '@/lib/sleeper/teams';
 import type { SleeperLeagueTeam } from '@/types/lottery';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireMember } from '@/lib/apiAuth';
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
@@ -42,7 +42,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     return ok({ teams });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to fetch league teams';
-    return err(message, message.includes('404') ? 404 : 502);
+    // The status is read off the raw message before it is dropped: a 404 from
+    // Sleeper means "no such league", which the client handles differently
+    // from an outage. The message itself names Sleeper paths and is not sent.
+    const status = error instanceof Error && error.message.includes('404') ? 404 : 502;
+    return fail(
+      error,
+      status === 404 ? 'Sleeper has no such league' : 'Sleeper is not responding',
+      status,
+    );
   }
 }

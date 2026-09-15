@@ -240,15 +240,20 @@ describe('GET /api/cards/collection', () => {
     expect(order).toEqual(['sweep', 'deck']);
   });
 
+  // Once, not mockRejectedValue: clearAllMocks() resets calls but not
+  // implementations, so a persistent rejection here leaked into every test
+  // below it and quietly decided their outcome too.
   it('reports a read failure as a 500 rather than throwing', async () => {
-    mockReadAllowance.mockRejectedValue(new Error('turso is down'));
+    mockReadAllowance.mockRejectedValueOnce(new Error('turso is down'));
     mockReadDeck.mockResolvedValue({ cards: [], stats: {}, roster: [], standings: [] });
 
     const { GET } = await import('@/app/api/cards/collection/route');
     const res = await GET(req('collection'));
 
     expect(res.status).toBe(500);
-    expect((await res.json()).error).toBe('turso is down');
+    // The route's own wording, not the database's. This used to assert
+    // `toBe('turso is down')` — the leak, pinned as if it were the feature.
+    expect((await res.json()).error).toBe('Failed to read collection');
   });
 });
 
@@ -326,6 +331,39 @@ describe('POST /api/cards/pool', () => {
 
     expect(res.status).toBe(403);
     expect(mockRebuild).not.toHaveBeenCalled();
+  });
+});
+
+// The bug this whole branch started from, pinned end to end: a member opened
+// the Draft Deck and the page showed them Turso's block message, billing prompt
+// and all. The route caught it and returned `error.message` verbatim.
+describe('GET /api/cards/collection — when the database refuses', () => {
+  it('does not put Turso\'s block message on the page', async () => {
+    mockReadAllowance.mockResolvedValue({ remaining: 0, week: 3 });
+    mockReadDeck.mockRejectedValueOnce(new Error(
+      'BLOCKED: Operation was blocked: SQL read operations are forbidden '
+      + '(reads are blocked, do you need to upgrade your plan?)',
+    ));
+
+    const { GET } = await import('@/app/api/cards/collection/route');
+    const res = await GET(req('collection'));
+    const body = await res.json() as { error: string };
+
+    expect(res.status).toBe(500);
+    expect(body.error).toBe('The league database is temporarily unavailable');
+    expect(body.error).not.toMatch(/upgrade your plan/);
+  });
+
+  // WHY: an ordinary failure keeps the route's own wording — the outage line is
+  //      a claim about the world, and it must not be made about a bug.
+  it('keeps the route\'s message for an ordinary failure', async () => {
+    mockReadAllowance.mockResolvedValue({ remaining: 0, week: 3 });
+    mockReadDeck.mockRejectedValueOnce(new Error('Cannot read properties of undefined'));
+
+    const { GET } = await import('@/app/api/cards/collection/route');
+    const res = await GET(req('collection'));
+
+    expect((await res.json() as { error: string }).error).toBe('Failed to read collection');
   });
 });
 

@@ -16,7 +16,7 @@
 // AUTH: POST user
 
 import { NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { gameSeason } from '@/lib/cards/allowance';
 import { submitLineup } from '@/lib/cards/weekly';
@@ -55,7 +55,6 @@ export async function POST(): Promise<NextResponse> {
     };
     return ok(body);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to submit your lineup';
-    return err(message, 500);
+    return fail(error, 'Failed to submit your lineup');
   }
 }

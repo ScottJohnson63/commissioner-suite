@@ -35,7 +35,7 @@ import type { PlayerValue, ValueBasis } from '@/lib/tradeValues';
 import type {
   StatWindow, TradePlayer, TradeProposal, TradeSuggestionsResponse,
 } from '@/types/suggestions';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireSession } from '@/lib/apiAuth';
 
 export type { TradePlayer, TradeProposal, TradeSuggestionsResponse };
@@ -305,8 +305,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return ok(result);
 
   } catch (error) {
-    const msg    = error instanceof Error ? error.message : 'Upstream error';
-    const status = msg.includes('404') ? 404 : 502;
-    return err(msg, status);
+    // The status is read off the raw message before it is dropped: a 404 from
+    // Sleeper means "no such league", which the client handles differently
+    // from an outage. The message itself names Sleeper paths and is not sent.
+    const status = error instanceof Error && error.message.includes('404') ? 404 : 502;
+    return fail(
+      error,
+      status === 404 ? 'Sleeper has no such league' : 'Sleeper is not responding',
+      status,
+    );
   }
 }

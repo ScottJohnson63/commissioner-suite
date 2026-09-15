@@ -109,6 +109,8 @@ async function syncLeagues(leagueId: string | null): Promise<NextResponse> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('Manual league sync failed:', error);
+    // Commissioner-only diagnostics, like leagues/sync — the upstream reason is
+    // what the operator came for. Partial results ride along too.
     return NextResponse.json({ error: message, results }, { status: 500 });
   }
 

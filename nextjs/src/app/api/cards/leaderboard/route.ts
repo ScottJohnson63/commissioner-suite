@@ -9,7 +9,7 @@
 // AUTH: GET user
 
 import { NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, fail } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { gameSeason } from '@/lib/cards/allowance';
 import { readLeaderboard } from '@/lib/cards/service';
@@ -26,7 +26,6 @@ export async function GET(): Promise<NextResponse> {
     const body: LeaderboardResponse = { gameSeason: season, entries };
     return ok(body);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to read standings';
-    return err(message, 500);
+    return fail(error, 'Failed to read standings');
   }
 }

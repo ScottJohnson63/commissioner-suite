@@ -26,7 +26,7 @@
 // AUTH: GET user
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, fail } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { prisma } from '@/lib/prisma';
 import { HIGH_SCORE_THRESHOLD, claimBonuses } from '@/lib/cards/bonus';
@@ -113,7 +113,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     };
     return ok(body);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to read collection';
-    return err(message, 500);
+    return fail(error, 'Failed to read collection');
   }
 }

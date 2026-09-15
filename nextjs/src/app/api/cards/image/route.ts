@@ -22,7 +22,7 @@
 // AUTH: GET,POST user
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { gameSeason } from '@/lib/cards/allowance';
 import { resolveWeek } from '@/lib/sleeper/week';
@@ -137,8 +137,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const payload: CustomizeResponse = { cardId: changes.cardId, ...result };
     return ok(payload);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Could not update that card';
-    return err(message, 500);
+    return fail(error, 'Could not update that card');
   }
 }
 

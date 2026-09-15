@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPlayerMapSafe } from '@/lib/sleeper/playerCache';
 import { SLEEPER_BASE } from '@/lib/sleeper/client';
 import type { TrendingPlayer } from '@/types/trending';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 
 export type { TrendingPlayer };
 
@@ -127,7 +127,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       drops: drops.map((p) => enrich(p, 'drop')),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Upstream error';
-    return err(message, 502);
+    return fail(error, 'Upstream error', 502);
   }
 }

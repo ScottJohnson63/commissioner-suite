@@ -15,7 +15,7 @@
 // AUTH: GET user
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { gameSeason } from '@/lib/cards/allowance';
 import { defaultResultsWeek, readWeekResults } from '@/lib/cards/weekly';
@@ -52,7 +52,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     if (!results) return err(`Week ${week}'s results are not out yet`, 404);
     return ok(results);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to read the results';
-    return err(message, 500);
+    return fail(error, 'Failed to read the results');
   }
 }

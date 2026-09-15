@@ -18,7 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { syncLeague } from '@/lib/sleeper/sync';
 import { recordSyncRun } from '@/lib/syncRun';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireCommissioner, requireSession } from '@/lib/apiAuth';
 import { fetchLeagueNames } from '@/lib/sleeper/liveNames';
 
@@ -41,8 +41,7 @@ export async function GET(): Promise<NextResponse> {
       leagues.map((l) => ({ ...l, name: liveNames.get(l.sleeperLeagueId) ?? l.name })),
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to fetch leagues';
-    return err(message);
+    return fail(error, 'Failed to fetch leagues');
   }
 }
 

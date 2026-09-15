@@ -70,15 +70,19 @@ describe('GET /api/users', () => {
   });
 
   // WHY: If Prisma throws (e.g. DB connection timeout), the route must catch
-  //      and return a 500 with the error message rather than crashing.
-  it('returns 500 with error message when Prisma throws', async () => {
+  //      and return a 500 rather than crashing — and must not repeat what the
+  //      database said. This assertion used to be the other way round, which is
+  //      how Turso's "do you need to upgrade your plan?" reached a member's
+  //      screen. The thrown text is written for whoever is debugging it.
+  it('returns 500 without repeating the database error', async () => {
     mockFindMany.mockRejectedValueOnce(new Error('DB connection failed'));
 
     const res = await GET();
     expect(res.status).toBe(500);
 
     const body = await res.json() as { error: string };
-    expect(body.error).toMatch(/DB connection failed/);
+    expect(body.error).toBe('Failed to fetch users');
+    expect(body.error).not.toMatch(/DB connection failed/);
   });
 
   // WHY: The Prisma query must exclude the admin user by username so they never

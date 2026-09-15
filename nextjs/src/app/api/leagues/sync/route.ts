@@ -49,7 +49,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('League sync error:', error);
-    // Include partial results in the error body — can't use err() here.
+    // Commissioner-only, and the upstream reason is the point: "Expected 2
+    // divisions, league has 3" is what tells them how to fix it. Deliberately
+    // not run through fail() — see the note on who may call this, above.
+    // Partial results ride along, so this cannot use err() either.
     return NextResponse.json({ error: message, results }, { status: 500 });
   }
 

@@ -98,14 +98,15 @@ describe('GET /api/leagues', () => {
 
   // WHY: DB failure must produce a 500 with an error message so the client
   //      can surface a useful message to the user.
-  it('returns 500 with error message when Prisma throws', async () => {
+  it('returns 500 without repeating the database error', async () => {
     mockFindMany.mockRejectedValueOnce(new Error('connection refused'));
 
     const res = await GET();
     expect(res.status).toBe(500);
 
     const body = await res.json() as { error: string };
-    expect(body.error).toMatch(/connection refused/);
+    expect(body.error).toBe('Failed to fetch leagues');
+    expect(body.error).not.toMatch(/connection refused/);
   });
 
   // WHY: Empty league list is a valid state (new install, no syncs yet).

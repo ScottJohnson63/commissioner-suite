@@ -14,7 +14,7 @@
 // AUTH: POST commissioner
 
 import { NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, fail } from '@/lib/api';
 import { requireCommissioner, requireUser } from '@/lib/apiAuth';
 import { writeAuditLog } from '@/lib/audit';
 import { rebuildCardPool } from '@/lib/cards/pool';
@@ -47,8 +47,7 @@ export async function GET(): Promise<NextResponse> {
       byTier,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to read pool';
-    return err(message, 500);
+    return fail(error, 'Failed to read pool');
   }
 }
 
@@ -77,7 +76,6 @@ export async function POST(): Promise<NextResponse> {
 
     return ok({ ...result, perWeek: PACKS_PER_WEEK });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to rebuild pool';
-    return err(message, 500);
+    return fail(error, 'Failed to rebuild pool');
   }
 }

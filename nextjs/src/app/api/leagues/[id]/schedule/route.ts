@@ -9,7 +9,7 @@ import { generateSchedule } from '@/lib/scheduler/engine';
 import { Team } from '@/lib/scheduler/types';
 import { fetchLeagueData, upsertLeague, upsertTeams } from '@/lib/sleeper/sync';
 import { writeAuditLog } from '@/lib/audit';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { leagueWhere } from '@/lib/league';
 import { teamNameResolver } from '@/lib/sleeper/liveNames';
 import { requireCommissioner, requireMember } from '@/lib/apiAuth';
@@ -116,8 +116,7 @@ export async function POST(
 
     return ok({ scheduleId: saved.id, matchupCount: saved.matchups.length });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Generation failed';
-    return err(message);
+    return fail(error, 'Generation failed');
   }
 }
 
@@ -202,7 +201,6 @@ export async function DELETE(
 
     return ok({ deleted: schedules.length });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Delete failed';
-    return err(message);
+    return fail(error, 'Delete failed');
   }
 }

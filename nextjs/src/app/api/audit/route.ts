@@ -20,7 +20,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { ok, err } from '@/lib/api';
+import { ok, fail } from '@/lib/api';
 import { requireSession } from '@/lib/apiAuth';
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
@@ -49,7 +49,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }));
     return ok(logs);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to fetch audit logs';
-    return err(message);
+    return fail(error, 'Failed to fetch audit logs');
   }
 }

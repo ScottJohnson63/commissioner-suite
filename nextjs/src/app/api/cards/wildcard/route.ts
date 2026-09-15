@@ -20,7 +20,7 @@
 // AUTH: POST user
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 import { requireUser } from '@/lib/apiAuth';
 import { resolveWeek } from '@/lib/sleeper/week';
 import { claimWildcard, gameSeason } from '@/lib/cards/allowance';
@@ -48,7 +48,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     return ok({ id, ...result, week, gameSeason: season });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to roll';
-    return err(message, 500);
+    return fail(error, 'Failed to roll');
   }
 }

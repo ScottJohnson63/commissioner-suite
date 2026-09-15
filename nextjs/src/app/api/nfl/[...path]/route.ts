@@ -27,7 +27,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { auth } from '@/auth';
-import { ok, err } from '@/lib/api';
+import { ok, err, fail } from '@/lib/api';
 // The allowlist lives with the stat catalog so the API and the Statistics
 // dropdown can never disagree about which columns exist.
 import { ALLOWED_STAT_COLS } from '@/lib/nflStats';
@@ -172,7 +172,6 @@ export async function GET(
         return err(`Unknown endpoint: ${endpoint}`, 404);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Database error';
-    return err(message);
+    return fail(error, 'Database error');
   }
 }
