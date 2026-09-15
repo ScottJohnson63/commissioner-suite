@@ -8,6 +8,7 @@ config({ path: resolve(__dirname, '../.env.local'), override: true });
 
 async function main() {
   const { rebuildCardPool } = await import('../src/lib/cards/pool');
+  const { invalidatePoolFacts } = await import('../src/lib/cards/snapshot');
   const { prisma } = await import('../src/lib/prisma');
 
   const before = await prisma.cardDefinition.groupBy({ by: ['tier'], _count: true });
@@ -16,6 +17,10 @@ async function main() {
               '| owned rows:', ownedBefore);
 
   const result = await rebuildCardPool();
+  // The cached pool facts describe the pool this just replaced. The API route
+  // drops them too; a rebuild from the CLI has to say so itself, or the running
+  // Functions keep serving the old size and tier split until the row ages out.
+  await invalidatePoolFacts();
   console.log(`rebuilt ${result.total} cards across ${result.seasons.length} seasons`);
 
   const after = await prisma.cardDefinition.groupBy({ by: ['tier'], _count: true });

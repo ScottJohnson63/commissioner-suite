@@ -74,7 +74,16 @@ interface SkillRow {
   headshot: string | null;
 }
 
-/** Seasons the stat table actually holds, oldest first. */
+/**
+ * Seasons the stat table actually holds, oldest first.
+ *
+ * **This is the uncached scan.** There is no index leading with `season` alone,
+ * so SQLite walks the whole stat table — hundreds of thousands of rows for a
+ * couple of dozen integers, and Turso charges for every one of them. The
+ * rebuild below needs the live answer and is rare enough to pay for it; every
+ * read path goes through `poolSeasons()` in snapshot.ts instead, which serves
+ * the same list off a single cached row. Do not call this from a request.
+ */
 export async function availableSeasons(): Promise<number[]> {
   const rows = await prisma.$queryRaw<{ season: number }[]>`
     SELECT DISTINCT season

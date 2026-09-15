@@ -34,7 +34,7 @@ import { resolveWeeks } from '@/lib/sleeper/week';
 import { gameSeason } from '@/lib/cards/allowance';
 import { readAllowance, readDeck } from '@/lib/cards/service';
 import { clearRetiredSlots, readWeeklyState } from '@/lib/cards/weekly';
-import { availableSeasons } from '@/lib/cards/pool';
+import { poolSeasons } from '@/lib/cards/snapshot';
 import { toRosterDtos } from '@/lib/cards/rosterDto';
 import type { BonusStateDto, CollectionResponse } from '@/types/cards';
 
@@ -96,7 +96,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       readAllowance(guard.userId, season, week),
       readDeck(guard.userId, season, now),
       readWeeklyState(guard.userId, season, now),
-      availableSeasons(),
+      poolSeasons(),
     ]);
 
     const body: CollectionResponse = {

@@ -34,6 +34,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { eligiblePlayerWhere } from '@/lib/cards/eligibility';
+import { poolFacts } from '@/lib/cards/snapshot';
 import {
   PACKS_PER_WEEK, STARTER_PACKS, packsForWeek, rollWildcard,
 } from '@/lib/cards/ration';
@@ -65,14 +66,22 @@ export function gameSeason(): number {
  * `remainingCards` is the number that actually matters day to day — cards are
  * owned exclusively, so the pool size is trivia once most of it is spoken for,
  * and an empty pool is what stops packs being openable.
+ *
+ * The two halves are read differently on purpose. `poolSize` only moves when a
+ * commissioner rebuilds, so it comes from the cached pool facts — counting the
+ * ~14,000 definitions on every page load was one of the scans that spent the
+ * database's read allowance (see snapshot.ts). `claimed` moves on every pack
+ * anywhere in the league and is the number members watch fall, so it stays a
+ * live count: caching it would show a pack that had just been opened as
+ * unopened, which is the one kind of staleness this number cannot carry.
  */
 export async function currentAllowance(): Promise<{
   poolSize: number; claimed: number; remainingCards: number;
   members: number; perWeek: number;
 }> {
   const season = gameSeason();
-  const [poolSize, claimed, members] = await Promise.all([
-    prisma.cardDefinition.count(),
+  const [{ poolSize }, claimed, members] = await Promise.all([
+    poolFacts(),
     prisma.cardOwnership.count({ where: { gameSeason: season } }),
     playerCount(),
   ]);

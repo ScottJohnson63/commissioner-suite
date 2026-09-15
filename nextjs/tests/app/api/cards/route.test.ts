@@ -25,7 +25,8 @@ const mockSetRosterSlot = jest.fn<() => Promise<unknown>>();
 const mockClaimBonuses =
   jest.fn<(...a: unknown[]) => Promise<unknown>>();
 const mockRebuild = jest.fn<() => Promise<unknown>>();
-const mockAvailableSeasons = jest.fn<() => Promise<number[]>>();
+const mockInvalidateFacts = jest.fn<() => Promise<void>>();
+const mockPoolSeasons = jest.fn<() => Promise<number[]>>();
 const mockClearRetiredSlots = jest.fn<() => Promise<number>>();
 const mockReadWeeklyState = jest.fn<() => Promise<unknown>>();
 const mockSubmitLineup = jest.fn<() => Promise<unknown>>();
@@ -77,10 +78,21 @@ jest.mock('@/lib/cards/service', () => ({
 }));
 jest.mock('@/lib/cards/pool', () => ({
   rebuildCardPool: () => mockRebuild(),
-  availableSeasons: () => mockAvailableSeasons(),
+}));
+// The pool's whole-table facts come off one cached row rather than a scan per
+// request — see lib/cards/snapshot.ts. Both routes read it, and POST drops it.
+jest.mock('@/lib/cards/snapshot', () => ({
+  poolSeasons: () => mockPoolSeasons(),
+  poolFacts: async () => ({
+    seasons: await mockPoolSeasons(),
+    poolSize: 1832,
+    byTier: { BRONZE: 900, SILVER: 500, GOLD: 400, HALL_OF_FAME: 32 },
+  }),
+  invalidatePoolFacts: mockInvalidateFacts,
 }));
 jest.mock('@/lib/cards/allowance', () => ({
   gameSeason: () => 2026,
+  PACKS_PER_WEEK: 2,
   claimWildcard: () => mockClaimWildcard(),
   currentAllowance: async () => ({
     poolSize: 1832, claimed: 45, remainingCards: 1787, members: 2, perWeek: 10,
@@ -136,7 +148,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockRequireUser.mockResolvedValue(ALLOWED);
   mockRequireCommissioner.mockResolvedValue(null);
-  mockAvailableSeasons.mockResolvedValue([2023, 2024, 2025]);
+  mockPoolSeasons.mockResolvedValue([2023, 2024, 2025]);
   mockClaimBonuses.mockResolvedValue({ awarded: [], kinds: [], week: 2 });
   mockClearRetiredSlots.mockResolvedValue(0);
   mockReadWeeklyState.mockResolvedValue({ week: 3, phase: 'OPEN', submitted: null });
@@ -300,7 +312,10 @@ describe('POST /api/cards/pool', () => {
 
     expect(res.status).toBe(200);
     expect(body.total).toBe(623);
-    expect(body.perWeek).toBe(10);
+    expect(body.perWeek).toBe(2);
+    // The rebuilt pool is a different size and a different tier split, so the
+    // cached facts describing the old one must not outlive it.
+    expect(mockInvalidateFacts).toHaveBeenCalled();
   });
 
   it('refuses a non-commissioner', async () => {

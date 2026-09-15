@@ -1191,15 +1191,63 @@ Measured against a partially backfilled database (14 seasons, 232k stat rows,
 | Backfill writes | ~448,000 | one-off; weekly sync adds ~1,000 |
 
 Storage and writes are not close to a constraint. **Row reads** are the number
-worth watching, and two paths dominate:
+worth watching — Turso bills them, and a database past its plan's allowance
+stops answering reads entirely. When that happened, the page reported it in
+Turso's own words: *"SQL read operations are forbidden"*.
+
+### What a page load used to cost
+
+Three of the numbers on the collection response were questions about whole
+tables, asked fresh on every single load:
+
+| Query | Rows read | Answer |
+|---|---|---|
+| `SELECT DISTINCT season FROM NflWeeklyStat` | **~448,000** | ~27 integers |
+| `cardDefinition.count()` | ~14,000 | one integer |
+| `groupBy(['tier'])` on the pool | ~14,000 | four integers |
+
+The season scan dominates and is the worst trade in the codebase: there is no
+index leading with `season` alone — the only one that touches it is
+`@@unique([season, week, playerId])` — so SQLite walks the entire stat table to
+return the handful of years it holds. Half a million row reads per page view,
+for an answer that changes when a commissioner rebuilds the pool and at no
+other time.
+
+### What replaced them
+
+`lib/cards/snapshot.ts` measures all three **once** and writes them to a
+`SleeperCache` row, so a page load costs **one row read**. This is the fix this
+section used to propose for the pack-open scan ("store the pool as a single
+JSON blob in `SleeperCache`"), applied to the facts about the pool rather than
+to the pool itself.
+
+The row rather than a `RouteCache` because an in-process cache is defeated by
+serverless cold starts, which is the condition these scans were running under in
+the first place; a row is shared by every Function instance and survives every
+restart. An in-process memo sits in front of it, single-flighted, because the
+collection route asks for the seasons and the pack allowance concurrently.
+
+Staleness is bounded by the rebuild, not by the clock: `POST /api/cards/pool`
+and `prisma/rebuild-pool.ts` both drop the row as they rewrite the pool. The
+24-hour maximum age is a safety net for a rebuild run somewhere the caches
+cannot see, not the mechanism. `availableSeasons()` in `pool.ts` is still the
+live scan and is still what the rebuild itself uses — it must not be called
+from a request.
+
+### What is still counted live
+
+- **`claimed`**, the number of cards spoken for this season, stays a live
+  `cardOwnership.count()` — up to ~10,000 rows. It moves on every pack opened
+  anywhere in the league and it is the number members watch fall, so a cached
+  value would show a pack that had just been opened as unopened. That is the
+  one kind of staleness this figure cannot carry.
 
 - **Opening a pack scans the whole pool** — `loadAllCards` reads every
   `CardDefinition` row (id and tier only) to build the draw pool, plus the
-  claimed-id set for the season. That is ~14,000 + up to ~10,000 rows per open
-  once a season is underway. It is cached for an hour *per process*, so on
-  serverless the cache is defeated by cold starts. Acceptable at current
-  volumes; if it ever matters, the fix is to store the pool as a single JSON
-  blob in `SleeperCache` — one row read instead of fourteen thousand.
+  claimed-id set for the season. That is ~14,000 + up to ~10,000 rows, but only
+  when a pack tier actually needs rolling: `ensureNextPackTier` returns the
+  stored tier before it loads anything, so an ordinary page load does not pay
+  it. Cached for an hour *per process*, so cold starts still defeat that cache.
 
 - **Ranking a member means ranking everybody.** `readLeaderboard` runs three
   queries, two of them joins across `CardOwnership × CardDefinition`. This used
@@ -1208,8 +1256,9 @@ worth watching, and two paths dominate:
   the standings it already computed and the page makes one request. The
   `/leaderboard` route still exists for callers that want standings alone.
 
-Deck reads are bounded by how many cards a member owns rather than by pool size,
-so they do not grow when seasons are backfilled.
+Both remaining paths are bounded by how many cards the league owns rather than
+by pool size, so neither grows when more seasons are backfilled. The one that
+did grow with the backfill was the season scan, and it is gone.
 
 ## Schema notes
 
