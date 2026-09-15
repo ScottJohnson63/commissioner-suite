@@ -4,9 +4,10 @@
 //
 // The week's deadline, and the button that meets it.
 //
-// Draft Deck is played a week at a time: set a lineup, submit it before Monday
-// 11:59pm central, and read the results on Tuesday morning. This is the part of
-// the lineup tab that says which of those three things is happening now.
+// Draft Deck is played a week at a time: set a lineup and submit it before
+// Monday 11:59pm central, and the results are out the moment that deadline
+// passes. This is the part of the lineup tab that says which of those two
+// things is happening now.
 //
 // Two things it has to get right, because both are ways of losing a week.
 //
@@ -28,7 +29,6 @@ import type { RosterSlotDto, WeeklyStateDto } from '@/types/cards';
 /** Colour per phase, so the panel reads before it is read. */
 const PHASE_STYLE = {
   OPEN:     { edge: '#80ff49', label: 'Open' },
-  LOCKED:   { edge: '#ffb347', label: 'Locked' },
   REVEALED: { edge: '#8a8a92', label: 'Published' },
 } as const;
 
@@ -119,7 +119,9 @@ export function WeeklyPanel({
   const filled = roster.filter((s) => s.card).length;
   const points = roster.reduce((sum, s) => sum + (s.card?.pointsPerGame ?? 0), 0);
   const inSync = matchesSubmission(roster, weekly);
-  const deadline = new Date(weekly.phase === 'OPEN' ? weekly.lockAt : weekly.revealAt).getTime();
+  // One deadline now: the lock is also the publish, so there is no second
+  // instant for the countdown to switch to once the week closes.
+  const deadline = new Date(weekly.lockAt).getTime();
 
   async function submit() {
     setBusy(true);
@@ -166,12 +168,6 @@ export function WeeklyPanel({
           <p className="text-[11px]" style={{ color: '#8a8a92' }}>
             The season is over — every week has been played and the standings are final.
           </p>
-        ) : weekly.phase === 'LOCKED' ? (
-          <p className="text-[11px]" style={{ color: '#ffb347' }}>
-            Lineups are locked. Week {weekly.week}&apos;s results are published{' '}
-            <strong>{weekly.revealLabel}</strong>
-            {now !== null && <> — {countdown(deadline - now)} away.</>}
-          </p>
         ) : (
           <>
             <p className="text-[11px]" style={{ color: '#bdbcb4' }}>
@@ -185,7 +181,7 @@ export function WeeklyPanel({
                   left.
                 </>
               )}{' '}
-              Results {weekly.revealLabel}.
+              Results publish the moment it locks.
             </p>
 
             <div className="flex flex-wrap items-center gap-3">

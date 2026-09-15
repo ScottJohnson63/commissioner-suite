@@ -3,10 +3,21 @@
 // The weekly submission game's clock: which week it is, when the lineup locks,
 // and when the results come out.
 //
-// Draft Deck's season is now played a week at a time. A member sets a lineup,
-// submits it before **Monday 11:59pm central**, and at **Tuesday 10am central**
+// Draft Deck's season is now played a week at a time. A member sets a lineup and
+// submits it before **Monday 11:59pm central**; the moment that deadline passes
 // everybody's cards are laid out best to worst. The nine cards that played are
 // retired, so the next week has to be fielded from what is left.
+//
+// ── Why the results publish at the deadline ─────────────────────────────────
+//
+// They used to wait until Tuesday 10am, and the ten hours in between were the
+// bug in issue #95. A week's points are a frozen sum of `pointsPerGame` taken at
+// submit time, not a live reading of Sunday's games — a member has already seen
+// their own number on the submit button, so the wait only hid other people's.
+// What it did instead was strand the week: the cards retired at the lock and the
+// lineup emptied with them, while the scoreboard went on reporting nothing
+// played, which ranked whoever had submitted *below* whoever had not. Publishing
+// at the deadline closes the week in one instant.
 //
 // Everything in here is pure — no Prisma, no network, no `Date.now()` unless a
 // caller passes one in. The deadlines are the rules of the game, so they have
@@ -16,11 +27,11 @@
 // ── Why the week comes from the clock rather than from Sleeper ───────────────
 //
 // The rest of the card game asks Sleeper what week it is. That is right for a
-// pack ration, which only has to land on the correct side of a Tuesday. It is
+// pack ration, which only has to land on the correct side of a Monday. It is
 // wrong here: the lock and the reveal are wall-clock instants, so the week they
 // belong to has to be derived from the same clock or the two can disagree — and
-// they would, in the ten-hour window between Monday midnight and Tuesday
-// morning, which is exactly the window this feature lives in.
+// they would, because Sleeper rolls its week over on its own schedule and
+// nothing says that instant is this one.
 //
 // The anchor is Labor Day, which is all the NFL calendar a schedule needs: week
 // 1 always kicks off the Thursday after it, so **week W's Monday night is Labor
@@ -46,27 +57,22 @@ export const GAME_TIME_ZONE_LABEL = 'central';
 export const LOCK_HOUR = 23;
 export const LOCK_MINUTE = 59;
 
-/** Results are published the next morning at 10:00 central. */
-export const REVEAL_HOUR = 10;
-
 /**
- * The weekday each deadline falls on, for prose.
+ * The weekday the deadline falls on, for prose.
  *
  * Not configurable and not arithmetic: lockDay is Labor Day plus whole weeks,
- * so it is always a Monday, and the reveal is the morning after it. Named here
- * anyway so that the Draft Deck tour reads its weekdays from the module that
- * decides them instead of asserting them from memory — the same reason the
- * hours below are exported. See issue #43.
+ * so it is always a Monday. Named here anyway so that the Draft Deck tour reads
+ * its weekday from the module that decides it instead of asserting it from
+ * memory — the same reason the hours above are exported. See issue #43.
  */
 export const LOCK_DAY_LABEL = 'Monday';
-export const REVEAL_DAY_LABEL = 'Tuesday';
 
 /**
- * A deadline as a member would read it — "11:59pm", "10:00am".
+ * A deadline as a member would read it — "11:59pm", "12:00am".
  *
- * Minutes are always shown, including on the hour. The two deadlines are stated
- * side by side wherever they appear, and "11:59pm … 10am" reads as though one
- * of them were less exact than the other when both are to the minute.
+ * Minutes are always shown, including on the hour: "11:59pm" and "12am" side by
+ * side read as though one were less exact than the other when both are to the
+ * minute.
  */
 export function clockLabel(hour: number, minute = 0): string {
   const suffix = hour < 12 ? 'am' : 'pm';
@@ -82,13 +88,18 @@ export function clockLabel(hour: number, minute = 0): string {
  */
 export const MAX_GAME_WEEK = 18;
 
-/** Where a week is in its cycle. */
+/**
+ * Where a week is in its cycle.
+ *
+ * Two states, not three. There used to be a `LOCKED` phase for the hours
+ * between the deadline and the Tuesday publish; the publish now happens at the
+ * deadline, so no instant falls between them and a third state could only ever
+ * be unreachable. See issue #95.
+ */
 export type WeekPhase =
   /** Accepting submissions. */
   | 'OPEN'
-  /** Past the Monday deadline, waiting for Tuesday morning. */
-  | 'LOCKED'
-  /** Results are out. */
+  /** Past the Monday deadline: results are out. */
   | 'REVEALED';
 
 /** One week of the game, and the three instants that bound it. */
@@ -98,7 +109,7 @@ export interface WeeklyWindow {
   opensAt: Date;
   /** Monday 23:59:59.999 central. The submission deadline. */
   lockAt: Date;
-  /** Tuesday 10:00 central. When the results appear. */
+  /** The millisecond after the lock. When the results appear. */
   revealAt: Date;
 }
 
@@ -191,10 +202,21 @@ export function lockAt(season: number, week: number): Date {
   return centralInstant(year, month, day, LOCK_HOUR, LOCK_MINUTE, 59, 999);
 }
 
-/** Tuesday 10:00 central for one week — the morning after its lock. */
+/**
+ * The instant one week's results are published: the millisecond after its lock.
+ *
+ * The one millisecond is not decoration. `phaseOf` treats the deadline as
+ * **inclusive** — a lineup landing exactly on 23:59:59.999 is in — so a publish
+ * at `lockAt` itself would leave a single millisecond during which the results
+ * are readable *and* a lineup can still be submitted against them. One
+ * millisecond later the two states abut with neither a gap nor an overlap.
+ *
+ * Which makes this Tuesday 00:00:00.000 central, and the reason it is written
+ * as "the lock plus one" rather than as midnight is that the two must not be
+ * able to drift apart: a change to the lock has to carry the publish with it.
+ */
 export function revealAt(season: number, week: number): Date {
-  const { year, month, day } = lockDay(season, week);
-  return centralInstant(year, month, day + 1, REVEAL_HOUR);
+  return new Date(lockAt(season, week).getTime() + 1);
 }
 
 // ─── Weeks ───────────────────────────────────────────────────────────────────
@@ -204,8 +226,8 @@ export function revealAt(season: number, week: number): Date {
  *
  * A week opens when the previous week's results are published, so the cycle has
  * no gap in it: the moment you see how last week went is the moment you can
- * start next week's lineup. Week 1 opens at "week 0"'s reveal, the Tuesday
- * after Labor Day, which is two days before the season's first kickoff.
+ * start next week's lineup. Week 1 opens at "week 0"'s reveal — the millisecond
+ * after Labor Day ends, three days before the season's first kickoff.
  */
 export function windowForWeek(season: number, week: number): WeeklyWindow {
   return {
@@ -219,21 +241,20 @@ export function windowForWeek(season: number, week: number): WeeklyWindow {
 /**
  * Where a week is in its cycle at `now`.
  *
- * The boundaries are inclusive of the deadline: a submission landing exactly on
- * 23:59:59.999 is in, and one a millisecond later is not.
+ * The boundary is inclusive of the deadline: a submission landing exactly on
+ * 23:59:59.999 is in, and one a millisecond later is not — and that millisecond
+ * later is also the instant the results come out, so every instant belongs to
+ * exactly one of the two phases.
  */
 export function phaseOf(window: WeeklyWindow, now: Date): WeekPhase {
-  if (now.getTime() <= window.lockAt.getTime()) return 'OPEN';
-  if (now.getTime() < window.revealAt.getTime()) return 'LOCKED';
-  return 'REVEALED';
+  return now.getTime() <= window.lockAt.getTime() ? 'OPEN' : 'REVEALED';
 }
 
 /**
  * The week a lineup submitted `now` would belong to.
  *
  * The first week whose results are still to come — which is the week now being
- * played during its OPEN phase, and stays that week through the LOCKED window
- * while everyone waits for Tuesday morning. Clamped to the season: before
+ * played, right up to its deadline. Clamped to the season: before
  * September it is week 1, and once week 18's results are out it stays at 18
  * with `seasonOver` telling the caller there is nothing left to submit.
  */
@@ -252,7 +273,7 @@ export function seasonOver(season: number, now: Date): boolean {
 
 /**
  * The most recent week whose results have been published, or null before the
- * first Tuesday of the season.
+ * season's first deadline has passed.
  */
 export function lastRevealedWeek(season: number, now: Date): number | null {
   for (let week = MAX_GAME_WEEK; week >= 1; week -= 1) {
@@ -265,7 +286,7 @@ export function lastRevealedWeek(season: number, now: Date): number | null {
  * Every week whose results are out, oldest first.
  *
  * Used for the week picker on the results view, and to bound the season score:
- * points count from the moment they are published, never before.
+ * points count from the moment the week's deadline passes, never before.
  */
 export function revealedWeeks(season: number, now: Date): number[] {
   const last = lastRevealedWeek(season, now);

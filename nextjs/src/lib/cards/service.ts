@@ -367,13 +367,18 @@ async function scoresByUser(season: number): Promise<
  *
  * The lineup a member is *currently* building ranks nothing on its own; it is
  * carried as the first tiebreak because it is the best available guess at who
- * is about to bank more, and deck average breaks ties below that. Before the
- * first Tuesday of the season every total is zero and the table is ordered by
- * exactly those two, which is what it always used to rank on.
+ * is about to bank more, and deck average breaks ties below that.
  *
  * Members who have not opened anything are included on zero rather than hidden,
  * so a league of eight always shows eight rows and nobody wonders whether they
  * are in the game.
+ *
+ * **Before the first week publishes, nothing is ranked.** The table used to fall
+ * back to lineup strength when every total was zero, which produced an order
+ * that looked like a scoreboard and was not one — and at the moment a week
+ * locked it was actively wrong, because the submitted lineups had just been
+ * swept and the members who had played sorted to the bottom (issue #95). Sorted
+ * by name instead, and the UI drops the rank numbers to match.
  *
  * Who counts as a member is not decided here — eligiblePlayerWhere() defers to
  * whoever the members page lists, which excludes the seeded superuser. Ranking
@@ -412,13 +417,14 @@ export async function readLeaderboard(
         isYou:      user.id === viewerId,
       };
     })
-    .sort(
-      (a, b) =>
-        b.seasonPoints - a.seasonPoints ||
-        b.rosterPpg - a.rosterPpg ||
-        b.deckAvgPpg - a.deckAvgPpg ||
-        b.byTier.HALL_OF_FAME - a.byTier.HALL_OF_FAME ||
-        a.name.localeCompare(b.name),
+    .sort((a, b) =>
+      banked.size === 0
+        ? a.name.localeCompare(b.name)
+        : b.seasonPoints - a.seasonPoints ||
+          b.rosterPpg - a.rosterPpg ||
+          b.deckAvgPpg - a.deckAvgPpg ||
+          b.byTier.HALL_OF_FAME - a.byTier.HALL_OF_FAME ||
+          a.name.localeCompare(b.name),
     )
     .map((entry, index) => ({ ...entry, rank: index + 1 }));
 }
@@ -540,12 +546,15 @@ export async function readDeck(
       seasonPoints: mine?.seasonPoints ?? 0,
       weeksPlayed:  mine?.weeksPlayed ?? 0,
       retired:      retired.size,
-      // Null until somebody has actually banked or fielded something — a table
-      // of zeroes has no meaningful first place.
-      rank:
-        mine && standings.some((e) => e.seasonPoints > 0 || e.rosterPpg > 0)
-          ? mine.rank
-          : null,
+      // Null until a week has actually published. Fielding a lineup used to
+      // count here too, which meant a rank appeared before anything had been
+      // scored and — worse — survived the lock that emptied the lineup it was
+      // computed from. A table of zeroes has no meaningful first place.
+      //
+      // Tested on weeks played rather than on points, so that this, the sort in
+      // readLeaderboard and the Standings header all flip on the same condition
+      // even in the odd case of a published week that happened to score zero.
+      rank: mine && standings.some((e) => e.weeksPlayed > 0) ? mine.rank : null,
       players: standings.length,
     },
   };

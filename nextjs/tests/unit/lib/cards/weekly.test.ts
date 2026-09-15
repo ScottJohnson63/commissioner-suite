@@ -51,8 +51,10 @@ import { lockAt, revealAt } from '@/lib/cards/weeklyGame';
 const SEASON = 2025;
 /** Wednesday of week 3: submissions open, weeks 1 and 2 published. */
 const OPEN = new Date('2025-09-17T16:00:00Z');
-/** Tuesday 2am central of week 1 — past the lock, before the reveal. */
-const LOCKED = new Date('2025-09-09T07:00:00Z');
+/** Tuesday 2am central of week 1 — past the deadline, so week 1 is published. */
+const PUBLISHED = new Date('2025-09-09T07:00:00Z');
+/** Monday 11pm central of week 1 — an hour before its deadline. */
+const BEFORE_LOCK = new Date('2025-09-09T04:00:00Z');
 
 const card = (id: string, ppg: number, over: Any = {}) => ({
   id, season: 2003, playerId: `p-${id}`, playerName: `Player ${id}`, position: 'RB',
@@ -78,15 +80,15 @@ describe('retirement', () => {
   // WHY: the games are over by Monday midnight, so the cards have played
   //      whether or not the results are out. Keying this on the reveal instead
   //      would let a member re-field Monday night's lineup for ten hours.
-  it('counts a card as played from the lock, not the reveal', async () => {
+  it('counts a card as played from the lock, which is also the publish', async () => {
     db.lineupCard.findMany.mockResolvedValue([{ cardId: 'c1', week: 1, points: 18.5 }]);
 
-    const retired = await retiredCards('u1', SEASON, LOCKED);
+    const retired = await retiredCards('u1', SEASON, PUBLISHED);
 
     expect(retired.get('c1')).toEqual({ cardId: 'c1', week: 1, points: 18.5 });
     expect(db.lineupCard.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ submission: { lockAt: { lte: LOCKED } } }),
+        where: expect.objectContaining({ submission: { lockAt: { lte: PUBLISHED } } }),
       }),
     );
   });
@@ -151,14 +153,29 @@ describe('submitting a lineup', () => {
     expect(db.$transaction).toHaveBeenCalled();
   });
 
-  // WHY: the deadline is the feature. A submission after 11:59pm Monday has to
-  //      be refused before anything is written, not written and then hidden.
-  it('refuses a lineup sent after the Monday deadline', async () => {
+  // WHY: the deadline is the feature, and since issue #95 it is also the
+  //      publish — so passing it rolls the submission into the week the
+  //      deadline opened rather than refusing it. What must never happen is a
+  //      lineup reaching the week that has just been published: at 2am on the
+  //      Tuesday of week 1 this writes week 2, never week 1.
+  it('sends a lineup past the deadline into the next week, not the closed one', async () => {
     lineup();
 
-    expect(await submitLineup('u1', SEASON, LOCKED))
-      .toEqual({ ok: false, reason: 'LOCKED' });
-    expect(db.lineupSubmission.create).not.toHaveBeenCalled();
+    const result = await submitLineup('u1', SEASON, PUBLISHED);
+
+    expect(result).toMatchObject({ ok: true, result: { week: 2 } });
+    expect(db.lineupSubmission.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ week: 2 }),
+    });
+  });
+
+  // WHY: the same boundary from the other side — a minute before the deadline
+  //      the lineup still belongs to the week that is closing.
+  it('keeps a lineup sent before the deadline in the week that is closing', async () => {
+    lineup();
+
+    expect(await submitLineup('u1', SEASON, BEFORE_LOCK))
+      .toMatchObject({ ok: true, result: { week: 1 } });
   });
 
   it('refuses once the final week has been published', async () => {
@@ -217,15 +234,34 @@ describe('submitting a lineup', () => {
 });
 
 describe('the season score', () => {
-  // WHY: cards retire on Monday night but nothing is published until Tuesday
-  //      morning. A total that moved at midnight would give the week away.
-  it('counts published weeks only', async () => {
+  // WHY: issue #95. Bounded by the *stored* lock rather than the stored
+  //      revealAt, so that rows written under the old Tuesday-10am rule — which
+  //      carry a revealAt ten hours past their lock — count from the same
+  //      instant as rows written since. Filtering on revealAt would have gone on
+  //      withholding the very week the fix was for.
+  it('counts published weeks only, off the stored lock', async () => {
     await seasonScores(SEASON, OPEN);
 
     expect(db.lineupSubmission.findMany).toHaveBeenCalledWith({
-      where:  { gameSeason: SEASON, revealAt: { lte: OPEN } },
+      where:  { gameSeason: SEASON, lockAt: { lte: OPEN } },
       select: { userId: true, points: true },
     });
+  });
+
+  // WHY: the bug as reported — a week whose deadline had passed, whose cards
+  //      had retired and whose packs had been paid, still reporting nothing
+  //      played. An hour past the lock the week counts.
+  it('counts a week from the moment its deadline passes', async () => {
+    const justPublished = new Date(lockAt(SEASON, 1).getTime() + 1);
+    db.lineupSubmission.findMany.mockResolvedValue([{ userId: 'u1', points: 116.2 }]);
+
+    const scores = await seasonScores(SEASON, justPublished);
+
+    expect(db.lineupSubmission.findMany).toHaveBeenCalledWith({
+      where:  { gameSeason: SEASON, lockAt: { lte: justPublished } },
+      select: { userId: true, points: true },
+    });
+    expect(scores.get('u1')).toEqual({ points: 116.2, weeks: 1 });
   });
 
   // WHY: rounding each week and summing the results drifts from the total
@@ -271,9 +307,18 @@ describe('reading the results', () => {
   //      number into the query string.
   it('returns nothing before that week has been published', async () => {
     week1();
-    expect(await readWeekResults(SEASON, 1, 'u1', LOCKED)).toBeNull();
+    expect(await readWeekResults(SEASON, 1, 'u1', BEFORE_LOCK)).toBeNull();
     // Not even the query is run.
     expect(db.lineupSubmission.findMany).not.toHaveBeenCalled();
+  });
+
+  // WHY: the other half of the same boundary — a millisecond past the deadline
+  //      the week is readable, with no ten-hour wait in between (issue #95).
+  it('publishes the week the moment its deadline passes', async () => {
+    week1();
+    const justPublished = new Date(lockAt(SEASON, 1).getTime() + 1);
+
+    expect(await readWeekResults(SEASON, 1, 'u1', justPublished)).not.toBeNull();
   });
 
   it('ranks the members best to worst', async () => {
@@ -351,7 +396,7 @@ describe('the member\'s view of the week', () => {
       weeksPlayed: 1,
     });
     expect(state.lockLabel).toBe('Mon, Sep 22, 11:59 PM CDT');
-    expect(state.revealLabel).toBe('Tue, Sep 23, 10:00 AM CDT');
+    expect(state.revealLabel).toBe('Tue, Sep 23, 12:00 AM CDT');
   });
 
   it('hands back what was submitted so the page can spot an edited lineup', async () => {

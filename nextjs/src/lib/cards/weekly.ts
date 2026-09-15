@@ -4,9 +4,9 @@
 // cards that played, and publishing what everybody put up.
 //
 // The rules, in four sentences. Set a lineup and submit it before Monday
-// 11:59pm central. At Tuesday 10am central every submission is published, best
-// to worst. A card that has played is retired and cannot be played again. Your
-// weekly scores add up, and the highest season total wins.
+// 11:59pm central. The moment that deadline passes every submission is
+// published, best to worst. A card that has played is retired and cannot be
+// played again. Your weekly scores add up, and the highest season total wins.
 //
 // Three of those four are enforced here; the fourth — the clock — is
 // weeklyGame.ts, which is pure and knows nothing about a database.
@@ -54,11 +54,11 @@ export interface RetiredCard {
 /**
  * The cards a member has already played this season, by card id.
  *
- * Keyed off the *lock* rather than the reveal: the games are over by Monday
- * midnight, so the cards have played whether or not the results have been
- * published yet. The ten hours in between are the one window where that
- * distinction is visible, and during them the deck should already show those
- * cards as spent — they are, and no amount of waiting will bring them back.
+ * Keyed off the *lock*, which since issue #95 is also the instant the results
+ * publish: the games are over by Monday midnight, so the cards have played, and
+ * the deck shows them spent from the same instant the scoreboard does. The two
+ * used to be ten hours apart, and every confusing thing about that window came
+ * from the deck moving while the scoreboard did not.
  */
 export async function retiredCards(
   userId: string, season: number, now: Date = new Date(),
@@ -120,10 +120,12 @@ export async function readSubmission(
 /**
  * Every member's season total, from published weeks only.
  *
- * Bounded by `revealAt` rather than by `lockAt`, which is the difference
- * between a scoreboard and a spoiler: the cards retire on Monday night, but
- * nobody learns what anything scored until Tuesday morning, and a standings
- * table that moved at midnight would give the week away ten hours early.
+ * Bounded by the stored `lockAt`, which is now the instant a week publishes.
+ * Reading the *stored* column rather than recomputing the deadline is what lets
+ * this change land without a migration: rows written before issue #95 carry a
+ * `revealAt` ten hours later than their lock, and filtering on that would have
+ * gone on withholding week 1 from the very league the fix is for. `lockAt` is
+ * the same frozen instant under both rules.
  *
  * Read and summed in memory rather than aggregated in SQL. It is one small
  * indexed scan — a twelve-member league plays 216 rows over a whole season —
@@ -133,7 +135,7 @@ export async function seasonScores(
   season: number, now: Date = new Date(),
 ): Promise<Map<string, { points: number; weeks: number }>> {
   const rows = await prisma.lineupSubmission.findMany({
-    where:  { gameSeason: season, revealAt: { lte: now } },
+    where:  { gameSeason: season, lockAt: { lte: now } },
     select: { userId: true, points: true },
   });
 
@@ -155,7 +157,16 @@ export async function seasonScores(
 
 /** Why a submission was refused. */
 export type SubmitFailure =
-  /** Past Monday 11:59pm central. */
+  /**
+   * Past Monday 11:59pm central.
+   *
+   * Unreachable as the code stands, and kept deliberately. `currentWindow` only
+   * ever returns a week whose deadline is still ahead, and the one case that
+   * escapes it — the clamp past week 18 — is caught by `seasonOver` first. The
+   * guard below is what makes that true rather than merely likely: it is one
+   * comparison, and it is the thing standing between a late write and the week
+   * it would land in if the window arithmetic ever changed.
+   */
   | 'LOCKED'
   /** Week 18's results are out; there is nothing left to play. */
   | 'SEASON_OVER'
@@ -191,6 +202,10 @@ export async function submitLineup(
 ): Promise<{ ok: true; result: SubmitResult } | { ok: false; reason: SubmitFailure }> {
   if (seasonOver(season, now)) return { ok: false, reason: 'SEASON_OVER' };
 
+  // A submission past a deadline is not refused — it belongs to the week that
+  // deadline opened. `currentWindow` has already rolled forward by the time it
+  // gets here, so the deadline's real effect is that a lineup can never reach
+  // the week that just published, which is the guarantee that matters.
   const window = currentWindow(season, now);
   if (phaseOf(window, now) !== 'OPEN') return { ok: false, reason: 'LOCKED' };
 
@@ -316,9 +331,9 @@ export async function readWeeklyState(
 /**
  * What everybody played in one week, once it has been published.
  *
- * Returns null before Tuesday 10am central for that week. That guard is the
- * whole reveal: with it the route cannot leak a lineup early however the week
- * is asked for, and without it the deadline would be a UI convention.
+ * Returns null until that week's deadline has passed. That guard is the whole
+ * reveal: with it the route cannot leak a lineup early however the week is
+ * asked for, and without it the deadline would be a UI convention.
  *
  * Two orderings come back because two questions are being asked. `entries`
  * ranks the members — who won the week — and `cards` is every card anybody
@@ -423,8 +438,8 @@ export async function readWeekResults(
 /**
  * The week the results view should open on: the most recent one published.
  *
- * Null before the season's first Tuesday, which the page renders as "no results
- * yet" rather than as an empty table.
+ * Null before the season's first deadline has passed, which the page renders as
+ * "no results yet" rather than as an empty table.
  */
 export function defaultResultsWeek(season: number, now: Date = new Date()): number | null {
   return lastRevealedWeek(season, now);

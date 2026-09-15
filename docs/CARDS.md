@@ -6,8 +6,8 @@ weekly pack allowance, open packs, and build a deck that is wiped when the game
 season rolls over.
 
 **It is played a week at a time.** Set a lineup and submit it before Monday
-11:59pm central; at Tuesday 10am central every submission is published, best to
-worst. The nine cards that played are retired for the rest of the season, and
+11:59pm central; the moment that deadline passes every submission is published,
+best to worst. The nine cards that played are retired for the rest of the season, and
 the weeks add up — the highest total at the end wins. See **The weekly game**.
 
 **Cards are owned exclusively.** One card has exactly one owner for the whole
@@ -223,7 +223,7 @@ won from a Sleeper result.
 
 **Week 1 pays no ration.** A member's first week is the starter grant and
 nothing else, so the game opens with one clean handful of five rather than ten
-packs at once, and the weekly rhythm starts the following Tuesday. The rule is
+packs at once, and the weekly rhythm starts the following week. The rule is
 one function, `packsForWeek`, and it is keyed on the NFL week rather than on how
 long the member has been playing: somebody who first opens the game in week 6
 gets week 6's ration straight away.
@@ -546,26 +546,44 @@ scroll.
 
 ## The weekly game
 
-The season is played in weeks, and a week has three phases.
+The season is played in weeks, and a week has two phases.
 
 | Phase | From | Until | What happens |
 |-------|------|-------|--------------|
 | **Open** | the previous week's reveal | **Monday 23:59:59.999 central** | Set the lineup, submit, re-submit as often as you like |
-| **Locked** | that instant | **Tuesday 10:00 central** | Nothing to do. The cards have played; the scores are not out |
-| **Revealed** | Tuesday 10:00 central | — | Everybody's lineup is published, and the next week opens |
+| **Revealed** | that instant plus one millisecond | — | Everybody's lineup is published, and the next week opens |
 
-The lock and the reveal are ten hours apart, and the gap is deliberate: the
-Monday night game finishes inside it, and a reveal at midnight would publish
-results before the last of them had settled.
+**The deadline is also the publish.** There used to be a third phase: the
+results waited until Tuesday 10:00 central, ten hours after the lock. Issue #95
+is what that cost. Three things key off the lock — retirement, the lineup sweep
+and the pack ration — and only the scoreboard keyed off the reveal, so for ten
+hours every week the deck moved and the score did not. A member who had played
+their nine cards saw them retired, saw new packs arrive, and saw "no weeks
+played yet" on a standings table that had fallen back to ranking on lineup
+strength — which submitting had just set to zero. The people who played ranked
+below the people who had not.
+
+The wait bought nothing to weigh against that. A week's points are a frozen sum
+of `pointsPerGame` taken at submit time, not a live reading of Sunday's games,
+so there was never a result still settling; the member had already seen their
+own number on the submit button, and all the delay hid was everyone else's.
+
+The one millisecond between the two is load-bearing. `phaseOf` treats the
+deadline as inclusive — a lineup landing on 23:59:59.999 is in — so publishing
+at `lockAt` itself would leave a single millisecond in which the results are
+readable *and* a lineup can still be submitted against them. One millisecond
+later the phases abut with neither gap nor overlap, and every instant belongs to
+exactly one of them.
 
 ### Where a week number comes from
 
 **Not from Sleeper.** The rest of the card game asks `/state/nfl` what week it
 is, which is right for a pack ration — that only has to land on the correct side
-of a Tuesday. It is wrong here. The lock and the reveal are wall-clock instants,
-so the week they belong to has to come from the same clock, and Sleeper's week
-rolls over somewhere inside the ten-hour locked window. Two sources of truth
-would disagree in exactly the window this feature lives in.
+of a Monday. It is wrong here. The lock and the reveal are wall-clock instants,
+so the week they belong to has to come from the same clock, and Sleeper rolls
+its week over on its own schedule; nothing says that instant is this one. Two
+sources of truth would disagree, and the disagreement would land on whichever
+member happened to look while they were out of step.
 
 So `weeklyGame.ts` derives it, and the whole NFL calendar it needs is Labor Day:
 the league always opens on the Thursday after it, so **week W's Monday night is
@@ -628,16 +646,17 @@ reason. Playing a card twice is refused by SQLite rather than by an `if` a race
 could slip past, so the picker hiding retired cards is a courtesy on top of the
 rule rather than the rule itself.
 
-Retirement is keyed on the **lock**, not the reveal. The games are over by
-Monday midnight, so the cards have played whether or not the scores are out; the
-ten hours in between are the only window where the difference is visible, and
-during them the deck should already show those cards as spent, because they are.
+Retirement is keyed on the **lock**, which since issue #95 is also the instant
+the results publish. The games are over by Monday midnight, so the cards have
+played, and the deck shows them spent from the same instant the scoreboard moves.
+The two used to be ten hours apart, and everything confusing about that window
+came from the deck advancing while the scoreboard stood still.
 
 Retired cards **stay in the deck**, dimmed and stamped with the week they played
 and what they scored. Hiding them would make a deck shrink as a season went on,
 and the card you won week 3 with is the record of week 3.
 
-Nothing sweeps the lineup on a schedule. On Tuesday morning a member's slots
+Nothing sweeps the lineup on a schedule. Once a week closes a member's slots
 still point at nine cards that can never start again, and `clearRetiredSlots`
 empties them on the next collection read — the same lazy pattern the pack grant
 and the starter grant already use. `readRoster` also drops them on read, because
@@ -659,18 +678,28 @@ same figure the lineup has always shown: the points you would put up in a week
 if everyone played to their season average. Empty slots contribute nothing, so a
 half-filled lineup scores half as much.
 
-Points count from the **reveal**, not the lock. Cards retire on Monday night but
-nothing is published until Tuesday morning, and a standings table that moved at
-midnight would give the week away ten hours early.
+Points count from the **deadline**, which is the same instant the cards retire
+and the same instant the week publishes. `seasonScores` bounds itself on the
+*stored* `lockAt` rather than on the stored `revealAt`: rows written under the
+old Tuesday-10am rule carry a `revealAt` ten hours past their lock, and filtering
+on that would have gone on withholding the very week issue #95 was raised about.
+`lockAt` is the same frozen instant under both rules, which is what let the fix
+land without a data migration.
 
 Two more numbers ride alongside, and both are now tiebreaks rather than the
 ranking:
 
 **Lineup PPG** — what the lineup currently being built would score. It ranks
-nothing on its own; it is the best available guess at who is about to bank more,
-and before the season's first Tuesday every total is zero and it is the only
-thing there is to sort on — which is exactly what the table used to rank on
-outright.
+nothing on its own; it is the best available guess at who is about to bank more.
+
+It used to be the fallback ranking before anything had been banked, and that was
+the other half of issue #95. The fallback drew a podium out of numbers nobody
+had scored, and at the instant a week locked it inverted: submitting empties the
+lineup it reads from, so the members who had played sorted to the bottom and the
+members who had not sat on top. **Until a week has published, nothing is
+ranked** — `readLeaderboard` orders by name, `rank` comes back null, and the
+standings drop the positions, the bars and this column until there is a real
+score to draw them from.
 
 **Deck average PPG** — the mean points per game across every card owned. It
 answers the other question: not "how good is your best nine" but "how good is
@@ -1139,7 +1168,7 @@ a card that has already played. Nothing about either request is malformed; one
 arrived at 12:01am and the other names a card that is spent. `/api/cards/roster`
 answers 409 for the same second reason.
 
-`/api/cards/results` answers **404** for a week that has not had its Tuesday,
+`/api/cards/results` answers **404** for a week whose deadline has not passed,
 rather than an empty body — a member who bookmarks week 9 in week 8 should be
 told it is not out yet, not shown a league that apparently submitted nothing.
 With no `?week=` and nothing published at all it answers an empty week, because
@@ -1233,7 +1262,10 @@ and rebuilt by nothing. Its `cardId` is still a plain column.
 
 `LineupSubmission` stores `points`, `lockAt` and `revealAt` rather than deriving
 them, so a pool rebuild cannot restate a published week and a change to the
-deadline rule cannot re-open one that closed in September.
+deadline rule cannot re-open one that closed in September. Issue #95 was exactly
+such a change, and `lockAt` is what carried the old rows across it: rows written
+before it carry a `revealAt` ten hours past their lock, so `seasonScores` reads
+the lock and both generations of row publish from the same instant.
 
 Both tables ship as `prisma/migrations/20260902000000_weekly_lineup_game`.
 Prisma's own `migrate deploy` cannot drive a libsql remote, so it is applied to

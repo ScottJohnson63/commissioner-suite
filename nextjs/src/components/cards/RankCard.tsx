@@ -15,6 +15,9 @@
 // The headline number is **season points** — what every week's lineup has added
 // up to, and what the season is won on. The lineup being built now sits beside
 // it as this week's contribution rather than as the score.
+//
+// Until a week has published there is no rank and no gap: the card says so in
+// one line rather than ranking the league on lineups nobody has scored yet.
 
 import { TIER_STYLE } from '@/components/cards/tierStyles';
 import { ROSTER_SIZE } from '@/lib/cards/roster';
@@ -55,15 +58,13 @@ export function RankCard({
   const ahead = me && me.rank > 1 ? standings[me.rank - 2] : null;
   const leader = standings[0] ?? null;
 
-  // Measured on the ranking figure, which is season points. Before the first
-  // Tuesday everyone is on zero and the table is sorted by lineup instead, so
-  // the gap follows it there rather than reporting a flat 0.0 all week.
-  const preseason = !standings.some((e) => e.seasonPoints > 0);
-  const figure = (entry: LeaderboardEntryDto) =>
-    preseason ? entry.rosterPpg : entry.seasonPoints;
-
+  // Measured on season points, and on nothing else. The gap used to fall back to
+  // lineup strength before the first week published, which reported a deficit
+  // against a number nobody had scored — and at the lock, when submitting had
+  // just emptied the lineup it was read from, that deficit was backwards
+  // (issue #95). With no week banked there is no rank and no gap to state.
   const gapToNext =
-    ahead && me ? Math.round((figure(ahead) - figure(me)) * 10) / 10 : null;
+    ahead && me ? Math.round((ahead.seasonPoints - me.seasonPoints) * 10) / 10 : null;
 
   return (
     <div
@@ -141,7 +142,7 @@ export function RankCard({
             <>
               Top of the league —{' '}
               <strong style={{ color: frame.edge }}>
-                {(figure(leader) - figure(standings[1])).toFixed(1)} points
+                {(leader.seasonPoints - standings[1].seasonPoints).toFixed(1)} points
               </strong>{' '}
               clear of {standings[1]?.name}.
             </>

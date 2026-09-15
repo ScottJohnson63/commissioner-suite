@@ -3,7 +3,7 @@
 // Covers src/lib/cards/weeklyGame.ts — the weekly game's clock.
 //
 // These deadlines *are* the rules: "submit before Monday 11:59pm central" and
-// "results at Tuesday 10am central" are the whole feature, and the only place
+// "results the moment that passes" are the whole feature, and the only place
 // they can be checked without waiting for a Monday night is here.
 //
 // Three things are worth more than the rest. The anchor has to land on the
@@ -15,7 +15,7 @@
 
 import { describe, it, expect } from '@jest/globals';
 import {
-  LOCK_HOUR, LOCK_MINUTE, MAX_GAME_WEEK, REVEAL_HOUR, clockLabel, currentWindow,
+  LOCK_HOUR, LOCK_MINUTE, MAX_GAME_WEEK, clockLabel, currentWindow,
   formatCentral, labourDay, lastRevealedWeek, lockAt, phaseOf, revealAt,
   revealedWeeks, seasonOver, windowForWeek,
 } from '@/lib/cards/weeklyGame';
@@ -53,9 +53,26 @@ describe('the season anchor', () => {
 });
 
 describe('the deadlines', () => {
-  it('locks at 11:59pm Monday and publishes at 10am Tuesday', () => {
+  it('locks at 11:59pm Monday and publishes the millisecond after', () => {
     expect(central(lockAt(2025, 4))).toBe('Mon, Sep 29, 23:59 CDT');
-    expect(central(revealAt(2025, 4))).toBe('Tue, Sep 30, 10:00 CDT');
+    expect(central(revealAt(2025, 4))).toBe('Tue, Sep 30, 00:00 CDT');
+    expect(revealAt(2025, 4).getTime() - lockAt(2025, 4).getTime()).toBe(1);
+  });
+
+  // WHY: issue #95. The publish used to be ten hours after the lock, and every
+  //      instant in between reported a week whose cards had retired and whose
+  //      score had not landed. No instant may fall between them now: one
+  //      millisecond earlier is OPEN, and this one is already published.
+  it('leaves no instant between the deadline and the publish', () => {
+    for (const week of [1, 9, MAX_GAME_WEEK]) {
+      const window = windowForWeek(2025, week);
+      const lock = lockAt(2025, week);
+
+      expect(phaseOf(window, lock)).toBe('OPEN');
+      expect(phaseOf(window, new Date(lock.getTime() + 1))).toBe('REVEALED');
+      expect(lastRevealedWeek(2025, lock)).not.toBe(week);
+      expect(lastRevealedWeek(2025, new Date(lock.getTime() + 1))).toBe(week);
+    }
   });
 
   // WHY: the reason the zone is resolved per instant rather than pinned to −6.
@@ -72,6 +89,7 @@ describe('the deadlines', () => {
   it('gives every week a full seven days', () => {
     for (let week = 2; week <= MAX_GAME_WEEK; week += 1) {
       expect(central(lockAt(2025, week)).startsWith('Mon')).toBe(true);
+      // Midnight belongs to the Tuesday, one millisecond past the Monday.
       expect(central(revealAt(2025, week)).startsWith('Tue')).toBe(true);
     }
   });
@@ -91,30 +109,27 @@ describe('which week a submission belongs to', () => {
     const window = windowForWeek(2025, 1);
 
     expect(phaseOf(window, new Date(lock.getTime()))).toBe('OPEN');
-    expect(phaseOf(window, new Date(lock.getTime() + 1))).toBe('LOCKED');
+    expect(phaseOf(window, new Date(lock.getTime() + 1))).toBe('REVEALED');
   });
 
-  // WHY: the ten hours between the lock and the reveal are the window this
-  //      whole module exists for — Sleeper's week may already have rolled over,
-  //      and the game's has not.
-  it('holds the week through the night between locking and publishing', () => {
-    const monday = at('2025-09-09T04:58:00Z');   // 11:58pm CDT Monday
-    const midnight = at('2025-09-09T05:00:00Z'); // 12:00am CDT Tuesday
-    const beforeTen = at('2025-09-09T14:59:00Z');
-    const ten = at('2025-09-09T15:00:00Z');
+  // WHY: the handover is a single instant, and the whole of issue #95 was that
+  //      it used to be ten hours wide. Midnight closes week 1 and opens week 2
+  //      in the same tick — nothing is ever between weeks.
+  it('closes one week and opens the next in a single instant', () => {
+    const monday = at('2025-09-09T04:58:00Z');    // 11:58pm CDT Monday
+    const midnight = at('2025-09-09T05:00:00Z');  // 12:00am CDT Tuesday
+    const laterTuesday = at('2025-09-09T15:00:00Z');
 
     expect(currentWindow(2025, monday).week).toBe(1);
     expect(phaseOf(currentWindow(2025, monday), monday)).toBe('OPEN');
+    expect(lastRevealedWeek(2025, monday)).toBeNull();
 
-    for (const instant of [midnight, beforeTen]) {
-      expect(currentWindow(2025, instant).week).toBe(1);
-      expect(phaseOf(currentWindow(2025, instant), instant)).toBe('LOCKED');
+    // Midnight: week 1 published, week 2 open, in one instant.
+    for (const instant of [midnight, laterTuesday]) {
+      expect(currentWindow(2025, instant).week).toBe(2);
+      expect(phaseOf(currentWindow(2025, instant), instant)).toBe('OPEN');
+      expect(lastRevealedWeek(2025, instant)).toBe(1);
     }
-
-    // 10am Tuesday: last week published, next week open, in one instant.
-    expect(currentWindow(2025, ten).week).toBe(2);
-    expect(phaseOf(currentWindow(2025, ten), ten)).toBe('OPEN');
-    expect(lastRevealedWeek(2025, ten)).toBe(1);
   });
 
   // WHY: a member opening the game in August should be shown week 1 rather than
@@ -146,19 +161,18 @@ describe('which week a submission belongs to', () => {
   });
 
   it('lists published weeks oldest first', () => {
-    // Wednesday of week 5 — weeks 1 to 4 have had their Tuesday.
+    // Wednesday of week 5 — weeks 1 to 4 have had their deadline.
     expect(revealedWeeks(2025, at('2025-10-01T16:00:00Z'))).toEqual([1, 2, 3, 4]);
-    // An hour before week 4's reveal, only three are out.
-    expect(revealedWeeks(2025, at('2025-09-30T13:00:00Z'))).toEqual([1, 2, 3]);
+    // Monday evening of week 4, before its deadline: only three are out.
+    expect(revealedWeeks(2025, at('2025-09-30T02:00:00Z'))).toEqual([1, 2, 3]);
   });
 });
 
-// The Draft Deck tour states both deadlines through this, so that "submit by
+// The Draft Deck tour states the deadline through this, so that "submit by
 // Monday 11:59pm" is read off LOCK_HOUR rather than typed out — see issue #43.
 describe('clockLabel', () => {
-  it('states the two real deadlines the way a member reads them', () => {
+  it('states the real deadline the way a member reads it', () => {
     expect(clockLabel(LOCK_HOUR, LOCK_MINUTE)).toBe('11:59pm');
-    expect(clockLabel(REVEAL_HOUR)).toBe('10:00am');
   });
 
   it('always shows minutes, pads them, and reads noon and midnight as 12', () => {

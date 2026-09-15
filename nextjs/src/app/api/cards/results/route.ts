@@ -32,7 +32,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const requested = req.nextUrl.searchParams.get('week');
   const week = requested ? Number(requested) : defaultResultsWeek(season, now);
 
-  // Nothing has been published yet — the season's first Tuesday has not come
+  // Nothing has been published yet — the season's first deadline has not come
   // round. An empty payload rather than a 404: the page has a week picker to
   // draw either way, and "no results yet" is a state, not a missing resource.
   if (week === null) {
