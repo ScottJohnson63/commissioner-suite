@@ -15,7 +15,7 @@
 // the top of lib/cards/bonus.ts.
 //
 // And it is where last week's starters are swept out of the lineup. Cards
-// retire the moment their week locks, so on Tuesday morning a member's slots
+// retire the moment their week locks, so once a week closes a member's slots
 // are still pointing at nine cards that can never start again. There is no
 // scheduled job to clear them — the pack grant and the starter grant are both
 // created the first time a member looks, and this follows the same pattern.
@@ -74,7 +74,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const season = gameSeason();
   // Both from one look at the NFL state. `current` is the week everything else
   // on this page is about — the ration belongs to the week being played, so
-  // packs appear on Tuesday rather than trailing a week behind — and
+  // packs appear with the new week rather than trailing a week behind — and
   // `completed` is only what the bonus check scores.
   const weeks = await resolveWeeks(req.nextUrl.searchParams.get('week'));
   const week = weeks.current;
