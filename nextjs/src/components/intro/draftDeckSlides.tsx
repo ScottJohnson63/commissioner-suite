@@ -37,8 +37,7 @@ import {
   BONUS_KINDS, HIGH_SCORE_THRESHOLD, MAX_CUSTOMIZATION_PACKS, type BonusKind,
 } from '@/lib/cards/ration';
 import {
-  GAME_TIME_ZONE_LABEL, LOCK_DAY_LABEL, LOCK_HOUR, LOCK_MINUTE,
-  REVEAL_DAY_LABEL, REVEAL_HOUR, clockLabel,
+  GAME_TIME_ZONE_LABEL, LOCK_DAY_LABEL, LOCK_HOUR, LOCK_MINUTE, clockLabel,
 } from '@/lib/cards/weeklyGame';
 
 // ─── Prose helpers ───────────────────────────────────────────────────────────
@@ -149,7 +148,6 @@ function tierBullets(): string[] {
 /** The tour, in order. */
 export function draftDeckSlides(): IntroSlide[] {
   const lockLabel = `${LOCK_DAY_LABEL} @ ${clockLabel(LOCK_HOUR, LOCK_MINUTE)} ${GAME_TIME_ZONE_LABEL} time`;
-  const revealLabel = `${REVEAL_DAY_LABEL} @ ${clockLabel(REVEAL_HOUR)} ${GAME_TIME_ZONE_LABEL} time`;
 
   return [
     {
@@ -233,7 +231,7 @@ export function draftDeckSlides(): IntroSlide[] {
             'Set your lineup by filling in the empty spots.',
             'The players you set will retire when played.',
             `Submit it by ${lockLabel} or lose out on points for the week.`,
-            `View the league results on ${revealLabel}.`,
+            'The league results are out the moment the deadline passes.',
             'Most accrued points at the end of the season wins!',
           ]}
         />

@@ -31,8 +31,7 @@ import {
   BONUS_KINDS, HIGH_SCORE_THRESHOLD, MAX_CUSTOMIZATION_PACKS,
 } from '@/lib/cards/ration';
 import {
-  GAME_TIME_ZONE_LABEL, LOCK_DAY_LABEL, LOCK_HOUR, LOCK_MINUTE,
-  REVEAL_DAY_LABEL, REVEAL_HOUR, clockLabel,
+  GAME_TIME_ZONE_LABEL, LOCK_DAY_LABEL, LOCK_HOUR, LOCK_MINUTE, clockLabel,
 } from '@/lib/cards/weeklyGame';
 
 /** Every slide, in order — the tour is the same for everybody. */
@@ -268,8 +267,9 @@ describe('DraftDeckIntro — the rules it states', () => {
     expect(lineup).toContain(
       `Submit it by ${LOCK_DAY_LABEL} @ ${clockLabel(LOCK_HOUR, LOCK_MINUTE)} ${GAME_TIME_ZONE_LABEL} time`,
     );
-    expect(lineup).toContain(
-      `View the league results on ${REVEAL_DAY_LABEL} @ ${clockLabel(REVEAL_HOUR)} ${GAME_TIME_ZONE_LABEL} time`,
-    );
+    // One deadline to state, since issue #95: the results are out the moment
+    // it passes, so the tour no longer names a second time for a member to
+    // come back at.
+    expect(lineup).toContain('The league results are out the moment the deadline passes.');
   });
 });

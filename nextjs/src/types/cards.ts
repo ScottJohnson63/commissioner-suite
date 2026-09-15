@@ -231,7 +231,11 @@ export interface LeaderboardEntryDto {
   name: string;
   rank: number;
   cards: number;
-  /** Combined points per game of their lineup — the ranking figure. */
+  /**
+   * Combined points per game of the lineup they are building now. A tiebreak
+   * below `seasonPoints` and a live guess at next week — never the figure the
+   * table ranks on, and not shown at all until a week has published.
+   */
   rosterPpg: number;
   /** Average points per game across their whole deck. */
   deckAvgPpg: number;
@@ -354,7 +358,7 @@ export interface OpenPackResponse {
 // ─── The weekly submission game ──────────────────────────────────────────────
 
 /** Where a week is in its cycle. Mirrors WeekPhase in lib/cards/weeklyGame.ts. */
-export type WeekPhase = 'OPEN' | 'LOCKED' | 'REVEALED';
+export type WeekPhase = 'OPEN' | 'REVEALED';
 
 /** A lineup frozen at submission, as the client sees it. */
 export interface SubmittedLineupDto {

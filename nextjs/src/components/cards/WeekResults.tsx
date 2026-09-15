@@ -2,7 +2,7 @@
 
 // src/components/cards/WeekResults.tsx
 //
-// Tuesday morning: what everybody played.
+// The week just closed: what everybody played.
 //
 // The reveal is the payoff of the whole week, so it is laid out as two answers
 // to two different questions rather than one table trying to be both.
@@ -115,7 +115,7 @@ export function WeekResults({
       ) : !results || !results.entries.length ? (
         <p className="text-xs px-3 py-8 text-center" style={{ color: '#555' }}>
           {weeks.length === 0
-            ? 'No results yet — the first week is published on Tuesday at 10am central.'
+            ? 'No results yet — week 1 is published the moment lineups lock, Monday at 11:59pm central.'
             : `Nobody submitted a lineup in week ${week}.`}
         </p>
       ) : (
