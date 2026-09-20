@@ -48,7 +48,6 @@ jobs:
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-          NFL_SEASON: "2025"
           FORCE: ${{ github.event.inputs.force || 'false' }}
           WEEK: ${{ github.event.inputs.week || '' }}
           LEAGUE_ID: ${{ github.event.inputs.league_id || '' }}

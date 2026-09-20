@@ -57,6 +57,8 @@ describe('GET /api/nfl/leaders', () => {
   beforeEach(() => {
     mockQueryRaw.mockReset();
     mockAuth.mockReset();
+    mockStatSeasons.mockReset();
+    mockStatSeasons.mockResolvedValue([2025]);
     // Most cases here are about the SQL, not the session; sign in by default so
     // the headshot tests below are the ones that speak about it.
     session(true);
@@ -78,6 +80,36 @@ describe('GET /api/nfl/leaders', () => {
       expect.stringContaining('SUM(passingYards)'),
       2025,
       25,
+    );
+  });
+
+  // WHY: issue #98. The first load carries no ?season, so the endpoint picks
+  //      the year itself. It used to take MAX(season) straight off the table,
+  //      which counted a season holding nothing but the 32 team-defense rows
+  //      sync_nfl_defense.py writes at kickoff — a season with no players in
+  //      it, and so an empty fantasy-points leaderboard. The cached list is
+  //      also the one the picker reads, so both agree on the default.
+  it('defaults to the newest season in the cached list', async () => {
+    mockStatSeasons.mockResolvedValue([2025, 2024]);
+    mockQueryRaw.mockResolvedValueOnce([] as never);
+
+    await GET(makeRequest('leaders?stat=passingYards'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    expect(mockQueryRaw).toHaveBeenCalledWith(expect.any(String), 2025, 25);
+  });
+
+  it('falls back to the calendar year when the table holds no seasons', async () => {
+    mockStatSeasons.mockResolvedValue([]);
+    mockQueryRaw.mockResolvedValueOnce([] as never);
+
+    await GET(makeRequest('leaders'), {
+      params: Promise.resolve({ path: ['leaders'] }),
+    });
+
+    expect(mockQueryRaw).toHaveBeenCalledWith(
+      expect.any(String), new Date().getFullYear(), 25,
     );
   });
 

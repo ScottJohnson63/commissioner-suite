@@ -76,15 +76,18 @@ export async function GET(
       case 'leaders': {
         // Omitting `season` means "the newest one with data", so the page keeps
         // working across a rollover without a redeploy.
+        //
+        // Read from the same cached list the picker uses rather than from
+        // MAX(season) directly. Two reasons: it is the list the client will
+        // agree with, so the first load and every later one answer for the same
+        // year; and MAX(season) counted a season holding nothing but the 32
+        // team-defense rows sync_nfl_defense.py writes at kickoff, which is how
+        // this endpoint came to answer for a season with no players in it (issue
+        // #98). The scan is also one the cache has usually already paid for.
         const requested = searchParams.get('season');
-        const latest = requested
-          ? null
-          : await prisma.$queryRaw<{ season: number }[]>`
-              SELECT MAX(season) AS season FROM NflWeeklyStat
-            `;
         const season = requested
           ? Number(requested)
-          : Number(latest?.[0]?.season ?? new Date().getFullYear());
+          : (await statSeasonsDescending())[0] ?? new Date().getFullYear();
         const rawStat = searchParams.get('stat') ?? 'fantasyPointsPpr';
         const pos     = searchParams.get('position')?.toUpperCase() ?? '';
         const limit   = Math.min(Number(searchParams.get('limit') ?? '25'), 100);

@@ -9,6 +9,14 @@ on:
         description: 'Force sync regardless of season window'
         required: false
         default: 'false'
+      season:
+        description: 'Season to sync (blank = worked out from the date)'
+        required: false
+        default: ''
+      full_season:
+        description: 'Load every published week, not just the newest'
+        required: false
+        default: 'false'
 
 jobs:
   sync:
@@ -40,7 +48,11 @@ jobs:
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-          NFL_SEASON: "2025"
+          # Deliberately unset on the schedule: the season is worked out from
+          # the date. Pinning it here is what kept this job on 2025 through the
+          # 2026 season (issue #98). The input is for manual runs only.
+          NFL_SEASON: ${{ github.event.inputs.season || '' }}
+          FULL_SEASON: ${{ github.event.inputs.full_season || 'false' }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
         run: |
           cd python

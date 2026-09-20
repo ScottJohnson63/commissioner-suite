@@ -18,13 +18,34 @@ SEASON_END_DAY = 1
 RESET_MONTH = 8
 RESET_DAY = 1
 
+# First month of the year that belongs to the season labelled with that year.
+#
+# A season labelled Y runs from September Y to February Y+1, so January and
+# February belong to season Y-1 while every later month belongs to Y. March is
+# the boundary because the league year itself turns over in it — by then the
+# previous season is finished and the next one is the only one anybody means.
+SEASON_ROLLOVER_MONTH = 3
+
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def current_season() -> int:
-    return int(os.environ.get("NFL_SEASON", str(now().year)))
+def current_season(today: datetime | None = None) -> int:
+    """The season the syncs should be writing, worked out from the calendar.
+
+    NFL_SEASON still wins when it is set, so a manual run can name a year. It is
+    an override rather than the source of truth on purpose: pinning it in the
+    workflow files is what left the weekly stat sync re-writing week 22 of 2025
+    every Tuesday through the 2026 season, so the Statistics tab had no 2026
+    player rows to show (issue #98). A job that works the year out for itself
+    cannot be broken by nobody remembering to edit a YAML file each August.
+    """
+    configured = os.environ.get("NFL_SEASON")
+    if configured:
+        return int(configured)
+    today = today or now()
+    return today.year if today.month >= SEASON_ROLLOVER_MONTH else today.year - 1
 
 
 def forced() -> bool:
