@@ -10,6 +10,8 @@
 import { it, expect, jest, beforeEach } from '@jest/globals';
 
 const mockQueryRaw = jest.fn<() => Promise<{ season: number | string }[]>>();
+/** The SQL of the last scan, reassembled from the tagged template. */
+let lastSql = '';
 
 jest.mock('@/lib/prisma', () => ({
   prisma: {
@@ -18,7 +20,10 @@ jest.mock('@/lib/prisma', () => ({
       upsert:     async () => ({}),
       deleteMany: async () => ({}),
     },
-    $queryRaw: () => mockQueryRaw(),
+    $queryRaw: (strings: TemplateStringsArray) => {
+      lastSql = strings.join('');
+      return mockQueryRaw();
+    },
   },
 }));
 
@@ -58,6 +63,18 @@ it('coerces the string-encoded integers Turso returns', async () => {
   mockQueryRaw.mockResolvedValue([{ season: '2024' }, { season: '2025' }]);
 
   expect(await statSeasons()).toEqual([2024, 2025]);
+});
+
+// WHY: issue #98. sync_nfl_defense.py writes 32 team-defense rows for the live
+//      season the moment it kicks off — assembled from the team feed, position
+//      'DEF', fantasy points left NULL. That was enough to put the season in
+//      this list and make it the Statistics tab's default, where the
+//      fantasy-points leaderboard it opens on then had nothing to show. A
+//      season belongs here once it has players in it.
+it('ignores a season that holds only team-defense rows', async () => {
+  await statSeasons();
+
+  expect(lastSql).toMatch(/position IS NULL OR position <> 'DEF'/);
 });
 
 // WHY: the scan is the cost being removed — ~448,000 rows for two dozen

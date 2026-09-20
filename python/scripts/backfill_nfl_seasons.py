@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import sys
 
-from common import localenv, nflstats, season, syncrun
+from common import appcache, localenv, nflstats, season, syncrun
 
 # nflverse player-stat coverage begins here.
 EARLIEST_SEASON = 1999
@@ -96,6 +96,8 @@ def main() -> None:
 
             print(f"  {year}… {len(df)} rows", flush=True)
             total += nflstats.upsert(df)
+
+        appcache.drop_stat_seasons()
 
         run.note(operation="backfill", seasons=seasons, skipped=skipped)
         run.count(total)

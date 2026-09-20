@@ -20,39 +20,53 @@
 // card game's invalidation. So snapshot.ts consumes this rather than duplicating
 // the scan, and each is invalidated by the thing that actually changes it.
 //
-// **This one has no invalidator, deliberately.** NflWeeklyStat is written only
-// by the sync scripts under python/scripts — sync_nfl_weekly.py,
-// backfill_nfl_seasons.py, load_completed_season.py — never by this app, so
-// there is no write here to hook. The age limit below is the whole mechanism.
-// That is sound because it is the *set* of seasons being cached, not their
-// contents: a weekly sync adds rows to a season already in the list and changes
-// nothing here. The list moves when a new season's first stats land or a
-// backfill completes, which is a once-a-year event either way. Do not go
-// looking for the missing `invalidate` call — a day is an acceptable lag on a
-// fact that changes annually, and a mid-season sync does not move it at all.
+// **The invalidation comes from the sync side, not from here.** NflWeeklyStat is
+// written only by the sync scripts under python/scripts — sync_nfl_weekly.py,
+// backfill_nfl_seasons.py, load_completed_season.py, sync_nfl_defense.py —
+// never by this app, so there is no write on this side to hook. Those scripts
+// delete this row after a run instead; see python/scripts/common/appcache.py.
+// The age limit below is the backstop for a delete that could not reach the
+// database, not the whole mechanism. Waiting it out was: a season's first stats
+// stayed invisible to the Statistics tab for up to a day after they landed.
 
 import { prisma } from '@/lib/prisma';
 import { DbCache } from '@/lib/dbCache';
 
-/** A day. See the note above on why nothing shortens this. */
+/** A day. The backstop behind the sync-side eviction described above. */
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function isSeasonList(value: unknown): value is number[] {
   return Array.isArray(value) && value.every((s) => typeof s === 'number');
 }
 
-/** The scan itself. Oldest first — see the note on ordering below. */
+/**
+ * The scan itself. Oldest first — see the note on ordering below.
+ *
+ * Team defenses are excluded from what counts as a season having stats. They
+ * are not nflverse player rows: sync_nfl_defense.py assembles them from the
+ * team feed and writes them under `position = 'DEF'` with fantasy points left
+ * NULL, and it syncs the live season from the calendar. So the moment a season
+ * kicks off it has 32 DEF rows and nothing else, which was enough to put it in
+ * this list, make it the Statistics tab's default, and leave that tab reading
+ * "No data available" on the fantasy-points leaderboard it opens on — the whole
+ * of issue #98. A season joins the list when it has players in it.
+ */
 async function measureSeasons(): Promise<number[]> {
   const rows = await prisma.$queryRaw<{ season: number }[]>`
-    SELECT DISTINCT season FROM NflWeeklyStat ORDER BY season
+    SELECT DISTINCT season FROM NflWeeklyStat
+    WHERE position IS NULL OR position <> 'DEF'
+    ORDER BY season
   `;
   // Number() because Turso's Hrana JSON protocol encodes integers as strings —
   // see the note on the HTTP client in docs/CARDS.md.
   return rows.map((r) => Number(r.season));
 }
 
+/** Key of the cached row. Must match STAT_SEASONS_KEY in common/appcache.py. */
+export const STAT_SEASONS_CACHE_KEY = 'nfl_stat_seasons';
+
 const cache = new DbCache<number[]>(
-  'nfl_stat_seasons', MAX_AGE_MS, measureSeasons, isSeasonList,
+  STAT_SEASONS_CACHE_KEY, MAX_AGE_MS, measureSeasons, isSeasonList,
 );
 
 /**

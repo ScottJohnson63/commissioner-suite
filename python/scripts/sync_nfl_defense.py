@@ -18,14 +18,15 @@ Usage:
 
 Env:
   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN — database credentials
-  NFL_SEASON                           — defaults the season when none is given
+  NFL_SEASON                           — overrides the season worked out from
+                                         the calendar when none is given
   FORCE                                — "true" bypasses the season-window check
 """
 from __future__ import annotations
 
 import sys
 
-from common import localenv, nfldefense, season, syncrun
+from common import appcache, localenv, nfldefense, season, syncrun
 
 # nflverse team stats begin here, same as its player stats.
 EARLIEST_SEASON = 1999
@@ -78,6 +79,7 @@ def main() -> None:
 
         run.note(season=seasons[-1], operation="sync-nfl-defense")
         run.count(nfldefense.upsert(df))
+        appcache.drop_stat_seasons()
         print(f"✓ {label} defenses loaded. Nothing was deleted.")
 
 

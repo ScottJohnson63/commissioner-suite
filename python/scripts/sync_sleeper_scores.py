@@ -6,7 +6,8 @@ so both feeds land in the same window.
 
 Env:
   TURSO_DATABASE_URL, TURSO_AUTH_TOKEN — database credentials
-  NFL_SEASON                           — season to sync
+  NFL_SEASON                           — overrides the season worked out from
+                                         the calendar; see common/season.py
   FORCE                                — "true" bypasses the season window
   WEEK                                 — override the week to sync
 """
