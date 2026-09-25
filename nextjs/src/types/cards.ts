@@ -283,6 +283,16 @@ export interface CollectionResponse {
   /** The weekly submission game: this week's deadline and what was submitted. */
   weekly: WeeklyStateDto;
   seasons: number[];
+  /**
+   * Photo uploads that can still earn a pack this season.
+   *
+   * Counted server-side off the portraits the member has actually been paid
+   * for, which is the same count customizeCard caps against. The page used to
+   * work it out from cards with both a nickname and a picture — a rule the
+   * reward stopped following once only the picture paid — so photos uploaded
+   * without a nickname were paid for and never moved the number.
+   */
+  photoRewardsRemaining: number;
 }
 
 /** POST /api/cards/image */

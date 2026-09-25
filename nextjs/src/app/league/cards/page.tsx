@@ -42,7 +42,6 @@ import { useForceSidebarCollapsed } from '@/components/useSidebarForceCollapse';
 import { PANEL_BG } from '@/components/dashboard/shared';
 import { DraftDeckIntro, openDraftDeckIntro } from '@/components/intro/DraftDeckIntro';
 import { ROSTER_SIZE } from '@/lib/cards/roster';
-import { MAX_CUSTOMIZATION_PACKS } from '@/lib/cards/customize';
 import type {
   CollectionResponse, CustomizeResponse, OpenPackResponse,
   RosterUpdateResponse, WeekResultsDto, WildcardResponse,
@@ -290,8 +289,11 @@ export default function CardsPage() {
     const body = (await res.json().catch(() => ({}))) as CustomizeResponse & { error?: string };
     if (!res.ok) throw new Error(body.error ?? 'Could not save that card');
 
-    // Re-read rather than patching local state: a completed card pays packs,
-    // and the allowance that reports them lives on the collection response.
+    // The upload's own answer is the fresh reward count, so the panel moves the
+    // moment the save lands rather than when the re-read does. The re-read is
+    // still needed: a paid picture adds a pack, and the allowance that reports
+    // it lives on the collection response.
+    setData((cur) => (cur ? { ...cur, photoRewardsRemaining: body.rewardsRemaining } : cur));
     void load();
     return body;
   }, [load]);
@@ -382,10 +384,9 @@ export default function CardsPage() {
   // the saved card and not the copy that was selected before the write.
   const selected = cards.find((c) => c.id === selectedId) ?? null;
 
-  // Counted here rather than returned by the collection route: the deck is
-  // already in hand, and a card is finished exactly when it has both fields.
-  const finished = cards.filter((c) => c.nickname && c.customImage).length;
-  const rewardsRemaining = Math.max(0, MAX_CUSTOMIZATION_PACKS - finished);
+  // The server's count, not one worked out from the deck: only a picture on a
+  // faceless card pays, and nothing on the card says which pictures were paid.
+  const rewardsRemaining = data.photoRewardsRemaining;
 
   return (
     <Shell tab={tab} onTab={setTab}>

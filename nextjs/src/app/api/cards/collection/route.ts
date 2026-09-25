@@ -36,6 +36,8 @@ import { readAllowance, readDeck } from '@/lib/cards/service';
 import { clearRetiredSlots, readWeeklyState } from '@/lib/cards/weekly';
 import { poolSeasons } from '@/lib/cards/snapshot';
 import { toRosterDtos } from '@/lib/cards/rosterDto';
+import { packsEarned } from '@/lib/cards/customize';
+import { MAX_CUSTOMIZATION_PACKS } from '@/lib/cards/ration';
 import type { BonusStateDto, CollectionResponse } from '@/types/cards';
 
 /**
@@ -92,11 +94,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // starters would look full and score nothing.
     await clearRetiredSlots(guard.userId, season, now);
 
-    const [allowance, deck, weekly, seasons] = await Promise.all([
+    const [allowance, deck, weekly, seasons, earned] = await Promise.all([
       readAllowance(guard.userId, season, week),
       readDeck(guard.userId, season, now),
       readWeeklyState(guard.userId, season, now),
       poolSeasons(),
+      packsEarned(guard.userId, season),
     ]);
 
     const body: CollectionResponse = {
@@ -110,6 +113,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       bonus,
       weekly,
       seasons,
+      photoRewardsRemaining: Math.max(0, MAX_CUSTOMIZATION_PACKS - earned),
     };
     return ok(body);
   } catch (error) {

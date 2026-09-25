@@ -43,13 +43,39 @@ jest.mock('@/components/cards/PackOpener', () => ({
     </>
   ),
 }));
-jest.mock('@/components/cards/DeckGrid', () => ({ DeckGrid: () => <div>deck-grid</div> }));
+// Enough of the grid to pick a card, which is what brings up CardDetail.
+jest.mock('@/components/cards/DeckGrid', () => ({
+  DeckGrid: ({ cards, onSelect }: { cards: { id: string }[]; onSelect: (c: unknown) => void }) => (
+    <div>
+      deck-grid
+      <button type="button" onClick={() => onSelect(cards[0])}>select-first</button>
+    </div>
+  ),
+}));
 jest.mock('@/components/cards/RosterPanel', () => ({ RosterPanel: () => <div>roster-panel</div> }));
 jest.mock('@/components/cards/RankCard', () => ({ RankCard: () => <div>rank-card</div> }));
 jest.mock('@/components/cards/Standings', () => ({ Standings: () => <div>standings</div> }));
 jest.mock('@/components/cards/WeeklyPanel', () => ({ WeeklyPanel: () => <div>weekly-panel</div> }));
 jest.mock('@/components/cards/WeekResults', () => ({ WeekResults: () => <div>week-results</div> }));
-jest.mock('@/components/cards/CardDetail', () => ({ CardDetail: () => <div>card-detail</div> }));
+// Stubbed to the two things the page hands it that the page itself decides:
+// the photo-reward count, and the save that can change it.
+jest.mock('@/components/cards/CardDetail', () => ({
+  CardDetail: ({ card, rewardsRemaining, onSave }: {
+    card: { id: string } | null;
+    rewardsRemaining: number;
+    onSave: (id: string, nickname: string, image: Blob | null) => Promise<unknown>;
+  }) => (
+    <div>
+      card-detail
+      <span>photo-rewards: {rewardsRemaining}</span>
+      {card && (
+        <button type="button" onClick={() => void onSave(card.id, '', new Blob(['x']))}>
+          upload-photo
+        </button>
+      )}
+    </div>
+  ),
+}));
 // Listed by id rather than stubbed flat: which dice the page offers here is
 // the subject of the tests at the bottom of this file. The die itself, and the
 // throw, are WildcardReveal's own.
@@ -93,6 +119,7 @@ function collection(over: Partial<CollectionResponse> = {}): CollectionResponse 
       seasonPoints: 42.5, weeksPlayed: 1,
     },
     seasons: [2024],
+    photoRewardsRemaining: 15,
     ...over,
   };
 }
@@ -320,5 +347,56 @@ describe('a wildcard out of a pack still on screen', () => {
     const hint = screen.getByText(/left a pack half-open/i);
     expect(hint).toBeInTheDocument();
     expect(hint.textContent).not.toMatch(/wildcard|die/i);
+  });
+});
+
+// ─── Photo rewards ───────────────────────────────────────────────────────────
+//
+// A picture on a card with no photo pays a pack, up to a season cap. The page
+// used to count cards with a nickname *and* a picture against that cap — a
+// rule from before only the picture paid — so a member who uploaded seven
+// photos and named none of them was paid seven packs and still told "15 left".
+
+describe('photo rewards left', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  const photoless = { id: 'c1', nickname: null, customImage: null } as never;
+
+  it('shows the server\'s count, not one worked out from the deck', async () => {
+    // Seven photos paid, none of the cards named.
+    await renderPage(collection({
+      cards: [{ ...photoless as object, customImage: '/img/c1' } as never],
+      photoRewardsRemaining: 8,
+    }));
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Deck' })[0]);
+    await userEvent.click(screen.getByRole('button', { name: 'select-first' }));
+
+    expect(screen.getByText('photo-rewards: 8')).toBeInTheDocument();
+  });
+
+  it('counts down the moment an upload is paid for', async () => {
+    const first = collection({ cards: [photoless] });
+    await renderPage(first);
+
+    // The re-read after the save never lands, so any change on screen came
+    // from the upload's own answer.
+    global.fetch = jest.fn(async (url: string) => {
+      if (String(url).includes('/api/cards/image')) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ cardId: 'c1', rewardsRemaining: 14, packsAwarded: 1 }),
+        };
+      }
+      return new Promise(() => {});
+    }) as unknown as typeof fetch;
+
+    await userEvent.click(screen.getAllByRole('button', { name: 'Deck' })[0]);
+    await userEvent.click(screen.getByRole('button', { name: 'select-first' }));
+    expect(screen.getByText('photo-rewards: 15')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'upload-photo' }));
+
+    await waitFor(() => expect(screen.getByText('photo-rewards: 14')).toBeInTheDocument());
   });
 });

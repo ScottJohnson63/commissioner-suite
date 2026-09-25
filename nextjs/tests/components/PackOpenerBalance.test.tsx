@@ -13,10 +13,12 @@
 // tests drive the opener with a stale prop on purpose and assert it believes
 // the server instead.
 //
-// Also pins that "Open another" opens another. It did not: the click deferred
-// to a timer that called the `start` captured mid-reveal, which refused to run
-// because that closure's phase was not idle. The button was inert at every
-// balance, which is why the lie above went unnoticed for so long.
+// Also pins what "Open another" does. It was once inert — a timer called the
+// `start` captured mid-reveal, which refused to run because that closure's
+// phase was not idle — and the fix for that went too far the other way: the
+// button tore the next pack itself, so every pack after the first skipped the
+// one gesture the opener is built around. It now puts a fresh sealed pack in
+// front of the member, and tearing it is theirs to do.
 //
 // The pack is torn with the keyboard, as in PackOpener.test.tsx: jsdom has no
 // pointer capture.
@@ -150,7 +152,7 @@ describe('the last pack', () => {
 });
 
 describe('with packs to spare', () => {
-  it('opens another when asked', async () => {
+  it('puts a sealed pack up to tear rather than opening it', async () => {
     const user = userEvent.setup();
     const onOpen = mount(9, 8);
 
@@ -162,9 +164,17 @@ describe('with packs to spare', () => {
     expect(again).not.toBeDisabled();
 
     await user.click(again);
-    await waitFor(() => expect(onOpen.mock.calls.length).toBe(2), { timeout: 4000 });
-    // And the next pack is genuinely being revealed, not just requested.
-    await waitFor(() => expect(inHand()).not.toBeNull(), { timeout: 4000 });
+
+    // A sealed wrapper, counting from the server, and nothing spent yet.
+    expect(await screen.findByLabelText(/drag the top strip/i)).toBeInTheDocument();
+    expect(screen.getByText(/8 left this week/i)).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(onOpen.mock.calls.length).toBe(1);
+    expect(inHand()).toBeNull();
+
+    // Tearing it is what opens the next one.
+    await tear(user);
+    expect(onOpen.mock.calls.length).toBe(2);
   });
 
   it('counts down from the server rather than the page between packs', async () => {
