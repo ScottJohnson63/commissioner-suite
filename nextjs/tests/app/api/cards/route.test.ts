@@ -32,6 +32,7 @@ const mockReadWeeklyState = jest.fn<() => Promise<unknown>>();
 const mockSubmitLineup = jest.fn<() => Promise<unknown>>();
 const mockReadWeekResults = jest.fn<() => Promise<unknown>>();
 const mockDefaultResultsWeek = jest.fn<() => number | null>();
+const mockPacksEarned = jest.fn<() => Promise<number>>();
 const mockCounts = {
   ownership: jest.fn<() => Promise<number>>(),
   grant: jest.fn<() => Promise<number>>(),
@@ -75,6 +76,9 @@ jest.mock('@/lib/cards/service', () => ({
   readLeaderboard: () => mockReadLeaderboard(),
   setRosterSlot: () => mockSetRosterSlot(),
   invalidatePoolCache: jest.fn(),
+}));
+jest.mock('@/lib/cards/customize', () => ({
+  packsEarned: () => mockPacksEarned(),
 }));
 jest.mock('@/lib/cards/pool', () => ({
   rebuildCardPool: () => mockRebuild(),
@@ -152,6 +156,7 @@ beforeEach(() => {
   mockClaimBonuses.mockResolvedValue({ awarded: [], kinds: [], week: 2 });
   mockClearRetiredSlots.mockResolvedValue(0);
   mockReadWeeklyState.mockResolvedValue({ week: 3, phase: 'OPEN', submitted: null });
+  mockPacksEarned.mockResolvedValue(0);
 });
 
 describe('GET /api/cards/collection', () => {
@@ -189,6 +194,33 @@ describe('GET /api/cards/collection', () => {
     expect(body.seasons).toEqual([2023, 2024, 2025]);
     // The weekly game rides along too — the deadline is on every page load.
     expect(body.weekly).toMatchObject({ week: 3, phase: 'OPEN' });
+    expect(body.photoRewardsRemaining).toBe(15);
+  });
+
+  // WHY: the page used to count finished cards — a nickname and a picture —
+  //      against the photo-reward cap, while the server paid for pictures
+  //      alone. Seven unnamed photos paid seven packs and the page still said
+  //      15 left. The count now comes from the same place the cap does.
+  it('counts photo rewards left from the packs photos have actually paid', async () => {
+    mockReadAllowance.mockResolvedValue({ remaining: 7, week: 3 });
+    mockReadDeck.mockResolvedValue({ cards: [], stats: {}, roster: [], standings: [] });
+    mockPacksEarned.mockResolvedValue(7);
+
+    const { GET } = await import('@/app/api/cards/collection/route');
+    const body = await (await GET(req('collection'))).json();
+
+    expect(body.photoRewardsRemaining).toBe(8);
+  });
+
+  it('never reports fewer than none left', async () => {
+    mockReadAllowance.mockResolvedValue({ remaining: 0, week: 3 });
+    mockReadDeck.mockResolvedValue({ cards: [], stats: {}, roster: [], standings: [] });
+    mockPacksEarned.mockResolvedValue(20);
+
+    const { GET } = await import('@/app/api/cards/collection/route');
+    const body = await (await GET(req('collection'))).json();
+
+    expect(body.photoRewardsRemaining).toBe(0);
   });
 
   // WHY: the lineup is read from CardDefinition, which knows nothing about who

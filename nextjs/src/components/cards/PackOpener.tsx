@@ -152,15 +152,6 @@ export function PackOpener({
   /** What is actually openable: the server's last word, else the page's. */
   const left = spentRemaining ?? remaining;
 
-  /**
-   * Raised when "Open another" is pressed, lowered once the next pack is on
-   * its way. The re-open cannot be fired from the click itself — `start`
-   * refuses to run outside the idle phase, and at the moment of the click the
-   * opener is still revealing — so it is deferred to the effect below, which
-   * runs once the idle pack has mounted. A ref rather than state because it is
-   * a one-shot instruction, not something rendered.
-   */
-  const reopen = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   // Pending timers, so unmounting mid-animation cannot set state afterwards.
@@ -222,13 +213,6 @@ export function PackOpener({
     return result;
   }, [onRollWildcard]);
 
-  // Fires the pack "Open another" asked for, once the opener is idle again.
-  useEffect(() => {
-    if (!reopen.current || phase !== 'idle') return;
-    reopen.current = false;
-    void start();
-  }, [phase, start]);
-
   const allRevealed = done;
 
   /**
@@ -271,7 +255,6 @@ export function PackOpener({
   function reset() {
     timers.current.forEach(clearTimeout);
     timers.current = [];
-    reopen.current = false;
     setPack(null);
     setIndex(0);
     setFaceUp(false);
@@ -302,14 +285,10 @@ export function PackOpener({
           onRollWildcard={rollWildcard}
           allRevealed={allRevealed}
           canOpenAnother={left > 0}
-          onAgain={() => {
-            reset();
-            // The effect above tears the next one, once the idle pack has
-            // mounted. A timer here would call the `start` captured during the
-            // reveal, which refuses to run because that closure's phase is not
-            // idle — the button did nothing at all.
-            reopen.current = true;
-          }}
+          // Back to a sealed pack, not straight into the next reveal. Tearing
+          // the wrapper is the one gesture in here, and a second pack that
+          // opened itself skipped it — see the note at the top of the file.
+          onAgain={reset}
           onDone={reset}
         />
       )}
