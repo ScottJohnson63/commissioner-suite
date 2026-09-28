@@ -1,6 +1,7 @@
 import { LeagueSidebar } from '@/components/LeagueSidebar';
 import { MobileNav } from '@/components/MobileNav';
 import { AppIntro } from '@/components/intro/AppIntro';
+import { WhatsNew } from '@/components/whatsnew/WhatsNewDialog';
 
 export default function LeagueLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -35,6 +36,9 @@ export default function LeagueLayout({ children }: { children: React.ReactNode }
       {/* First visit to any page of the portal gets the tour. It opens itself,
           so there is nothing to pass down. */}
       <AppIntro />
+      {/* Once per release, the notes for what changed since the member's last
+          visit. A first visit gets the tour above instead, never both. */}
+      <WhatsNew />
     </div>
   );
 }
