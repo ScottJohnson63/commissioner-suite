@@ -16,8 +16,12 @@
 // because the card game was the first thing to need a dialog, but it is only
 // an overlay, a title bar and a scrollable body — reusing it is what keeps
 // this dialog looking like the rest of the app rather than a second style.
+//
+// It is also the way back to the What's New notes (issue #71), which open by
+// themselves only once per release.
 
 import { CardsDialog } from '@/components/cards/CardsDialog';
+import { openWhatsNew } from '@/components/whatsnew/useWhatsNew';
 import {
   APP_VERSION,
   CC_BY_4_URL,
@@ -43,6 +47,12 @@ export function AboutDialog({ open, onClose }: { open: boolean; onClose: () => v
         </p>
 
         <div className="flex flex-col gap-1.5">
+          <AboutRow
+            onClick={() => { onClose(); openWhatsNew(); }}
+            label="What&rsquo;s new"
+            hint="Recent changes to the suite"
+            icon={<SparkIcon />}
+          />
           <AboutLink
             href={USER_GUIDE_URL}
             label="User&rsquo;s guide"
@@ -131,6 +141,39 @@ function AboutLink({
   );
 }
 
+// ─── The one row that stays in the app ───────────────────────────────────────
+
+// Same look as AboutLink, but a button: What's New is a dialog of our own, so
+// About steps aside and hands over rather than opening a tab.
+
+function AboutRow({
+  onClick, label, hint, icon,
+}: {
+  onClick: () => void;
+  label: React.ReactNode;
+  hint: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-start gap-3 rounded px-2 py-2 -mx-2 transition-colors text-left"
+      style={{ color: '#e8e6df' }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = '#1a1a1c')}
+      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+    >
+      <span className="w-4 h-4 mt-0.5 flex items-center justify-center shrink-0" style={{ color: '#80ff49' }}>
+        {icon}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm leading-none">{label}</span>
+        <span className="block text-xs mt-1" style={{ color: '#555' }}>{hint}</span>
+      </span>
+    </button>
+  );
+}
+
 // ─── Icons ───────────────────────────────────────────────────────────────────
 
 function BookIcon() {
@@ -146,6 +189,14 @@ function BugIcon() {
     <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
       <rect x="4.5" y="4.5" width="6" height="8" rx="3" />
       <path d="M5.5 3.5a2 2 0 014 0M1.5 6.5h3M10.5 6.5h3M1.5 11h3M10.5 11h3M7.5 6v6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SparkIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M7.5 1.5v3M7.5 10.5v3M1.5 7.5h3M10.5 7.5h3M3.3 3.3l1.8 1.8M9.9 9.9l1.8 1.8M3.3 11.7l1.8-1.8M9.9 5.1l1.8-1.8" strokeLinecap="round" />
     </svg>
   );
 }
