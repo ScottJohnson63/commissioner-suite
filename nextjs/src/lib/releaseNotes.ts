@@ -28,25 +28,33 @@ export interface ReleaseNote {
 
 /** Newest first. Add the new release at the top. */
 export const RELEASE_NOTES: ReleaseNote[] = [
+  // The first entry, and the first thing most members read about the suite
+  // since launch — so it rounds up the notable changes of the last few weeks
+  // rather than only what 1.2.0 itself added. Later entries cover one release.
   {
     version: '1.2.0',
     date: '2026-09-28',
     features: [
-      'This What’s New window, which opens once after each release. You can bring it back any time from About.',
-      'Opening a pack now plays a reveal, and “Open another” hands you a fresh sealed pack.',
+      'This What\u2019s New window, which opens once after each release. You can bring it back any time from About.',
+      'Opening a pack is a proper reveal: pull the strip to tear it, and \u201cOpen another\u201d hands you a fresh sealed pack.',
+      'Draft Deck cards have a Card Details page, and the corner shows the player\u2019s season rank.',
+      'The dashboard gives Matchup, Waivers and Trades a tab each.',
+      'The AI Assistant answers from your own roster, and its chat uses the whole screen on a phone.',
+      'Statistics keeps regular-season and playoff leaders apart, with a toggle to include the playoffs.',
       'Player cards credit the photographer and licence behind each portrait.',
-      'The Draft Deck tour explains the bonus packs Sleeper awards.',
-      'About credits nflverse for the player statistics.',
+      'The Draft Deck tour explains the bonus packs Sleeper results earn you.',
+      'About links the user\u2019s guide and issue tracker, and credits nflverse for the player statistics.',
     ],
     fixes: [
       'A new Draft Deck week publishes at its deadline instead of hours later.',
+      'Sleeper bonus packs are awarded for the week that finished, not a lead that could still slip away.',
       'You can no longer open a pack when you have none left.',
       'Closing the pack window after opening a pack keeps the cards in your deck.',
-      'Photo rewards are counted correctly.',
-      'The first-place bonus no longer awards an extra pack mid-week.',
-      'Pages load faster, especially Draft Deck.',
+      'The packs offered for uploading photos match what you\u2019re actually given.',
+      'The AI Assistant no longer fails with \u201cAgent failed to respond.\u201d',
+      'Pages load faster, Draft Deck especially.',
     ],
-    security: 5,
+    security: 10,
   },
 ];
 
